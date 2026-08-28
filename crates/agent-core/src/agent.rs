@@ -375,7 +375,7 @@ mod tests {
         assert_eq!(run.status(), RunStatus::WaitingForInput);
 
         run.record(RunEvent::InputReceived {
-            content: "open-agent".to_owned(),
+            content: "open-harness".to_owned(),
         })
         .unwrap();
 
@@ -425,7 +425,7 @@ mod tests {
 
         let error = run
             .record(RunEvent::InputReceived {
-                content: "open-agent".to_owned(),
+                content: "open-harness".to_owned(),
             })
             .unwrap_err();
 

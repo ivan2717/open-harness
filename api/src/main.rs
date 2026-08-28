@@ -8,7 +8,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let listener = TcpListener::bind("0.0.0.0:7788").await?;
     let address = listener.local_addr()?;
 
-    tracing::info!("open-agent api listening on {}", address);
+    tracing::info!("open-harness api listening on {}", address);
 
     axum::serve(listener, api::app())
         .with_graceful_shutdown(shutdown_signal())
