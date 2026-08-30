@@ -1,0 +1,10 @@
+[package]
+name = "agent-runtime"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+agent-core = { version = "0.1.0", path = "../agent-core" }
+
+[dev-dependencies]
+tokio = { version = "1.53.1", features = ["macros", "rt"] }
