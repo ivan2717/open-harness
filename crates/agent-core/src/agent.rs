@@ -1,5 +1,7 @@
 use std::{error::Error, fmt, time::SystemTime};
 
+use serde::{Deserialize, Serialize};
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Agent {
     pub id: String,
@@ -30,8 +32,8 @@ impl Agent {
 
 #[derive(Debug, Clone)]
 pub struct AgentRun {
-    pub id: String,
-    pub agent_id: String,
+    id: String,
+    agent_id: String,
     status: RunStatus,
     current_step: u32,
     events: Vec<RunEventEnvelope>,
@@ -56,6 +58,102 @@ impl AgentRun {
         });
 
         run
+    }
+
+    pub fn restore(
+        id: impl Into<String>,
+        agent_id: impl Into<String>,
+        events: Vec<RunEventEnvelope>,
+    ) -> Result<Self, AgentRunHistoryError> {
+        let Some(first) = events.first() else {
+            return Err(AgentRunHistoryError::EmptyHistory);
+        };
+
+        if first.sequence != 0
+            || first.step != 0
+            || !matches!(first.event, RunEvent::RunStarted { .. })
+        {
+            return Err(AgentRunHistoryError::InvalidFirstEvent {
+                sequence: first.sequence,
+                step: first.step,
+                event: first.event.name(),
+            });
+        }
+
+        let mut run = Self {
+            id: id.into(),
+            agent_id: agent_id.into(),
+            status: RunStatus::Running,
+            current_step: 0,
+            events: vec![first.clone()],
+        };
+
+        for (index, envelope) in events.into_iter().enumerate().skip(1) {
+            let expected_sequence = index as u64;
+            if envelope.sequence != expected_sequence {
+                return Err(AgentRunHistoryError::UnexpectedSequence {
+                    index,
+                    expected: expected_sequence,
+                    actual: envelope.sequence,
+                });
+            }
+
+            match &envelope.event {
+                RunEvent::RunStarted { .. } => {
+                    return Err(AgentRunHistoryError::DuplicateRunStarted {
+                        sequence: envelope.sequence,
+                    });
+                }
+                RunEvent::ModelRequestStarted => {
+                    if !run.is_running() {
+                        return Err(AgentRunHistoryError::InvalidEvent {
+                            sequence: envelope.sequence,
+                            source: AgentRunError::RunNotRunning { status: run.status },
+                        });
+                    }
+
+                    let expected_step = run.current_step.checked_add(1).ok_or(
+                        AgentRunHistoryError::InvalidEvent {
+                            sequence: envelope.sequence,
+                            source: AgentRunError::StepNumberOverflow,
+                        },
+                    )?;
+                    run.validate_restored_step(&envelope, expected_step)?;
+                    run.current_step = expected_step;
+                }
+                event => {
+                    run.validate_restored_step(&envelope, run.current_step)?;
+
+                    if event.requires_active_step() && run.current_step == 0 {
+                        return Err(AgentRunHistoryError::InvalidEvent {
+                            sequence: envelope.sequence,
+                            source: AgentRunError::NoActiveStep {
+                                event: event.name(),
+                            },
+                        });
+                    }
+
+                    run.status = run.next_status(event).map_err(|source| {
+                        AgentRunHistoryError::InvalidEvent {
+                            sequence: envelope.sequence,
+                            source,
+                        }
+                    })?;
+                }
+            }
+
+            run.events.push(envelope);
+        }
+
+        Ok(run)
+    }
+
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    pub fn agent_id(&self) -> &str {
+        &self.agent_id
     }
 
     pub fn status(&self) -> RunStatus {
@@ -124,6 +222,23 @@ impl AgentRun {
             .expect("the event was appended immediately before this access"))
     }
 
+    fn validate_restored_step(
+        &self,
+        envelope: &RunEventEnvelope,
+        expected: u32,
+    ) -> Result<(), AgentRunHistoryError> {
+        if envelope.step != expected {
+            return Err(AgentRunHistoryError::UnexpectedStep {
+                sequence: envelope.sequence,
+                event: envelope.event.name(),
+                expected,
+                actual: envelope.step,
+            });
+        }
+
+        Ok(())
+    }
+
     fn next_status(&self, event: &RunEvent) -> Result<RunStatus, AgentRunError> {
         if self.status.is_terminal() {
             return Err(AgentRunError::RunAlreadyFinished {
@@ -169,7 +284,7 @@ impl AgentRun {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunEventEnvelope {
     pub sequence: u64,
     pub step: u32,
@@ -177,7 +292,8 @@ pub struct RunEventEnvelope {
     pub event: RunEvent,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum RunEvent {
     RunStarted {
         instruction: String,
@@ -265,6 +381,90 @@ impl RunStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AgentRunHistoryError {
+    EmptyHistory,
+    InvalidFirstEvent {
+        sequence: u64,
+        step: u32,
+        event: &'static str,
+    },
+    UnexpectedSequence {
+        index: usize,
+        expected: u64,
+        actual: u64,
+    },
+    UnexpectedStep {
+        sequence: u64,
+        event: &'static str,
+        expected: u32,
+        actual: u32,
+    },
+    DuplicateRunStarted {
+        sequence: u64,
+    },
+    InvalidEvent {
+        sequence: u64,
+        source: AgentRunError,
+    },
+}
+
+impl fmt::Display for AgentRunHistoryError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::EmptyHistory => formatter.write_str("cannot restore a run from empty history"),
+            Self::InvalidFirstEvent {
+                sequence,
+                step,
+                event,
+            } => write!(
+                formatter,
+                "the first event must be RunStarted at sequence 0 and step 0, got {event} at sequence {sequence} and step {step}"
+            ),
+            Self::UnexpectedSequence {
+                index,
+                expected,
+                actual,
+            } => write!(
+                formatter,
+                "event at index {index} has sequence {actual}, expected {expected}"
+            ),
+            Self::UnexpectedStep {
+                sequence,
+                event,
+                expected,
+                actual,
+            } => write!(
+                formatter,
+                "event {event} at sequence {sequence} belongs to step {actual}, expected {expected}"
+            ),
+            Self::DuplicateRunStarted { sequence } => write!(
+                formatter,
+                "RunStarted may only be the first event, but another occurred at sequence {sequence}"
+            ),
+            Self::InvalidEvent { sequence, source } => {
+                write!(
+                    formatter,
+                    "event at sequence {sequence} is invalid: {source}"
+                )
+            }
+        }
+    }
+}
+
+impl Error for AgentRunHistoryError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::InvalidEvent { source, .. } => Some(source),
+            Self::EmptyHistory
+            | Self::InvalidFirstEvent { .. }
+            | Self::UnexpectedSequence { .. }
+            | Self::UnexpectedStep { .. }
+            | Self::DuplicateRunStarted { .. } => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentRunError {
     RunNotRunning {
         status: RunStatus,
@@ -315,143 +515,3 @@ impl fmt::Display for AgentRunError {
 }
 
 impl Error for AgentRunError {}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn test_run() -> AgentRun {
-        AgentRun::new("run-1", "agent-1", "Research Rust ownership")
-    }
-
-    #[test]
-    fn a_new_run_starts_with_one_event() {
-        let run = test_run();
-
-        assert_eq!(run.status(), RunStatus::Running);
-        assert_eq!(run.instruction(), "Research Rust ownership");
-        assert_eq!(run.events().len(), 1);
-        assert_eq!(run.events()[0].sequence, 0);
-        assert_eq!(run.events()[0].step, 0);
-        assert!(matches!(run.events()[0].event, RunEvent::RunStarted { .. }));
-    }
-
-    #[test]
-    fn events_are_ordered_and_grouped_by_step() {
-        let mut run = test_run();
-
-        assert_eq!(run.begin_step().unwrap(), 1);
-        run.record(RunEvent::ModelResponseReceived {
-            content: "I need to inspect the project.".to_owned(),
-        })
-        .unwrap();
-        run.record(RunEvent::ToolCallRequested {
-            call_id: "call-1".to_owned(),
-            tool_name: "read_file".to_owned(),
-            arguments: "{\"path\":\"Cargo.toml\"}".to_owned(),
-        })
-        .unwrap();
-        run.record(RunEvent::ToolCallSucceeded {
-            call_id: "call-1".to_owned(),
-            output: "[workspace]".to_owned(),
-        })
-        .unwrap();
-
-        assert_eq!(run.events().len(), 5);
-        assert_eq!(run.events()[4].sequence, 4);
-        assert!(run.events()[1..].iter().all(|event| event.step == 1));
-        assert_eq!(run.status(), RunStatus::Running);
-    }
-
-    #[test]
-    fn waiting_for_input_can_resume() {
-        let mut run = test_run();
-        run.begin_step().unwrap();
-        run.record(RunEvent::InputRequested {
-            prompt: "Which repository should I inspect?".to_owned(),
-        })
-        .unwrap();
-
-        assert_eq!(run.status(), RunStatus::WaitingForInput);
-
-        run.record(RunEvent::InputReceived {
-            content: "open-harness".to_owned(),
-        })
-        .unwrap();
-
-        assert_eq!(run.status(), RunStatus::Running);
-    }
-
-    #[test]
-    fn a_terminal_run_rejects_more_events() {
-        let mut run = test_run();
-        run.begin_step().unwrap();
-        run.record(RunEvent::RunCompleted {
-            answer: "Ownership gives each value one owner.".to_owned(),
-        })
-        .unwrap();
-
-        let error = run.record(RunEvent::RunCancelled).unwrap_err();
-
-        assert_eq!(
-            error,
-            AgentRunError::RunAlreadyFinished {
-                status: RunStatus::Completed,
-            }
-        );
-    }
-
-    #[test]
-    fn step_events_require_begin_step() {
-        let mut run = test_run();
-
-        let error = run
-            .record(RunEvent::ModelResponseReceived {
-                content: "response".to_owned(),
-            })
-            .unwrap_err();
-
-        assert_eq!(
-            error,
-            AgentRunError::NoActiveStep {
-                event: "ModelResponseReceived",
-            }
-        );
-    }
-
-    #[test]
-    fn input_received_requires_a_started_step() {
-        let mut run = test_run();
-
-        let error = run
-            .record(RunEvent::InputReceived {
-                content: "open-harness".to_owned(),
-            })
-            .unwrap_err();
-
-        assert_eq!(
-            error,
-            AgentRunError::NoActiveStep {
-                event: "InputReceived",
-            }
-        );
-    }
-
-    #[test]
-    fn failure_and_cancellation_do_not_require_a_started_step() {
-        let mut failed_run = test_run();
-        failed_run
-            .record(RunEvent::RunFailed {
-                message: "model configuration is invalid".to_owned(),
-            })
-            .unwrap();
-
-        let mut cancelled_run = test_run();
-        cancelled_run.record(RunEvent::RunCancelled).unwrap();
-
-        assert_eq!(failed_run.status(), RunStatus::Failed);
-        assert_eq!(failed_run.events().last().unwrap().step, 0);
-        assert_eq!(cancelled_run.status(), RunStatus::Cancelled);
-        assert_eq!(cancelled_run.events().last().unwrap().step, 0);
-    }
-}

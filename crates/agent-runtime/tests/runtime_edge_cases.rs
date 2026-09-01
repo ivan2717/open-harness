@@ -8,8 +8,8 @@ use std::{
 
 use agent_core::agent::{Agent, RunEvent, RunStatus};
 use agent_runtime::{
-    AgentRuntime, Model, ModelMessage, ModelRequest, ModelResponse, ToolCall, ToolDefinition,
-    ToolExecutor,
+    AgentRuntime, AgentRuntimeError, EventStore, Model, ModelMessage, ModelRequest, ModelResponse,
+    ToolCall, ToolDefinition, ToolExecutor,
 };
 
 struct ScriptedModel {
@@ -153,11 +153,12 @@ async fn all_tool_calls_are_declared_before_any_result() {
     ));
 }
 
-#[test]
-fn dropping_an_in_flight_execution_cancels_the_run() {
+#[tokio::test]
+async fn an_interrupted_execution_requires_explicit_cancellation() {
     let agent = Agent::new("agent-1", "Agent", "Test agent", "Be precise.");
     let mut run = agent.start_run("run-1", "Wait for the model");
     let runtime = AgentRuntime::new(PendingModel, RecordingTools::new(), Some(4));
+    let mut notifications = runtime.subscribe();
 
     let mut execution = Box::pin(runtime.run_until_blocked(&agent, &mut run));
     let mut context = Context::from_waker(Waker::noop());
@@ -169,9 +170,39 @@ fn dropping_an_in_flight_execution_cancels_the_run() {
 
     drop(execution);
 
-    assert_eq!(run.status(), RunStatus::Cancelled);
+    assert_eq!(run.status(), RunStatus::Running);
     assert!(matches!(
         &run.events().last().unwrap().event,
+        RunEvent::ModelRequestStarted
+    ));
+
+    let stored = runtime.event_store().load("run-1").await.unwrap().unwrap();
+    assert!(matches!(
+        &stored.events.last().unwrap().event,
+        RunEvent::ModelRequestStarted
+    ));
+
+    let error = runtime
+        .run_until_blocked(&agent, &mut run)
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        AgentRuntimeError::InterruptedRun {
+            last_sequence: 1,
+            ..
+        }
+    ));
+
+    runtime.cancel_run(&mut run).await.unwrap();
+
+    assert_eq!(run.status(), RunStatus::Cancelled);
+    let stored = runtime.event_store().load("run-1").await.unwrap().unwrap();
+    assert!(matches!(
+        &stored.events.last().unwrap().event,
         RunEvent::RunCancelled
     ));
+    assert_eq!(notifications.try_recv().unwrap().envelope.sequence, 0);
+    assert_eq!(notifications.try_recv().unwrap().envelope.sequence, 1);
+    assert_eq!(notifications.try_recv().unwrap().envelope.sequence, 2);
 }
