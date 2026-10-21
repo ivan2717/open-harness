@@ -1,0 +1,215 @@
+{
+  "large": {
+    "checks": [
+      {
+        "name": "runtime_completed",
+        "passed": true
+      },
+      {
+        "name": "one_main_model_call",
+        "passed": true
+      },
+      {
+        "name": "provider_confirmed_more_than_128k_input_tokens",
+        "passed": true
+      },
+      {
+        "name": "no_summary_calls_below_advertised_threshold",
+        "passed": true
+      },
+      {
+        "name": "no_saved_compaction",
+        "passed": true
+      },
+      {
+        "name": "exact_start_marker",
+        "passed": true
+      },
+      {
+        "name": "exact_middle_marker",
+        "passed": true
+      },
+      {
+        "name": "exact_end_marker",
+        "passed": true
+      }
+    ],
+    "estimated_input_tokens": 154118,
+    "final_answer": "{\"start\":\"MINT-R4\",\"middle\":\"COBALT-P8\",\"end\":\"LARCH-V2\"}",
+    "input_chars": 616304,
+    "main_calls": [
+      {
+        "call": 1,
+        "error": null,
+        "estimated_input_tokens": 154118,
+        "provider_usage": {
+          "cached_input_tokens": 153856,
+          "input_tokens": 154111,
+          "output_tokens": 23
+        },
+        "summary_messages": 0
+      }
+    ],
+    "minimum_provider_input_tokens": 128001,
+    "passed": true,
+    "record_count": 22000,
+    "resolved_compaction_threshold": 943718,
+    "resolved_input_limit": 996147,
+    "runtime_error": null,
+    "scenario": "large_window_over_128k",
+    "summary_calls": [],
+    "synthetic": true
+  },
+  "limitations": [
+    "Synthetic fixtures; not a production reliability or model-quality benchmark.",
+    "The compaction scenario explicitly lowers thresholds to exercise repeated compression.",
+    "Provider-native compaction and thinking-mode replay are not covered.",
+    "No transport retry; errors are recorded rather than masked."
+  ],
+  "mode": "non-thinking",
+  "model": {
+    "api_capabilities": {
+      "anthropic_messages": {
+        "system_prompt_update": "in-history"
+      }
+    },
+    "context_window": 1048576,
+    "effort": {
+      "default_level": "high",
+      "supported_levels": [
+        "low",
+        "high",
+        "max"
+      ]
+    },
+    "id": "deepseek-flash",
+    "input_modalities": [
+      "text",
+      "image"
+    ],
+    "max_output_tokens": 393216,
+    "name": "DeepSeek-V4.1-Flash",
+    "object": "model",
+    "output_modalities": [
+      "text"
+    ],
+    "owned_by": "deepseek"
+  },
+  "near_window": {
+    "checks": [
+      {
+        "name": "runtime_completed",
+        "passed": true
+      },
+      {
+        "name": "one_main_model_call",
+        "passed": true
+      },
+      {
+        "name": "provider_confirmed_at_least_800k_input_tokens",
+        "passed": true
+      },
+      {
+        "name": "no_summary_calls_below_advertised_threshold",
+        "passed": true
+      },
+      {
+        "name": "no_saved_compaction",
+        "passed": true
+      },
+      {
+        "name": "exact_start_marker",
+        "passed": true
+      },
+      {
+        "name": "exact_middle_marker",
+        "passed": true
+      },
+      {
+        "name": "exact_end_marker",
+        "passed": true
+      }
+    ],
+    "estimated_input_tokens": 881367,
+    "final_answer": "{\"start\":\"MINT-R4\",\"middle\":\"COBALT-P8\",\"end\":\"LARCH-V2\"}",
+    "input_chars": 3525303,
+    "main_calls": [
+      {
+        "call": 1,
+        "error": null,
+        "estimated_input_tokens": 881367,
+        "provider_usage": {
+          "cached_input_tokens": 77184,
+          "input_tokens": 875111,
+          "output_tokens": 23
+        },
+        "summary_messages": 0
+      }
+    ],
+    "minimum_provider_input_tokens": 800000,
+    "passed": true,
+    "record_count": 125000,
+    "resolved_compaction_threshold": 943718,
+    "resolved_input_limit": 996147,
+    "runtime_error": null,
+    "scenario": "near_window_at_least_800k",
+    "summary_calls": [],
+    "synthetic": true
+  },
+  "requested_revision": "DeepSeek-V4.1-Flash-1017",
+  "requests": [
+    {
+      "elapsed_ms": 1461,
+      "estimated_input_tokens": 154118,
+      "finish_reason": "stop",
+      "has_summary": false,
+      "kind": "agent",
+      "max_output_tokens": 256,
+      "messages": 1,
+      "model": "deepseek-flash",
+      "request": 1,
+      "tool_names": [],
+      "usage": {
+        "completion_tokens": 23,
+        "prompt_cache_hit_tokens": 153856,
+        "prompt_cache_miss_tokens": 255,
+        "prompt_tokens": 154111,
+        "prompt_tokens_details": {
+          "cached_tokens": 153856
+        },
+        "total_tokens": 154134
+      }
+    },
+    {
+      "elapsed_ms": 14285,
+      "estimated_input_tokens": 881367,
+      "finish_reason": "stop",
+      "has_summary": false,
+      "kind": "agent",
+      "max_output_tokens": 256,
+      "messages": 1,
+      "model": "deepseek-flash",
+      "request": 2,
+      "tool_names": [],
+      "usage": {
+        "completion_tokens": 23,
+        "prompt_cache_hit_tokens": 77184,
+        "prompt_cache_miss_tokens": 797927,
+        "prompt_tokens": 875111,
+        "prompt_tokens_details": {
+          "cached_tokens": 77184
+        },
+        "total_tokens": 875134
+      }
+    }
+  ],
+  "resolved_default_policy": {
+    "input_limit": 996147,
+    "recent_tail": 24000,
+    "target": 707789,
+    "threshold": 943718,
+    "window": 1048576
+  },
+  "scenario": "large",
+  "started_at_unix_seconds": 1792514545
+}

@@ -1,38 +1,77 @@
+mod driver;
+mod execution;
+
 use std::{error::Error, fmt};
 
+use execution::ExecutionRegistry;
+
 use agent_core::agent::{
-    Agent, AgentRun, AgentRunError, AgentRunHistoryError, RunEvent, RunEventEnvelope, RunStatus,
+    Agent, AgentRun, AgentRunError, AgentRunHistoryError, PreparedRunEvent, RunEvent,
+    RunEventEnvelope, RunStatus,
 };
 
 use crate::{
-    AppendOutcome, EventStore, EventStoreError, InMemoryEventStore, Model, ModelMessage,
-    ModelRequest, ModelResponse, RunEventNotification, RunEventReceiver, RunEventSubscriptions,
-    ToolDefinition, ToolExecutor,
+    AppendOutcome, ContextManager, EventStore, EventStoreError, HistoryAccess, InMemoryEventStore,
+    Model, NoHistoryAccess, RunEventNotification, RunEventReceiver, RunEventSubscriptions,
+    ToolExecutor,
 };
 
 #[derive(Debug)]
-pub struct AgentRuntime<M, T, S = InMemoryEventStore> {
+pub struct AgentRuntime<M, T, C, S = InMemoryEventStore, H = NoHistoryAccess> {
     model: M,
     tools: T,
+    context_manager: C,
     event_store: S,
+    history_access: H,
     subscriptions: RunEventSubscriptions,
-    max_steps: u32,
+    max_steps: Option<u32>,
+    executions: ExecutionRegistry,
 }
 
-impl<M, T> AgentRuntime<M, T, InMemoryEventStore> {
-    pub fn new(model: M, tools: T, max_steps: Option<u32>) -> Self {
-        Self::with_event_store(model, tools, max_steps, InMemoryEventStore::new())
+impl<M, T, C> AgentRuntime<M, T, C, InMemoryEventStore, NoHistoryAccess> {
+    pub fn new(model: M, tools: T, context_manager: C, max_steps: Option<u32>) -> Self {
+        Self::with_event_store(
+            model,
+            tools,
+            context_manager,
+            InMemoryEventStore::new(),
+            max_steps,
+        )
     }
 }
 
-impl<M, T, S> AgentRuntime<M, T, S> {
-    pub fn with_event_store(model: M, tools: T, max_steps: Option<u32>, event_store: S) -> Self {
+impl<M, T, C, S> AgentRuntime<M, T, C, S, NoHistoryAccess> {
+    pub fn with_event_store(
+        model: M,
+        tools: T,
+        context_manager: C,
+        event_store: S,
+        max_steps: Option<u32>,
+    ) -> Self {
         Self {
             model,
             tools,
+            context_manager,
             event_store,
+            history_access: NoHistoryAccess,
             subscriptions: RunEventSubscriptions::default(),
-            max_steps: max_steps.unwrap_or(i32::MAX as u32),
+            max_steps,
+            executions: ExecutionRegistry::default(),
+        }
+    }
+}
+
+impl<M, T, C, S, H> AgentRuntime<M, T, C, S, H> {
+    pub fn with_history_access<H2>(self, history_access: H2) -> AgentRuntime<M, T, C, S, H2> {
+        AgentRuntime {
+            model: self.model,
+            tools: self.tools,
+            context_manager: self.context_manager,
+            event_store: self.event_store,
+            history_access,
+            subscriptions: self.subscriptions,
+            max_steps: self.max_steps,
+            executions: self.executions,
         }
     }
 
@@ -48,20 +87,46 @@ impl<M, T, S> AgentRuntime<M, T, S> {
         &self.event_store
     }
 
-    pub fn max_steps(&self) -> u32 {
+    pub fn context_manager(&self) -> &C {
+        &self.context_manager
+    }
+
+    pub fn context_manager_mut(&mut self) -> &mut C {
+        &mut self.context_manager
+    }
+
+    pub fn history_access(&self) -> &H {
+        &self.history_access
+    }
+
+    pub fn history_access_mut(&mut self) -> &mut H {
+        &mut self.history_access
+    }
+
+    /// The configured step limit. `None` leaves the run without a policy limit.
+    pub fn max_steps(&self) -> Option<u32> {
         self.max_steps
     }
 
     pub fn subscribe(&self) -> RunEventReceiver {
         self.subscriptions.subscribe()
     }
+
+    /// Whether this runtime currently owns in-flight work for the run.
+    /// This is independent of the durable `RunStatus::Running` state and does
+    /// not report executions in other runtime instances or processes.
+    pub fn is_executing(&self, run_id: &str) -> bool {
+        self.executions.is_executing(run_id)
+    }
 }
 
-impl<M, T, S> AgentRuntime<M, T, S>
+impl<M, T, C, S, H> AgentRuntime<M, T, C, S, H>
 where
     M: Model,
     T: ToolExecutor,
     S: EventStore,
+    C: ContextManager,
+    H: HistoryAccess<S>,
 {
     pub async fn start_run(
         &self,
@@ -104,20 +169,16 @@ where
             return Ok(Vec::new());
         };
 
-        AgentRun::restore(
-            stored.run_id.clone(),
-            stored.agent_id.clone(),
-            stored.events.clone(),
-        )?;
+        let restored = AgentRun::restore(stored.run_id, stored.agent_id, stored.events)?;
 
-        Ok(stored
-            .events
-            .into_iter()
+        Ok(restored
+            .events()
+            .iter()
             .filter(|event| after_sequence.is_none_or(|sequence| event.sequence > sequence))
             .map(|envelope| RunEventNotification {
-                run_id: stored.run_id.clone(),
-                agent_id: stored.agent_id.clone(),
-                envelope,
+                run_id: restored.id().to_owned(),
+                agent_id: restored.agent_id().to_owned(),
+                envelope: envelope.clone(),
             })
             .collect())
     }
@@ -141,6 +202,15 @@ where
         run: &mut AgentRun,
         event: RunEvent,
     ) -> Result<(), AgentRuntimeError<M::Error>> {
+        if matches!(event, RunEvent::RunCancelled) {
+            return self.cancel_run(run).await;
+        }
+        let _execution = self
+            .executions
+            .claim(run.id(), run.agent_id())
+            .map_err(|_| AgentRuntimeError::RunAlreadyExecuting {
+                run_id: run.id().to_owned(),
+            })?;
         self.synchronize_run(run).await?;
         self.record_persisted(run, event).await
     }
@@ -159,162 +229,56 @@ where
         .await
     }
 
+    /// Stops this runtime's active execution before acknowledging cancellation.
+    ///
+    /// In-flight model/tool futures are dropped at a cancellation boundary;
+    /// persistence is allowed to finish. Adapters must clean up their owned
+    /// work when dropped. An external side effect already committed cannot be
+    /// rolled back by cancellation. Use the same runtime to execute and cancel.
     pub async fn cancel_run(&self, run: &mut AgentRun) -> Result<(), AgentRuntimeError<M::Error>> {
-        self.record_event(run, RunEvent::RunCancelled).await
-    }
-
-    pub async fn run_until_blocked(
-        &self,
-        agent: &Agent,
-        run: &mut AgentRun,
-    ) -> Result<RunStatus, AgentRuntimeError<M::Error>> {
-        if run.agent_id() != agent.id {
-            return Err(AgentRuntimeError::AgentMismatch {
-                expected_agent_id: agent.id.clone(),
-                actual_agent_id: run.agent_id().to_owned(),
-            });
-        }
-
-        self.synchronize_run(run).await?;
-        self.ensure_safe_execution_entry(run)?;
-
-        while run.is_running() {
-            if run.current_step() >= self.max_steps {
-                self.record_persisted(
-                    run,
-                    RunEvent::RunFailed {
-                        message: format!("maximum number of steps ({}) reached", self.max_steps),
-                    },
-                )
-                .await?;
-
-                return Err(AgentRuntimeError::StepLimitExceeded {
-                    max_steps: self.max_steps,
+        let _execution = loop {
+            match self.executions.claim(run.id(), run.agent_id()) {
+                Ok(execution) => break execution,
+                Err(control) => {
+                    if control.agent_id() != run.agent_id() {
+                        return Err(AgentRuntimeError::AgentMismatch {
+                            expected_agent_id: control.agent_id().to_owned(),
+                            actual_agent_id: run.agent_id().to_owned(),
+                        });
+                    }
+                    control.request_cancellation();
+                    control.finished().await;
+                }
+            }
+        };
+        // A caller may hold the snapshot from before the active task advanced.
+        // Refresh only after that task has stopped writing.
+        if let Some(restored) = self.restore_run(run.id()).await? {
+            if restored.agent_id() != run.agent_id() {
+                return Err(AgentRuntimeError::AgentMismatch {
+                    expected_agent_id: run.agent_id().to_owned(),
+                    actual_agent_id: restored.agent_id().to_owned(),
                 });
             }
-
-            self.begin_step_persisted(run).await?;
-
-            let request = build_model_request(agent, run, self.tools.definitions());
-            let response = match self.model.respond(request).await {
-                Ok(response) => response,
-                Err(source) => {
-                    self.record_persisted(
-                        run,
-                        RunEvent::RunFailed {
-                            message: source.to_string(),
-                        },
-                    )
-                    .await?;
-
-                    return Err(AgentRuntimeError::Model(source));
-                }
-            };
-
-            match response {
-                ModelResponse::FinalAnswer { answer } => {
-                    self.record_persisted(
-                        run,
-                        RunEvent::ModelResponseReceived {
-                            content: answer.clone(),
-                        },
-                    )
-                    .await?;
-                    self.record_persisted(run, RunEvent::RunCompleted { answer })
-                        .await?;
-                }
-                ModelResponse::ToolCalls { content, calls } => {
-                    self.record_persisted(run, RunEvent::ModelResponseReceived { content })
-                        .await?;
-
-                    if calls.is_empty() {
-                        self.record_persisted(
-                            run,
-                            RunEvent::RunFailed {
-                                message: "model returned an empty tool-call list".to_owned(),
-                            },
-                        )
-                        .await?;
-
-                        return Err(AgentRuntimeError::EmptyToolCalls);
-                    }
-
-                    for call in &calls {
-                        self.record_persisted(
-                            run,
-                            RunEvent::ToolCallRequested {
-                                call_id: call.id.clone(),
-                                tool_name: call.name.clone(),
-                                arguments: call.arguments.clone(),
-                            },
-                        )
-                        .await?;
-                    }
-
-                    for call in calls {
-                        let call_id = call.id.clone();
-
-                        match self.tools.execute(call).await {
-                            Ok(output) => {
-                                self.record_persisted(
-                                    run,
-                                    RunEvent::ToolCallSucceeded { call_id, output },
-                                )
-                                .await?;
-                            }
-                            Err(error) => {
-                                self.record_persisted(
-                                    run,
-                                    RunEvent::ToolCallFailed {
-                                        call_id,
-                                        message: error.to_string(),
-                                    },
-                                )
-                                .await?;
-                            }
-                        }
-                    }
-                }
-                ModelResponse::InputRequired { prompt } => {
-                    self.record_persisted(
-                        run,
-                        RunEvent::ModelResponseReceived {
-                            content: prompt.clone(),
-                        },
-                    )
-                    .await?;
-                    self.record_persisted(run, RunEvent::InputRequested { prompt })
-                        .await?;
-                }
-            }
+            *run = restored;
+        } else {
+            self.synchronize_run(run).await?;
         }
-
-        Ok(run.status())
-    }
-
-    fn ensure_safe_execution_entry(
-        &self,
-        run: &AgentRun,
-    ) -> Result<(), AgentRuntimeError<M::Error>> {
-        if !run.is_running() {
+        if run.status() == RunStatus::Cancelled {
+            // The worker may have written the terminal record and then received
+            // an uncertain durability error. Reading it back is not an ack;
+            // retry the exact envelope so the store confirms durability.
+            self.append_event(
+                run.id(),
+                run.agent_id(),
+                run.events()
+                    .last()
+                    .expect("a cancelled run has a terminal event"),
+            )
+            .await?;
             return Ok(());
         }
-
-        let last = run
-            .events()
-            .last()
-            .expect("an AgentRun always contains RunStarted");
-        if matches!(
-            last.event,
-            RunEvent::RunStarted { .. } | RunEvent::InputReceived { .. }
-        ) {
-            return Ok(());
-        }
-
-        Err(AgentRuntimeError::InterruptedRun {
-            run_id: run.id().to_owned(),
-            last_sequence: last.sequence,
-        })
+        self.record_persisted(run, RunEvent::RunCancelled).await
     }
 
     async fn synchronize_run(&self, run: &AgentRun) -> Result<(), AgentRuntimeError<M::Error>> {
@@ -326,30 +290,26 @@ where
             return Ok(());
         };
 
-        AgentRun::restore(
-            stored.run_id.clone(),
-            stored.agent_id.clone(),
-            stored.events.clone(),
-        )?;
+        let stored = AgentRun::restore(stored.run_id, stored.agent_id, stored.events)?;
 
-        if stored.agent_id != run.agent_id() {
+        if stored.agent_id() != run.agent_id() {
             return Err(EventStoreError::AgentMismatch {
                 run_id: run.id().to_owned(),
-                expected: stored.agent_id,
+                expected: stored.agent_id().to_owned(),
                 actual: run.agent_id().to_owned(),
             }
             .into());
         }
 
-        if stored.events.len() > run.events().len() {
+        if stored.events().len() > run.events().len() {
             return Err(AgentRuntimeError::RunOutOfDate {
                 run_id: run.id().to_owned(),
-                stored_events: stored.events.len(),
+                stored_events: stored.events().len(),
                 memory_events: run.events().len(),
             });
         }
 
-        for (index, stored_event) in stored.events.iter().enumerate() {
+        for (index, stored_event) in stored.events().iter().enumerate() {
             if stored_event != &run.events()[index] {
                 return Err(AgentRuntimeError::RunHistoryConflict {
                     run_id: run.id().to_owned(),
@@ -358,7 +318,7 @@ where
             }
         }
 
-        for event in &run.events()[stored.events.len()..] {
+        for event in &run.events()[stored.events().len()..] {
             self.append_event(run.id(), run.agent_id(), event).await?;
             self.publish(run, event.clone());
         }
@@ -370,8 +330,7 @@ where
         &self,
         run: &mut AgentRun,
     ) -> Result<(), AgentRuntimeError<M::Error>> {
-        let mut candidate = run.clone();
-        candidate.begin_step()?;
+        let candidate = run.prepare_begin_step()?;
         self.commit_candidate(run, candidate).await
     }
 
@@ -380,25 +339,19 @@ where
         run: &mut AgentRun,
         event: RunEvent,
     ) -> Result<(), AgentRuntimeError<M::Error>> {
-        let mut candidate = run.clone();
-        candidate.record(event)?;
+        let candidate = run.prepare_event(event)?;
         self.commit_candidate(run, candidate).await
     }
 
     async fn commit_candidate(
         &self,
         run: &mut AgentRun,
-        candidate: AgentRun,
+        candidate: PreparedRunEvent,
     ) -> Result<(), AgentRuntimeError<M::Error>> {
-        let event = candidate
-            .events()
-            .last()
-            .expect("the candidate contains the newly recorded event")
-            .clone();
+        let event = candidate.envelope().clone();
 
-        self.append_event(candidate.id(), candidate.agent_id(), &event)
-            .await?;
-        *run = candidate;
+        self.append_event(run.id(), run.agent_id(), &event).await?;
+        run.commit_prepared(candidate)?;
         self.publish(run, event);
 
         Ok(())
@@ -425,59 +378,23 @@ where
     }
 }
 
-fn build_model_request(agent: &Agent, run: &AgentRun, tools: &[ToolDefinition]) -> ModelRequest {
-    let messages = run
-        .events()
-        .iter()
-        .filter_map(|envelope| match &envelope.event {
-            RunEvent::RunStarted { instruction } => Some(ModelMessage::User {
-                content: instruction.clone(),
-            }),
-            RunEvent::ModelResponseReceived { content } => Some(ModelMessage::Assistant {
-                content: content.clone(),
-            }),
-            RunEvent::ToolCallRequested {
-                call_id,
-                tool_name,
-                arguments,
-            } => Some(ModelMessage::ToolCall {
-                call_id: call_id.clone(),
-                tool_name: tool_name.clone(),
-                arguments: arguments.clone(),
-            }),
-            RunEvent::ToolCallSucceeded { call_id, output } => Some(ModelMessage::ToolResult {
-                call_id: call_id.clone(),
-                output: output.clone(),
-            }),
-            RunEvent::ToolCallFailed { call_id, message } => Some(ModelMessage::ToolError {
-                call_id: call_id.clone(),
-                message: message.clone(),
-            }),
-            RunEvent::InputReceived { content } => Some(ModelMessage::User {
-                content: content.clone(),
-            }),
-            RunEvent::ModelRequestStarted
-            | RunEvent::InputRequested { .. }
-            | RunEvent::RunCompleted { .. }
-            | RunEvent::RunFailed { .. }
-            | RunEvent::RunCancelled => None,
-        })
-        .collect();
-
-    ModelRequest {
-        instructions: agent.instructions.clone(),
-        messages,
-        tools: tools.to_vec(),
-    }
-}
-
 #[derive(Debug)]
 pub enum AgentRuntimeError<ModelError> {
+    RunAlreadyExecuting {
+        run_id: String,
+    },
     AgentMismatch {
         expected_agent_id: String,
         actual_agent_id: String,
     },
     Model(ModelError),
+    ModelStream(crate::ModelStreamError),
+    ModelProtocol(crate::ModelProtocolError),
+    ModelCapabilities(crate::ModelCapabilitiesError),
+    OutputTruncated,
+    Context(Box<dyn Error + Send + Sync>),
+    ProviderContextMismatch,
+    ProviderReplay(crate::ProviderReplayError),
     AgentRun(AgentRunError),
     History(AgentRunHistoryError),
     EventStore(EventStoreError),
@@ -494,6 +411,12 @@ pub enum AgentRuntimeError<ModelError> {
         run_id: String,
         sequence: u64,
     },
+    DuplicateToolName {
+        name: String,
+    },
+    DuplicateToolCallId {
+        call_id: String,
+    },
     EmptyToolCalls,
     StepLimitExceeded {
         max_steps: u32,
@@ -506,6 +429,9 @@ where
 {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::RunAlreadyExecuting { run_id } => {
+                write!(formatter, "run {run_id} already has an active execution")
+            }
             Self::AgentMismatch {
                 expected_agent_id,
                 actual_agent_id,
@@ -514,6 +440,18 @@ where
                 "run belongs to agent {actual_agent_id}, not agent {expected_agent_id}"
             ),
             Self::Model(error) => write!(formatter, "model request failed: {error}"),
+            Self::ModelStream(error) => write!(formatter, "invalid model stream: {error}"),
+            Self::ModelProtocol(error) => write!(formatter, "invalid model content: {error}"),
+            Self::ModelCapabilities(error) => {
+                write!(formatter, "invalid model capabilities: {error}")
+            }
+            Self::OutputTruncated => {
+                formatter.write_str("model output was truncated before completion")
+            }
+            Self::Context(error) => write!(formatter, "context management failed: {error}"),
+            Self::ProviderReplay(error) => write!(formatter, "provider replay failed: {error}"),
+            Self::ProviderContextMismatch => formatter
+                .write_str("model does not support the prepared provider/model/context format"),
             Self::AgentRun(error) => write!(formatter, "invalid agent run transition: {error}"),
             Self::History(error) => write!(formatter, "invalid stored run history: {error}"),
             Self::EventStore(error) => write!(formatter, "event store failed: {error}"),
@@ -536,6 +474,12 @@ where
                 formatter,
                 "run {run_id} differs from stored history at sequence {sequence}"
             ),
+            Self::DuplicateToolName { name } => {
+                write!(formatter, "more than one tool is named {name:?}")
+            }
+            Self::DuplicateToolCallId { call_id } => {
+                write!(formatter, "model reused tool call id {call_id:?}")
+            }
             Self::EmptyToolCalls => formatter.write_str("model returned an empty tool-call list"),
             Self::StepLimitExceeded { max_steps } => {
                 write!(formatter, "maximum number of steps ({max_steps}) reached")
@@ -551,13 +495,23 @@ where
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Model(error) => Some(error),
+            Self::ModelStream(error) => Some(error),
+            Self::ModelProtocol(error) => Some(error),
+            Self::ModelCapabilities(error) => Some(error),
+            Self::ProviderReplay(error) => Some(error),
+            Self::Context(error) => Some(error.as_ref()),
             Self::AgentRun(error) => Some(error),
             Self::History(error) => Some(error),
             Self::EventStore(error) => Some(error),
-            Self::AgentMismatch { .. }
+            Self::RunAlreadyExecuting { .. }
+            | Self::OutputTruncated
+            | Self::ProviderContextMismatch
+            | Self::AgentMismatch { .. }
             | Self::InterruptedRun { .. }
             | Self::RunOutOfDate { .. }
             | Self::RunHistoryConflict { .. }
+            | Self::DuplicateToolName { .. }
+            | Self::DuplicateToolCallId { .. }
             | Self::EmptyToolCalls
             | Self::StepLimitExceeded { .. } => None,
         }

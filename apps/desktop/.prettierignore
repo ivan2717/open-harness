@@ -1,0 +1,7 @@
+node_modules
+out
+release
+resources
+test-results
+package-lock.json
+*.tsbuildinfo

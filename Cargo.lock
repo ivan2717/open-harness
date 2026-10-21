@@ -3,20 +3,32 @@
 version = 4
 
 [[package]]
+name = "agent-adapters"
+version = "0.1.0"
+dependencies = [
+ "agent-core",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "agent-core"
 version = "0.1.0"
 dependencies = [
  "serde",
+ "serde_json",
 ]
 
 [[package]]
 name = "agent-runtime"
 version = "0.1.0"
 dependencies = [
+ "agent-adapters",
  "agent-core",
  "serde",
  "serde_json",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -33,10 +45,13 @@ name = "api"
 version = "0.1.0"
 dependencies = [
  "agent-core",
+ "agent-runtime",
  "axum",
+ "futures-util",
  "serde",
+ "serde_json",
  "tokio",
- "tower-http",
+ "tower",
  "tracing",
  "tracing-subscriber",
 ]
@@ -98,12 +113,6 @@ dependencies = [
  "tower-service",
  "tracing",
 ]
-
-[[package]]
-name = "bitflags"
-version = "2.13.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b588b76d00fde79687d7646a9b5bdf3cc0f655e0bbd080335a95d7e96f3587da"
 
 [[package]]
 name = "bytes"
@@ -560,23 +569,6 @@ dependencies = [
  "pin-project-lite",
  "sync_wrapper",
  "tokio",
- "tower-layer",
- "tower-service",
- "tracing",
-]
-
-[[package]]
-name = "tower-http"
-version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b11f75e912b0c2be01b63d8cf8057b8c3f97cf34abb3d431a3a4c8675498e233"
-dependencies = [
- "bitflags",
- "bytes",
- "http",
- "http-body",
- "percent-encoding",
- "pin-project-lite",
  "tower-layer",
  "tower-service",
  "tracing",

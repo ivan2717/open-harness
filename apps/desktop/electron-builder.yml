@@ -1,0 +1,19 @@
+appId: dev.openharness.desktop
+productName: Open Harness
+asar: true
+directories:
+  output: release
+files:
+  - out/**/*
+  - package.json
+extraResources:
+  - from: resources/bin
+    to: bin
+mac:
+  category: public.app-category.developer-tools
+  target: dmg
+win:
+  target: nsis
+linux:
+  target: AppImage
+  category: Development

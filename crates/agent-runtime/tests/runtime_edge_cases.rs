@@ -1,54 +1,27 @@
+use agent_runtime::ContentBlock;
+#[path = "support/scripted_model.rs"]
+mod scripted_model;
+mod support;
+
 use std::{
-    collections::VecDeque,
     convert::Infallible,
     future::{Future, pending},
-    sync::Mutex,
     task::{Context, Poll, Waker},
 };
 
 use agent_core::agent::{Agent, RunEvent, RunStatus};
 use agent_runtime::{
-    AgentRuntime, AgentRuntimeError, EventStore, Model, ModelMessage, ModelRequest, ModelResponse,
-    ToolCall, ToolDefinition, ToolExecutor,
+    AgentRuntime, AgentRuntimeError, EventStore, Model, ModelRequest, ModelResponse, ToolCall,
+    ToolDefinition, ToolExecutor,
 };
+use scripted_model::ScriptedModel;
+use support::test_context_manager;
 
-struct ScriptedModel {
-    responses: Mutex<VecDeque<ModelResponse>>,
-    requests: Mutex<Vec<ModelRequest>>,
-}
-
-impl ScriptedModel {
-    fn new(responses: Vec<ModelResponse>) -> Self {
-        Self {
-            responses: Mutex::new(VecDeque::from(responses)),
-            requests: Mutex::new(Vec::new()),
-        }
-    }
-
-    fn requests(&self) -> Vec<ModelRequest> {
-        self.requests.lock().unwrap().clone()
-    }
-}
-
-impl Model for ScriptedModel {
-    type Error = Infallible;
-
-    fn respond(
-        &self,
-        request: ModelRequest,
-    ) -> impl Future<Output = Result<ModelResponse, Self::Error>> + Send {
-        self.requests.lock().unwrap().push(request);
-        let response = self.responses.lock().unwrap().pop_front().unwrap();
-
-        async move { Ok(response) }
-    }
-}
-
-struct RecordingTools {
+struct EchoTools {
     definitions: Vec<ToolDefinition>,
 }
 
-impl RecordingTools {
+impl EchoTools {
     fn new() -> Self {
         Self {
             definitions: vec![ToolDefinition {
@@ -60,7 +33,7 @@ impl RecordingTools {
     }
 }
 
-impl ToolExecutor for RecordingTools {
+impl ToolExecutor for EchoTools {
     type Error = Infallible;
 
     fn definitions(&self) -> &[ToolDefinition] {
@@ -91,9 +64,9 @@ async fn all_tool_calls_are_declared_before_any_result() {
     let mut run = agent.start_run("run-1", "Read two files");
     let runtime = AgentRuntime::new(
         ScriptedModel::new(vec![
-            ModelResponse::ToolCalls {
-                content: "I will read both files.".to_owned(),
-                calls: vec![
+            ModelResponse::tool_calls(
+                "I will read both files.".to_owned(),
+                vec![
                     ToolCall {
                         id: "call-1".to_owned(),
                         name: "read_file".to_owned(),
@@ -105,12 +78,11 @@ async fn all_tool_calls_are_declared_before_any_result() {
                         arguments: "api/Cargo.toml".to_owned(),
                     },
                 ],
-            },
-            ModelResponse::FinalAnswer {
-                answer: "Both files were read.".to_owned(),
-            },
+            ),
+            ModelResponse::final_answer("Both files were read.".to_owned()),
         ]),
-        RecordingTools::new(),
+        EchoTools::new(),
+        test_context_manager(),
         Some(4),
     );
 
@@ -135,29 +107,71 @@ async fn all_tool_calls_are_declared_before_any_result() {
     ));
 
     let requests = runtime.model().requests();
+    assert_eq!(requests[1].messages.len(), 4);
+    assert_eq!(
+        requests[1].messages[1]
+            .tool_calls()
+            .iter()
+            .map(|call| call.id.as_str())
+            .collect::<Vec<_>>(),
+        ["call-1", "call-2"]
+    );
+    assert!(requests[1].messages[2].content.iter().any(|block| matches!(block, ContentBlock::ToolResult { call_id, is_error: false, .. } if call_id == "call-1")));
+    assert!(requests[1].messages[3].content.iter().any(|block| matches!(block, ContentBlock::ToolResult { call_id, is_error: false, .. } if call_id == "call-2")));
+}
+
+#[tokio::test]
+async fn duplicate_tool_call_ids_are_rejected_before_execution() {
+    let agent = Agent::new("agent-1", "Agent", "Test agent", "Be precise.");
+    let mut run = agent.start_run("duplicate-call-id", "Read two files");
+    let runtime = AgentRuntime::new(
+        ScriptedModel::new(vec![ModelResponse::tool_calls(
+            "I will read both files.".to_owned(),
+            vec![
+                ToolCall {
+                    id: "reused-id".to_owned(),
+                    name: "read_file".to_owned(),
+                    arguments: "Cargo.toml".to_owned(),
+                },
+                ToolCall {
+                    id: "reused-id".to_owned(),
+                    name: "read_file".to_owned(),
+                    arguments: "api/Cargo.toml".to_owned(),
+                },
+            ],
+        )]),
+        EchoTools::new(),
+        test_context_manager(),
+        Some(2),
+    );
+
+    let error = runtime
+        .run_until_blocked(&agent, &mut run)
+        .await
+        .unwrap_err();
+
     assert!(matches!(
-        &requests[1].messages[2],
-        ModelMessage::ToolCall { call_id, .. } if call_id == "call-1"
+        error,
+        AgentRuntimeError::DuplicateToolCallId { ref call_id } if call_id == "reused-id"
     ));
-    assert!(matches!(
-        &requests[1].messages[3],
-        ModelMessage::ToolCall { call_id, .. } if call_id == "call-2"
-    ));
-    assert!(matches!(
-        &requests[1].messages[4],
-        ModelMessage::ToolResult { call_id, .. } if call_id == "call-1"
-    ));
-    assert!(matches!(
-        &requests[1].messages[5],
-        ModelMessage::ToolResult { call_id, .. } if call_id == "call-2"
-    ));
+    assert_eq!(run.status(), RunStatus::Failed);
+    assert!(
+        !run.events()
+            .iter()
+            .any(|envelope| matches!(&envelope.event, RunEvent::ToolCallRequested { .. }))
+    );
 }
 
 #[tokio::test]
 async fn an_interrupted_execution_requires_explicit_cancellation() {
     let agent = Agent::new("agent-1", "Agent", "Test agent", "Be precise.");
     let mut run = agent.start_run("run-1", "Wait for the model");
-    let runtime = AgentRuntime::new(PendingModel, RecordingTools::new(), Some(4));
+    let runtime = AgentRuntime::new(
+        PendingModel,
+        EchoTools::new(),
+        test_context_manager(),
+        Some(4),
+    );
     let mut notifications = runtime.subscribe();
 
     let mut execution = Box::pin(runtime.run_until_blocked(&agent, &mut run));

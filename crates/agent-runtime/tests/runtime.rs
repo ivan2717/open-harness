@@ -1,3 +1,6 @@
+use agent_runtime::{ContentBlock, ModelRole};
+mod support;
+
 use std::{
     collections::{HashSet, VecDeque},
     error::Error,
@@ -8,9 +11,10 @@ use std::{
 
 use agent_core::agent::{Agent, AgentRun, RunEvent, RunStatus};
 use agent_runtime::{
-    AgentRuntime, AgentRuntimeError, Model, ModelMessage, ModelRequest, ModelResponse, ToolCall,
-    ToolDefinition, ToolExecutor,
+    AgentRuntime, AgentRuntimeError, Model, ModelRequest, ModelResponse, ToolCall, ToolDefinition,
+    ToolExecutor,
 };
+use support::test_context_manager;
 
 #[derive(Debug)]
 struct FakeError(&'static str);
@@ -23,12 +27,12 @@ impl fmt::Display for FakeError {
 
 impl Error for FakeError {}
 
-struct FakeModel {
+struct FallibleScriptedModel {
     responses: Mutex<VecDeque<Result<ModelResponse, FakeError>>>,
     requests: Mutex<Vec<ModelRequest>>,
 }
 
-impl FakeModel {
+impl FallibleScriptedModel {
     fn new(responses: Vec<Result<ModelResponse, FakeError>>) -> Self {
         Self {
             responses: Mutex::new(VecDeque::from(responses)),
@@ -41,7 +45,7 @@ impl FakeModel {
     }
 }
 
-impl Model for FakeModel {
+impl Model for FallibleScriptedModel {
     type Error = FakeError;
 
     fn respond(
@@ -61,13 +65,13 @@ impl Model for FakeModel {
     }
 }
 
-struct FakeToolExecutor {
+struct RecordingTools {
     definitions: Vec<ToolDefinition>,
     failing_tools: HashSet<String>,
     calls: Mutex<Vec<ToolCall>>,
 }
 
-impl FakeToolExecutor {
+impl RecordingTools {
     fn new(failing_tools: &[&str]) -> Self {
         Self {
             definitions: vec![
@@ -95,7 +99,7 @@ impl FakeToolExecutor {
     }
 }
 
-impl ToolExecutor for FakeToolExecutor {
+impl ToolExecutor for RecordingTools {
     type Error = FakeError;
 
     fn definitions(&self) -> &[ToolDefinition] {
@@ -155,10 +159,11 @@ async fn a_final_answer_completes_the_run() {
     let agent = test_agent();
     let mut run = test_run(&agent);
     let runtime = AgentRuntime::new(
-        FakeModel::new(vec![Ok(ModelResponse::FinalAnswer {
-            answer: "This is a Cargo workspace.".to_owned(),
-        })]),
-        FakeToolExecutor::new(&[]),
+        FallibleScriptedModel::new(vec![Ok(ModelResponse::final_answer(
+            "This is a Cargo workspace.".to_owned(),
+        ))]),
+        RecordingTools::new(&[]),
+        test_context_manager(),
         None,
     );
 
@@ -182,20 +187,21 @@ async fn tool_results_are_added_to_the_next_model_request() {
     let agent = test_agent();
     let mut run = test_run(&agent);
     let runtime = AgentRuntime::new(
-        FakeModel::new(vec![
-            Ok(ModelResponse::ToolCalls {
-                content: "I will inspect the manifest.".to_owned(),
-                calls: vec![ToolCall {
+        FallibleScriptedModel::new(vec![
+            Ok(ModelResponse::tool_calls(
+                "I will inspect the manifest.".to_owned(),
+                vec![ToolCall {
                     id: "call-1".to_owned(),
                     name: "read_file".to_owned(),
                     arguments: r#"{"path":"Cargo.toml"}"#.to_owned(),
                 }],
-            }),
-            Ok(ModelResponse::FinalAnswer {
-                answer: "The manifest defines a workspace.".to_owned(),
-            }),
+            )),
+            Ok(ModelResponse::final_answer(
+                "The manifest defines a workspace.".to_owned(),
+            )),
         ]),
-        FakeToolExecutor::new(&[]),
+        RecordingTools::new(&[]),
+        test_context_manager(),
         Some(4),
     );
 
@@ -221,11 +227,7 @@ async fn tool_results_are_added_to_the_next_model_request() {
     let requests = runtime.model().requests();
     assert_eq!(requests.len(), 2);
     assert_eq!(requests[1].instructions, agent.instructions);
-    assert!(requests[1].messages.iter().any(|message| matches!(
-        message,
-        ModelMessage::ToolResult { call_id, output }
-            if call_id == "call-1" && output.contains("read_file")
-    )));
+    assert!(requests[1].messages.iter().any(|message| message.content.iter().any(|block| matches!(block, ContentBlock::ToolResult {call_id, content: output, is_error: false, ..} if call_id == "call-1" && output.contains("read_file")))));
 }
 
 #[tokio::test]
@@ -233,20 +235,21 @@ async fn a_tool_failure_is_visible_to_the_model_and_can_be_recovered() {
     let agent = test_agent();
     let mut run = test_run(&agent);
     let runtime = AgentRuntime::new(
-        FakeModel::new(vec![
-            Ok(ModelResponse::ToolCalls {
-                content: "I will try the tool.".to_owned(),
-                calls: vec![ToolCall {
+        FallibleScriptedModel::new(vec![
+            Ok(ModelResponse::tool_calls(
+                "I will try the tool.".to_owned(),
+                vec![ToolCall {
                     id: "call-1".to_owned(),
                     name: "unstable_tool".to_owned(),
                     arguments: "{}".to_owned(),
                 }],
-            }),
-            Ok(ModelResponse::FinalAnswer {
-                answer: "The tool failed, so I stopped using it.".to_owned(),
-            }),
+            )),
+            Ok(ModelResponse::final_answer(
+                "The tool failed, so I stopped using it.".to_owned(),
+            )),
         ]),
-        FakeToolExecutor::new(&["unstable_tool"]),
+        RecordingTools::new(&["unstable_tool"]),
+        test_context_manager(),
         Some(4),
     );
 
@@ -256,11 +259,7 @@ async fn a_tool_failure_is_visible_to_the_model_and_can_be_recovered() {
     assert!(event_names(&run).contains(&"ToolCallFailed"));
 
     let requests = runtime.model().requests();
-    assert!(requests[1].messages.iter().any(|message| matches!(
-        message,
-        ModelMessage::ToolError { call_id, message }
-            if call_id == "call-1" && message == "tool execution failed"
-    )));
+    assert!(requests[1].messages.iter().any(|message| message.content.iter().any(|block| matches!(block, ContentBlock::ToolResult {call_id, content: message, is_error: true, ..} if call_id == "call-1" && message == "tool execution failed"))));
 }
 
 #[tokio::test]
@@ -268,15 +267,16 @@ async fn a_run_can_wait_for_input_and_resume() {
     let agent = test_agent();
     let mut run = test_run(&agent);
     let runtime = AgentRuntime::new(
-        FakeModel::new(vec![
-            Ok(ModelResponse::InputRequired {
-                prompt: "Which file should I read?".to_owned(),
-            }),
-            Ok(ModelResponse::FinalAnswer {
-                answer: "I will read Cargo.toml.".to_owned(),
-            }),
+        FallibleScriptedModel::new(vec![
+            Ok(ModelResponse::input_required(
+                "Which file should I read?".to_owned(),
+            )),
+            Ok(ModelResponse::final_answer(
+                "I will read Cargo.toml.".to_owned(),
+            )),
         ]),
-        FakeToolExecutor::new(&[]),
+        RecordingTools::new(&[]),
+        test_context_manager(),
         Some(4),
     );
 
@@ -294,10 +294,14 @@ async fn a_run_can_wait_for_input_and_resume() {
     assert_eq!(run.current_step(), 2);
 
     let requests = runtime.model().requests();
-    assert!(requests[1].messages.iter().any(|message| matches!(
-        message,
-        ModelMessage::User { content } if content == "Cargo.toml"
-    )));
+    assert!(requests[1].messages.iter().any(|message| {
+        let candidate = message;
+        candidate.role == ModelRole::User && candidate.context.is_none() && {
+            let text = candidate.text();
+            let content = text.as_str();
+            content == "Cargo.toml"
+        }
+    }));
 }
 
 #[tokio::test]
@@ -305,8 +309,9 @@ async fn a_model_failure_fails_the_run() {
     let agent = test_agent();
     let mut run = test_run(&agent);
     let runtime = AgentRuntime::new(
-        FakeModel::new(vec![Err(FakeError("model unavailable"))]),
-        FakeToolExecutor::new(&[]),
+        FallibleScriptedModel::new(vec![Err(FakeError("model unavailable"))]),
+        RecordingTools::new(&[]),
+        test_context_manager(),
         Some(4),
     );
 
@@ -325,15 +330,16 @@ async fn the_step_limit_stops_an_infinite_tool_loop() {
     let agent = test_agent();
     let mut run = test_run(&agent);
     let runtime = AgentRuntime::new(
-        FakeModel::new(vec![Ok(ModelResponse::ToolCalls {
-            content: "I need another tool call.".to_owned(),
-            calls: vec![ToolCall {
+        FallibleScriptedModel::new(vec![Ok(ModelResponse::tool_calls(
+            "I need another tool call.".to_owned(),
+            vec![ToolCall {
                 id: "call-1".to_owned(),
                 name: "read_file".to_owned(),
                 arguments: r#"{"path":"Cargo.toml"}"#.to_owned(),
             }],
-        })]),
-        FakeToolExecutor::new(&[]),
+        ))]),
+        RecordingTools::new(&[]),
+        test_context_manager(),
         Some(1),
     );
 
@@ -351,15 +357,71 @@ async fn the_step_limit_stops_an_infinite_tool_loop() {
 }
 
 #[tokio::test]
+async fn an_absent_step_limit_is_preserved_while_a_run_resumes() {
+    let agent = test_agent();
+    let mut run = test_run(&agent);
+    let runtime = AgentRuntime::new(
+        FallibleScriptedModel::new(vec![
+            Ok(ModelResponse::input_required(
+                "Which file should I read?".to_owned(),
+            )),
+            Ok(ModelResponse::final_answer(
+                "I will read Cargo.toml.".to_owned(),
+            )),
+        ]),
+        RecordingTools::new(&[]),
+        test_context_manager(),
+        None,
+    );
+
+    assert_eq!(runtime.max_steps(), None);
+    assert_eq!(
+        runtime.run_until_blocked(&agent, &mut run).await.unwrap(),
+        RunStatus::WaitingForInput
+    );
+    runtime.submit_input(&mut run, "Cargo.toml").await.unwrap();
+    assert_eq!(
+        runtime.run_until_blocked(&agent, &mut run).await.unwrap(),
+        RunStatus::Completed
+    );
+    assert_eq!(runtime.max_steps(), None);
+    assert_eq!(run.current_step(), 2);
+}
+
+#[tokio::test]
+async fn a_zero_step_limit_fails_before_requesting_the_model() {
+    let agent = test_agent();
+    let mut run = test_run(&agent);
+    let runtime = AgentRuntime::new(
+        FallibleScriptedModel::new(Vec::new()),
+        RecordingTools::new(&[]),
+        test_context_manager(),
+        Some(0),
+    );
+
+    assert_eq!(runtime.max_steps(), Some(0));
+    assert!(matches!(
+        runtime.run_until_blocked(&agent, &mut run).await,
+        Err(AgentRuntimeError::StepLimitExceeded { max_steps: 0 })
+    ));
+    assert_eq!(run.current_step(), 0);
+    assert_eq!(run.status(), RunStatus::Failed);
+    assert_eq!(event_names(&run), vec!["RunStarted", "RunFailed"]);
+    assert!(runtime.model().requests().is_empty());
+    assert!(runtime.tools().calls().is_empty());
+}
+
+#[tokio::test]
 async fn an_empty_tool_call_response_fails_the_run() {
     let agent = test_agent();
     let mut run = test_run(&agent);
     let runtime = AgentRuntime::new(
-        FakeModel::new(vec![Ok(ModelResponse::ToolCalls {
-            content: "I will call a tool.".to_owned(),
-            calls: Vec::new(),
-        })]),
-        FakeToolExecutor::new(&[]),
+        FallibleScriptedModel::new(vec![Ok(ModelResponse::tool_calls(
+            "I will call a tool.".to_owned(),
+            Vec::new(),
+        ))]),
+        RecordingTools::new(&[]),
+        test_context_manager(),
         Some(4),
     );
 
@@ -377,8 +439,9 @@ async fn a_runtime_rejects_a_run_for_another_agent() {
     let agent = test_agent();
     let mut run = AgentRun::new("run-1", "another-agent", "Do something");
     let runtime = AgentRuntime::new(
-        FakeModel::new(Vec::new()),
-        FakeToolExecutor::new(&[]),
+        FallibleScriptedModel::new(Vec::new()),
+        RecordingTools::new(&[]),
+        test_context_manager(),
         Some(4),
     );
 

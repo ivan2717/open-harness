@@ -1,0 +1,144 @@
+{
+  "accounting": {
+    "actual_next_input_tokens": 100,
+    "calibrated_prediction_minus_actual": 13,
+    "estimated_new_message_tokens": 23,
+    "estimated_replayed_response_and_new_message_tokens": 36,
+    "former_input_plus_output_predicted_input_tokens": 186,
+    "former_prediction_minus_actual": 86,
+    "former_reasoning_overcount_observed": true,
+    "input_only_calibrated_prediction": 113,
+    "passed": true,
+    "previous_input_tokens": 77,
+    "previous_output_tokens_including_reasoning": 86,
+    "previous_reasoning_tokens": 75,
+    "scope": "Compare input-only prefix calibration with the former formula; the retained response and new user message are estimated as an extension, while DeepSeek excludes old reasoning without tools.",
+    "visible_answer": "9567 + 1085 = 10652"
+  },
+  "limitations": [
+    "Synthetic fixtures; not a production reliability or model-quality benchmark.",
+    "The compaction scenario explicitly lowers thresholds to exercise repeated compression.",
+    "Provider-native compaction is not covered. Thinking replay uses durable per-response state; separate offline tests cover restart and other protocols.",
+    "No transport retry; errors are recorded rather than masked."
+  ],
+  "mode": "thinking",
+  "model": {
+    "api_capabilities": {
+      "anthropic_messages": {
+        "system_prompt_update": "in-history"
+      }
+    },
+    "context_window": 1048576,
+    "effort": {
+      "default_level": "high",
+      "supported_levels": [
+        "low",
+        "high",
+        "max"
+      ]
+    },
+    "id": "deepseek-flash",
+    "input_modalities": [
+      "text",
+      "image"
+    ],
+    "max_output_tokens": 393216,
+    "name": "DeepSeek-V4.1-Flash",
+    "object": "model",
+    "output_modalities": [
+      "text"
+    ],
+    "owned_by": "deepseek"
+  },
+  "reasoning_effort": "high",
+  "requested_revision": "DeepSeek-V4.1-Flash-1017",
+  "requests": [
+    {
+      "elapsed_ms": 973,
+      "encoded_messages_contains_archive_pin": false,
+      "estimated_input_tokens": 81,
+      "finish_reason": "stop",
+      "has_summary": false,
+      "kind": "agent",
+      "max_output_tokens": 8192,
+      "messages": 1,
+      "model": "deepseek-flash",
+      "portable_estimated_input_tokens": 81,
+      "reasoning_effort": "high",
+      "reasoning_replay_enabled": true,
+      "replayed_assistant_count": 0,
+      "replayed_reasoning_chars": 0,
+      "replayed_reasoning_contains_archive_pin": false,
+      "request": 1,
+      "response_reasoning_chars": 230,
+      "returned_reasoning_tokens": 75,
+      "returned_tool_names": [],
+      "thinking": true,
+      "tool_names": [],
+      "usage": {
+        "completion_tokens": 86,
+        "completion_tokens_details": {
+          "reasoning_tokens": 75
+        },
+        "prompt_cache_hit_tokens": 0,
+        "prompt_cache_miss_tokens": 77,
+        "prompt_tokens": 77,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "total_tokens": 163
+      },
+      "wire_estimated_input_tokens": 81
+    },
+    {
+      "elapsed_ms": 880,
+      "encoded_messages_contains_archive_pin": false,
+      "estimated_input_tokens": 117,
+      "finish_reason": "stop",
+      "has_summary": false,
+      "kind": "agent",
+      "max_output_tokens": 8192,
+      "messages": 3,
+      "model": "deepseek-flash",
+      "portable_estimated_input_tokens": 117,
+      "reasoning_effort": "high",
+      "reasoning_replay_enabled": true,
+      "replayed_assistant_count": 1,
+      "replayed_reasoning_chars": 230,
+      "replayed_reasoning_contains_archive_pin": false,
+      "request": 2,
+      "response_reasoning_chars": 103,
+      "returned_reasoning_tokens": 27,
+      "returned_tool_names": [],
+      "thinking": true,
+      "tool_names": [],
+      "usage": {
+        "completion_tokens": 38,
+        "completion_tokens_details": {
+          "reasoning_tokens": 27
+        },
+        "prompt_cache_hit_tokens": 0,
+        "prompt_cache_miss_tokens": 100,
+        "prompt_tokens": 100,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "total_tokens": 138
+      },
+      "wire_estimated_input_tokens": 117
+    }
+  ],
+  "resolved_default_policy": {
+    "input_limit": 996147,
+    "recent_tail": 24000,
+    "target": 707789,
+    "threshold": 943718,
+    "window": 1048576
+  },
+  "scenario": "accounting",
+  "started_at_unix_seconds": 1792552760,
+  "thinking_verified": {
+    "criterion": "At least one provider response reports nonzero reasoning_tokens.",
+    "passed": true
+  }
+}

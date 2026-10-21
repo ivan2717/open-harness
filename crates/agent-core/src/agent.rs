@@ -1,4 +1,4 @@
-use std::{error::Error, fmt, time::SystemTime};
+use std::{collections::HashSet, error::Error, fmt, sync::Arc, time::SystemTime};
 
 use serde::{Deserialize, Serialize};
 
@@ -36,7 +36,42 @@ pub struct AgentRun {
     agent_id: String,
     status: RunStatus,
     current_step: u32,
+    phase: StepPhase,
+    tool_call_ids: HashSet<String>,
+    pending_tool_calls: HashSet<String>,
+    revision: Arc<()>,
     events: Vec<RunEventEnvelope>,
+}
+
+/// A validated, uncommitted event. Persist `envelope()` before committing it.
+///
+/// Preparing an event does not clone the run's history or mutate its projection.
+/// A prepared event can only be committed to the exact revision it was prepared
+/// from. Advancing the destination run invalidates older preparations, including
+/// preparations created from a clone before the two histories diverged.
+#[derive(Debug)]
+pub struct PreparedRunEvent {
+    envelope: RunEventEnvelope,
+    status: RunStatus,
+    phase: StepPhase,
+    revision: Arc<()>,
+}
+
+impl PreparedRunEvent {
+    pub fn envelope(&self) -> &RunEventEnvelope {
+        &self.envelope
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StepPhase {
+    Ready,
+    AwaitingModelResponse,
+    ModelResponded,
+    DeclaringToolCalls,
+    AwaitingToolResults,
+    ToolsCompleted,
+    WaitingForInput,
 }
 
 impl AgentRun {
@@ -45,19 +80,24 @@ impl AgentRun {
         agent_id: impl Into<String>,
         instruction: impl Into<String>,
     ) -> Self {
-        let mut run = Self {
+        Self {
             id: id.into(),
             agent_id: agent_id.into(),
             status: RunStatus::Running,
             current_step: 0,
-            events: Vec::new(),
-        };
-
-        run.append_event(RunEvent::RunStarted {
-            instruction: instruction.into(),
-        });
-
-        run
+            phase: StepPhase::Ready,
+            tool_call_ids: HashSet::new(),
+            pending_tool_calls: HashSet::new(),
+            revision: Arc::new(()),
+            events: vec![RunEventEnvelope {
+                sequence: 0,
+                step: 0,
+                occurred_at: SystemTime::now(),
+                event: RunEvent::RunStarted {
+                    instruction: instruction.into(),
+                },
+            }],
+        }
     }
 
     pub fn restore(
@@ -65,7 +105,8 @@ impl AgentRun {
         agent_id: impl Into<String>,
         events: Vec<RunEventEnvelope>,
     ) -> Result<Self, AgentRunHistoryError> {
-        let Some(first) = events.first() else {
+        let mut events = events.into_iter();
+        let Some(first) = events.next() else {
             return Err(AgentRunHistoryError::EmptyHistory);
         };
 
@@ -85,10 +126,15 @@ impl AgentRun {
             agent_id: agent_id.into(),
             status: RunStatus::Running,
             current_step: 0,
-            events: vec![first.clone()],
+            phase: StepPhase::Ready,
+            tool_call_ids: HashSet::new(),
+            pending_tool_calls: HashSet::new(),
+            revision: Arc::new(()),
+            events: vec![first],
         };
 
-        for (index, envelope) in events.into_iter().enumerate().skip(1) {
+        for (index, envelope) in events.enumerate() {
+            let index = index + 1;
             let expected_sequence = index as u64;
             if envelope.sequence != expected_sequence {
                 return Err(AgentRunHistoryError::UnexpectedSequence {
@@ -98,51 +144,28 @@ impl AgentRun {
                 });
             }
 
-            match &envelope.event {
-                RunEvent::RunStarted { .. } => {
-                    return Err(AgentRunHistoryError::DuplicateRunStarted {
-                        sequence: envelope.sequence,
-                    });
-                }
-                RunEvent::ModelRequestStarted => {
-                    if !run.is_running() {
-                        return Err(AgentRunHistoryError::InvalidEvent {
-                            sequence: envelope.sequence,
-                            source: AgentRunError::RunNotRunning { status: run.status },
-                        });
-                    }
-
-                    let expected_step = run.current_step.checked_add(1).ok_or(
-                        AgentRunHistoryError::InvalidEvent {
-                            sequence: envelope.sequence,
-                            source: AgentRunError::StepNumberOverflow,
-                        },
-                    )?;
-                    run.validate_restored_step(&envelope, expected_step)?;
-                    run.current_step = expected_step;
-                }
-                event => {
-                    run.validate_restored_step(&envelope, run.current_step)?;
-
-                    if event.requires_active_step() && run.current_step == 0 {
-                        return Err(AgentRunHistoryError::InvalidEvent {
-                            sequence: envelope.sequence,
-                            source: AgentRunError::NoActiveStep {
-                                event: event.name(),
-                            },
-                        });
-                    }
-
-                    run.status = run.next_status(event).map_err(|source| {
-                        AgentRunHistoryError::InvalidEvent {
-                            sequence: envelope.sequence,
-                            source,
-                        }
-                    })?;
-                }
+            if matches!(envelope.event, RunEvent::RunStarted { .. }) {
+                return Err(AgentRunHistoryError::DuplicateRunStarted {
+                    sequence: envelope.sequence,
+                });
             }
 
-            run.events.push(envelope);
+            let sequence = envelope.sequence;
+            let (status, phase, expected_step) =
+                if matches!(envelope.event, RunEvent::ModelRequestStarted) {
+                    let step = run.validate_begin_step().map_err(|source| {
+                        AgentRunHistoryError::InvalidEvent { sequence, source }
+                    })?;
+                    (RunStatus::Running, StepPhase::AwaitingModelResponse, step)
+                } else {
+                    let (status, phase) =
+                        run.validate_event(&envelope.event).map_err(|source| {
+                            AgentRunHistoryError::InvalidEvent { sequence, source }
+                        })?;
+                    (status, phase, run.current_step)
+                };
+            run.validate_restored_step(&envelope, expected_step)?;
+            run.apply_event(envelope, status, phase);
         }
 
         Ok(run)
@@ -160,6 +183,9 @@ impl AgentRun {
         self.status
     }
 
+    /// Whether the durable lifecycle is `Running`, including a newly created
+    /// or restored run that has no active executor. This does not report
+    /// whether a runtime is currently polling model or tool futures.
     pub fn is_running(&self) -> bool {
         self.status == RunStatus::Running
     }
@@ -179,24 +205,91 @@ impl AgentRun {
         }
     }
 
+    pub fn has_tool_call(&self, call_id: &str) -> bool {
+        self.tool_call_ids.contains(call_id)
+    }
+
+    /// Whether execution is at a boundary that can safely start a new model step.
+    pub fn can_begin_step(&self) -> bool {
+        self.validate_begin_step().is_ok()
+    }
+
     pub fn begin_step(&mut self) -> Result<u32, AgentRunError> {
+        let prepared = self.prepare_begin_step()?;
+        self.commit_prepared(prepared)?;
+        Ok(self.current_step)
+    }
+
+    pub fn record(&mut self, event: RunEvent) -> Result<&RunEventEnvelope, AgentRunError> {
+        let prepared = self.prepare_event(event)?;
+        self.commit_prepared(prepared)
+    }
+
+    pub fn prepare_begin_step(&self) -> Result<PreparedRunEvent, AgentRunError> {
+        let step = self.validate_begin_step()?;
+        Ok(self.prepare(
+            RunEvent::ModelRequestStarted,
+            step,
+            RunStatus::Running,
+            StepPhase::AwaitingModelResponse,
+        ))
+    }
+
+    pub fn prepare_event(&self, event: RunEvent) -> Result<PreparedRunEvent, AgentRunError> {
+        let (status, phase) = self.validate_event(&event)?;
+        Ok(self.prepare(event, self.current_step, status, phase))
+    }
+
+    pub fn commit_prepared(
+        &mut self,
+        prepared: PreparedRunEvent,
+    ) -> Result<&RunEventEnvelope, AgentRunError> {
+        if !Arc::ptr_eq(&self.revision, &prepared.revision) {
+            return Err(AgentRunError::StalePreparedEvent);
+        }
+
+        self.apply_event(prepared.envelope, prepared.status, prepared.phase);
+        Ok(self
+            .events
+            .last()
+            .expect("the event was appended immediately before this access"))
+    }
+
+    fn prepare(
+        &self,
+        event: RunEvent,
+        step: u32,
+        status: RunStatus,
+        phase: StepPhase,
+    ) -> PreparedRunEvent {
+        PreparedRunEvent {
+            envelope: RunEventEnvelope {
+                sequence: self.events.len() as u64,
+                step,
+                occurred_at: SystemTime::now(),
+                event,
+            },
+            status,
+            phase,
+            revision: Arc::clone(&self.revision),
+        }
+    }
+
+    fn validate_begin_step(&self) -> Result<u32, AgentRunError> {
         if !self.is_running() {
             return Err(AgentRunError::RunNotRunning {
                 status: self.status,
             });
         }
-
-        self.current_step = self
-            .current_step
+        if !matches!(self.phase, StepPhase::Ready | StepPhase::ToolsCompleted) {
+            return Err(self.invalid_phase("ModelRequestStarted"));
+        }
+        self.current_step
             .checked_add(1)
-            .ok_or(AgentRunError::StepNumberOverflow)?;
-
-        self.append_event(RunEvent::ModelRequestStarted);
-
-        Ok(self.current_step)
+            .ok_or(AgentRunError::StepNumberOverflow)
     }
 
-    pub fn record(&mut self, event: RunEvent) -> Result<&RunEventEnvelope, AgentRunError> {
+    fn validate_event(&self, event: &RunEvent) -> Result<(RunStatus, StepPhase), AgentRunError> {
         if matches!(
             event,
             RunEvent::RunStarted { .. } | RunEvent::ModelRequestStarted
@@ -205,21 +298,167 @@ impl AgentRun {
                 event: event.name(),
             });
         }
-
         if event.requires_active_step() && self.current_step == 0 {
             return Err(AgentRunError::NoActiveStep {
                 event: event.name(),
             });
         }
+        if self.status.is_terminal() {
+            return Err(AgentRunError::RunAlreadyFinished {
+                status: self.status,
+            });
+        }
 
-        let next_status = self.next_status(&event)?;
-        self.status = next_status;
-        self.append_event(event);
+        match event {
+            RunEvent::RunFailed { .. } => return Ok((RunStatus::Failed, self.phase)),
+            RunEvent::RunCancelled => return Ok((RunStatus::Cancelled, self.phase)),
+            RunEvent::InputReceived { .. } if self.status == RunStatus::WaitingForInput => {
+                return Ok((RunStatus::Running, StepPhase::Ready));
+            }
+            _ => {}
+        }
+        if self.status != RunStatus::Running {
+            return Err(AgentRunError::InvalidTransition {
+                status: self.status,
+                event: event.name(),
+            });
+        }
 
-        Ok(self
+        self.validate_canonical_event(event)?;
+
+        let phase = match event {
+            RunEvent::ModelResponseReceived { .. }
+                if self.phase == StepPhase::AwaitingModelResponse =>
+            {
+                StepPhase::ModelResponded
+            }
+            RunEvent::ToolCallRequested { call_id, .. }
+                if matches!(
+                    self.phase,
+                    StepPhase::ModelResponded | StepPhase::DeclaringToolCalls
+                ) =>
+            {
+                if self.has_tool_call(call_id) {
+                    return Err(AgentRunError::DuplicateToolCallId {
+                        call_id: call_id.clone(),
+                    });
+                }
+                StepPhase::DeclaringToolCalls
+            }
+            RunEvent::ToolCallSucceeded { call_id, .. }
+            | RunEvent::ToolCallFailed { call_id, .. } => {
+                if !self.pending_tool_calls.contains(call_id) {
+                    return Err(AgentRunError::ToolCallNotPending {
+                        call_id: call_id.clone(),
+                    });
+                }
+                if !matches!(
+                    self.phase,
+                    StepPhase::DeclaringToolCalls | StepPhase::AwaitingToolResults
+                ) {
+                    return Err(self.invalid_phase(event.name()));
+                }
+                if self.pending_tool_calls.len() == 1 {
+                    StepPhase::ToolsCompleted
+                } else {
+                    StepPhase::AwaitingToolResults
+                }
+            }
+            RunEvent::InputRequested { .. } if self.phase == StepPhase::ModelResponded => {
+                return Ok((RunStatus::WaitingForInput, StepPhase::WaitingForInput));
+            }
+            RunEvent::RunCompleted { .. }
+                if matches!(
+                    self.phase,
+                    StepPhase::ModelResponded | StepPhase::ToolsCompleted
+                ) =>
+            {
+                return Ok((RunStatus::Completed, self.phase));
+            }
+            _ => return Err(self.invalid_phase(event.name())),
+        };
+        Ok((RunStatus::Running, phase))
+    }
+
+    /// Canonical response blocks and execution events describe the same calls.
+    /// Validate this at the durable boundary as well as in the runtime so a
+    /// restored log cannot substitute a different operation or visible answer.
+    fn validate_canonical_event(&self, event: &RunEvent) -> Result<(), AgentRunError> {
+        use crate::model_protocol::ModelFinishReason;
+        if let RunEvent::ModelResponseReceived {
+            content,
+            response: Some(response),
+            ..
+        } = event
+        {
+            if response.validate().is_err() || response.text() != *content {
+                return Err(AgentRunError::InvalidCanonicalResponse);
+            }
+            return Ok(());
+        }
+        let Some(response) = self
             .events
-            .last()
-            .expect("the event was appended immediately before this access"))
+            .iter()
+            .rev()
+            .take_while(|entry| entry.step == self.current_step)
+            .find_map(|entry| match &entry.event {
+                RunEvent::ModelResponseReceived { response, .. } => response.as_ref(),
+                _ => None,
+            })
+        else {
+            return Ok(());
+        };
+        let declared = self
+            .events
+            .iter()
+            .rev()
+            .take_while(|entry| entry.step == self.current_step)
+            .filter(|entry| matches!(entry.event, RunEvent::ToolCallRequested { .. }))
+            .count();
+        match event {
+            RunEvent::ToolCallRequested {
+                call_id,
+                tool_name,
+                arguments,
+            } => {
+                let calls = response.calls();
+                if response.finish_reason != ModelFinishReason::ToolCalls
+                    || !calls.get(declared).is_some_and(|call| {
+                        call.id == *call_id
+                            && call.name == *tool_name
+                            && call.arguments == *arguments
+                    })
+                {
+                    return Err(AgentRunError::CanonicalToolCallMismatch);
+                }
+            }
+            RunEvent::ToolCallSucceeded { .. } | RunEvent::ToolCallFailed { .. }
+                if declared != response.calls().len() =>
+            {
+                return Err(AgentRunError::CanonicalToolCallMismatch);
+            }
+            RunEvent::InputRequested { prompt }
+                if response.finish_reason != ModelFinishReason::InputRequired
+                    || response.text() != *prompt =>
+            {
+                return Err(AgentRunError::InvalidCanonicalResponse);
+            }
+            RunEvent::RunCompleted { answer }
+                if response.finish_reason != ModelFinishReason::Stop
+                    || response.text() != *answer =>
+            {
+                return Err(AgentRunError::InvalidCanonicalResponse);
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn invalid_phase(&self, event: &'static str) -> AgentRunError {
+        AgentRunError::InvalidStepPhase {
+            phase: self.phase,
+            event,
+        }
     }
 
     fn validate_restored_step(
@@ -235,52 +474,26 @@ impl AgentRun {
                 actual: envelope.step,
             });
         }
-
         Ok(())
     }
 
-    fn next_status(&self, event: &RunEvent) -> Result<RunStatus, AgentRunError> {
-        if self.status.is_terminal() {
-            return Err(AgentRunError::RunAlreadyFinished {
-                status: self.status,
-            });
+    fn apply_event(&mut self, envelope: RunEventEnvelope, status: RunStatus, phase: StepPhase) {
+        match &envelope.event {
+            RunEvent::ToolCallRequested { call_id, .. } => {
+                self.tool_call_ids.insert(call_id.clone());
+                self.pending_tool_calls.insert(call_id.clone());
+            }
+            RunEvent::ToolCallSucceeded { call_id, .. }
+            | RunEvent::ToolCallFailed { call_id, .. } => {
+                self.pending_tool_calls.remove(call_id);
+            }
+            _ => {}
         }
-
-        match (self.status, event) {
-            (RunStatus::Running, RunEvent::ModelResponseReceived { .. })
-            | (RunStatus::Running, RunEvent::ToolCallRequested { .. })
-            | (RunStatus::Running, RunEvent::ToolCallSucceeded { .. })
-            | (RunStatus::Running, RunEvent::ToolCallFailed { .. }) => Ok(RunStatus::Running),
-
-            (RunStatus::Running, RunEvent::InputRequested { .. }) => Ok(RunStatus::WaitingForInput),
-            (RunStatus::WaitingForInput, RunEvent::InputReceived { .. }) => Ok(RunStatus::Running),
-            (RunStatus::Running, RunEvent::RunCompleted { .. }) => Ok(RunStatus::Completed),
-            (RunStatus::Running | RunStatus::WaitingForInput, RunEvent::RunFailed { .. }) => {
-                Ok(RunStatus::Failed)
-            }
-            (RunStatus::Running | RunStatus::WaitingForInput, RunEvent::RunCancelled) => {
-                Ok(RunStatus::Cancelled)
-            }
-
-            (_, RunEvent::RunStarted { .. } | RunEvent::ModelRequestStarted) => {
-                Err(AgentRunError::ReservedEvent {
-                    event: event.name(),
-                })
-            }
-            _ => Err(AgentRunError::InvalidTransition {
-                status: self.status,
-                event: event.name(),
-            }),
-        }
-    }
-
-    fn append_event(&mut self, event: RunEvent) {
-        self.events.push(RunEventEnvelope {
-            sequence: self.events.len() as u64,
-            step: self.current_step,
-            occurred_at: SystemTime::now(),
-            event,
-        });
+        self.current_step = envelope.step;
+        self.status = status;
+        self.phase = phase;
+        self.revision = Arc::new(());
+        self.events.push(envelope);
     }
 }
 
@@ -301,6 +514,14 @@ pub enum RunEvent {
     ModelRequestStarted,
     ModelResponseReceived {
         content: String,
+        /// Ordered canonical response. Absent in legacy logs, whose text and
+        /// following ToolCallRequested events are projected on recovery.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        response: Option<crate::model_protocol::ModelResponse>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider_state: Option<crate::provider_state::ProviderResponseState>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider_continuation: Option<Box<crate::provider_state::ProviderContinuation>>,
     },
     ToolCallRequested {
         call_id: String,
@@ -331,6 +552,26 @@ pub enum RunEvent {
 }
 
 impl RunEvent {
+    /// Display/history projection. Canonical storage retains the opaque state.
+    pub fn without_provider_state(&self) -> Self {
+        let mut event = self.clone();
+        if let Self::ModelResponseReceived {
+            response,
+            provider_state,
+            provider_continuation,
+            ..
+        } = &mut event
+        {
+            // Summary/history projections use the visible text and separate
+            // execution events. Including canonical blocks here would duplicate
+            // the answer/calls and expose reasoning to a second model.
+            *response = None;
+            *provider_state = None;
+            *provider_continuation = None;
+        }
+        event
+    }
+
     fn name(&self) -> &'static str {
         match self {
             Self::RunStarted { .. } => "RunStarted",
@@ -466,6 +707,8 @@ impl Error for AgentRunHistoryError {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentRunError {
+    InvalidCanonicalResponse,
+    CanonicalToolCallMismatch,
     RunNotRunning {
         status: RunStatus,
     },
@@ -482,12 +725,29 @@ pub enum AgentRunError {
     ReservedEvent {
         event: &'static str,
     },
+    InvalidStepPhase {
+        phase: StepPhase,
+        event: &'static str,
+    },
+    DuplicateToolCallId {
+        call_id: String,
+    },
+    ToolCallNotPending {
+        call_id: String,
+    },
+    StalePreparedEvent,
     StepNumberOverflow,
 }
 
 impl fmt::Display for AgentRunError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::InvalidCanonicalResponse => formatter.write_str(
+                "canonical response disagrees with its visible text or completion event",
+            ),
+            Self::CanonicalToolCallMismatch => {
+                formatter.write_str("tool execution events disagree with the canonical response")
+            }
             Self::RunNotRunning { status } => {
                 write!(formatter, "cannot begin a step while the run is {status:?}")
             }
@@ -508,6 +768,27 @@ impl fmt::Display for AgentRunError {
             }
             Self::ReservedEvent { event } => {
                 write!(formatter, "event {event} must be created by AgentRun")
+            }
+            Self::InvalidStepPhase { phase, event } => {
+                write!(
+                    formatter,
+                    "event {event} is invalid while the step is {phase:?}"
+                )
+            }
+            Self::DuplicateToolCallId { call_id } => {
+                write!(
+                    formatter,
+                    "tool call id {call_id:?} has already been requested"
+                )
+            }
+            Self::ToolCallNotPending { call_id } => {
+                write!(
+                    formatter,
+                    "tool call {call_id:?} has no pending request in this step"
+                )
+            }
+            Self::StalePreparedEvent => {
+                formatter.write_str("the prepared event belongs to a different run revision")
             }
             Self::StepNumberOverflow => formatter.write_str("the step number overflowed"),
         }

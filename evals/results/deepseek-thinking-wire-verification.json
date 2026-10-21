@@ -1,0 +1,14 @@
+{
+  "source_report": "deepseek-context-thinking-all.json",
+  "checks": {
+    "all_runtime_requests_thinking_high": true,
+    "actual_nonempty_reasoning_replayed": true,
+    "wire_pin_absent_before_final_history_result": true,
+    "wire_pin_present_after_history_read": true,
+    "pin_not_leaked_by_replayed_reasoning": true,
+    "history_read_is_last_tool": true,
+    "one_tool_response_per_intermediate_main_request": true
+  },
+  "passed": true,
+  "method": "Post-run assertions on recorded wire metrics. The scenario executes one tool per intermediate response; the last tool is the history read."
+}

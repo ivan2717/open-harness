@@ -2,6 +2,17 @@
 /target/
 **/*.rs.bk
 
+# Desktop dependencies, builds, and local run data
+**/node_modules/
+**/*.tsbuildinfo
+/apps/desktop/out/
+/apps/desktop/release/
+/apps/desktop/resources/bin/
+/apps/desktop/test-results/
+/apps/desktop/playwright-report/
+/data/
+/.openharness/
+
 # Local environment and secrets
 .env
 .env.*
