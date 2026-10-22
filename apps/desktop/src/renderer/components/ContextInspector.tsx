@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react'
 import {
   ArrowDown,
   Check,
@@ -23,8 +24,32 @@ function Metric({ label, value, note }: { label: string; value: string; note?: s
   )
 }
 
-function ContextUsage({ context }: { context: ContextSnapshot }) {
-  const ratio = context.input_budget > 0 ? context.estimated_input_tokens / context.input_budget : 0
+function ContextUsage({
+  context,
+  compactionAction,
+}: {
+  context: ContextSnapshot
+  compactionAction?: ReactNode
+}) {
+  const inputTokens = context.accounting?.estimated_input_tokens ?? context.estimated_input_tokens
+  const decisionTokens = context.accounting?.decision_input_tokens ?? inputTokens
+  const marginTokens = context.accounting?.estimation_margin_tokens ?? 0
+  const source = context.accounting?.source ?? context.measurement
+  const sourceLabel =
+    source === 'provider_calibrated'
+      ? context.accounting?.measured_input_tokens == null
+        ? '用量修正估算'
+        : '提供方校准'
+      : source === 'provider_native'
+        ? '原生计量 + 估算'
+        : source === 'provider_counted'
+          ? '历史服务端计数'
+          : source === 'tokenizer_estimated'
+            ? '历史 tokenizer 估算'
+            : source === 'provider'
+              ? '提供方计量'
+              : '本地估算'
+  const ratio = context.input_budget > 0 ? decisionTokens / context.input_budget : 0
   const percent = Math.min(100, Math.max(0, ratio * 100))
   const triggerPosition =
     context.input_budget > 0 ? (context.trigger_tokens / context.input_budget) * 100 : 0
@@ -33,13 +58,11 @@ function ContextUsage({ context }: { context: ContextSnapshot }) {
       <section className="inspector-section">
         <div className="section-eyebrow">
           <ScanLine size={14} />
-          上下文用量
-          <span className="measurement-label">
-            {context.measurement === 'provider' ? '提供方计量' : '本地估算'}
-          </span>
+          上下文预算
+          <span className="measurement-label">{sourceLabel}</span>
         </div>
         <div className="usage-total">
-          <strong>{number(context.estimated_input_tokens)}</strong>
+          <strong>{number(decisionTokens)}</strong>
           <span>/ {compactNumber(context.input_budget)} tokens</span>
         </div>
         <div
@@ -63,18 +86,30 @@ function ContextUsage({ context }: { context: ContextSnapshot }) {
           <span>
             {ratio > 1
               ? '已超出输入预算'
-              : `余量 ${compactNumber(Math.max(0, context.input_budget - context.estimated_input_tokens))}`}
+              : `余量 ${compactNumber(Math.max(0, context.input_budget - decisionTokens))}`}
           </span>
         </div>
         <p className="mt-2 text-[11px] leading-relaxed text-muted">
-          最近一次请求的输入用量，不含本次新输出。
+          最近准备的输入 {number(inputTokens)}
+          {marginTokens > 0 ? ` + 估算余量 ${number(marginTokens)}` : ''}
+          ，用于判断是否压缩。输出预留另计。
         </p>
+        {context.observed_usage && (
+          <p
+            className="mt-2 text-[11px] leading-relaxed text-muted"
+            title={`已记录 ${number(context.observed_usage.responses)} 次响应的服务端用量；不含缺失用量或失败请求。`}
+          >
+            已观测累计：输入 {compactNumber(context.observed_usage.input_tokens)} · 输出{' '}
+            {compactNumber(context.observed_usage.output_tokens)}
+          </p>
+        )}
         <div className="metric-grid">
           <Metric label="模型窗口" value={compactNumber(context.window_tokens)} />
           <Metric label="输出预留" value={compactNumber(context.reserved_output_tokens)} />
           <Metric label="压缩触发点" value={compactNumber(context.trigger_tokens)} />
           <Metric label="压缩目标" value={compactNumber(context.target_tokens)} />
         </div>
+        {compactionAction && <div className="mt-4">{compactionAction}</div>}
       </section>
       <section className="inspector-section">
         <div className="section-eyebrow">
@@ -132,9 +167,11 @@ function ContextUsage({ context }: { context: ContextSnapshot }) {
 export function ContextInspector({
   run,
   windowTokens,
+  compactionAction,
 }: {
   run?: RunDetail
   windowTokens?: number
+  compactionAction?: ReactNode
 }) {
   const tab = useUiStore((state) => state.inspectorTab)
   const setTab = useUiStore((state) => state.setInspectorTab)
@@ -179,7 +216,7 @@ export function ContextInspector({
       >
         {tab === 'context' ? (
           run?.context ? (
-            <ContextUsage context={run.context} />
+            <ContextUsage context={run.context} compactionAction={compactionAction} />
           ) : (
             <>
               <section className="inspector-section">
@@ -194,6 +231,7 @@ export function ContextInspector({
                 <p className="inspector-description">
                   运行开始后，你可以实时观察上下文预算、压缩触发点与历史保留情况。
                 </p>
+                {compactionAction && <div className="mt-4">{compactionAction}</div>}
               </section>
               <section className="inspector-section">
                 <div className="section-eyebrow">
@@ -210,30 +248,27 @@ export function ContextInspector({
           )
         ) : run?.events.length ? (
           <ol className="timeline">
-            {run.events
-              .slice()
-              .reverse()
-              .map((event) => (
-                <li key={event.sequence}>
-                  <span className="timeline-dot" />
-                  <div className="timeline-heading">
-                    <strong>{event.label}</strong>
-                    <time>{time(event.timestamp)}</time>
-                  </div>
-                  <span className="timeline-step">
-                    STEP {String(event.step).padStart(2, '0')} · #{event.sequence}
-                  </span>
-                  {event.detail && (
-                    <details className="timeline-detail">
-                      <summary>
-                        查看事件详情
-                        <ChevronRight size={11} />
-                      </summary>
-                      <p>{event.detail}</p>
-                    </details>
-                  )}
-                </li>
-              ))}
+            {run.events.map((event) => (
+              <li key={event.sequence}>
+                <span className="timeline-dot" />
+                <div className="timeline-heading">
+                  <strong>{event.label}</strong>
+                  <time>{time(event.timestamp)}</time>
+                </div>
+                <span className="timeline-step">
+                  STEP {String(event.step).padStart(2, '0')} · #{event.sequence}
+                </span>
+                {event.detail && (
+                  <details className="timeline-detail">
+                    <summary>
+                      查看事件详情
+                      <ChevronRight size={11} />
+                    </summary>
+                    <p>{event.detail}</p>
+                  </details>
+                )}
+              </li>
+            ))}
           </ol>
         ) : (
           <div className="inspector-empty timeline-empty">

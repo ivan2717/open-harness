@@ -1,0 +1,175 @@
+{
+  "test": "production HTTP adapter + API service, thinking modes, manual compaction and restart",
+  "results": [
+    {
+      "model": "deepseek-flash",
+      "id": "run-18e09697d22ea208-3709-2",
+      "model_id": "model-005ec401385e3bd4",
+      "checkpoint_count": 1,
+      "answer": "项目代号：PROJECT-CEDAR；验收阈值：23；下一步：运行集成测试。",
+      "measurements": [
+        {
+          "raw_estimated_input_tokens": 1838,
+          "estimated_input_tokens": 1838,
+          "measured_input_tokens": null,
+          "estimated_delta_tokens": 1838,
+          "estimation_margin_tokens": 276,
+          "decision_input_tokens": 2114,
+          "source": "estimated",
+          "actual_input_tokens": 1474,
+          "signed_error_percent": 24.69
+        },
+        {
+          "raw_estimated_input_tokens": 1909,
+          "estimated_input_tokens": 1545,
+          "measured_input_tokens": 1474,
+          "estimated_delta_tokens": 71,
+          "estimation_margin_tokens": 11,
+          "decision_input_tokens": 1556,
+          "source": "provider_calibrated",
+          "actual_input_tokens": 1498,
+          "signed_error_percent": 3.14
+        },
+        {
+          "raw_estimated_input_tokens": 1046,
+          "estimated_input_tokens": 1046,
+          "measured_input_tokens": null,
+          "estimated_delta_tokens": 1046,
+          "estimation_margin_tokens": 157,
+          "decision_input_tokens": 1203,
+          "source": "estimated",
+          "actual_input_tokens": 1142,
+          "signed_error_percent": -8.41
+        },
+        {
+          "raw_estimated_input_tokens": 1148,
+          "estimated_input_tokens": 1244,
+          "measured_input_tokens": 1142,
+          "estimated_delta_tokens": 102,
+          "estimation_margin_tokens": 16,
+          "decision_input_tokens": 1260,
+          "source": "provider_calibrated",
+          "actual_input_tokens": 1229,
+          "signed_error_percent": 1.22
+        }
+      ],
+      "usage": {
+        "input_tokens": 5343,
+        "output_tokens": 321,
+        "responses": 4
+      },
+      "restart_answer": "重启后确认：项目代号 PROJECT-CEDAR，验收阈值 23。",
+      "persisted_response_states": 4,
+      "persisted_reasoning_blocks": 4,
+      "durable_usage_samples": [
+        {
+          "input_tokens": 1474,
+          "output_tokens": 37,
+          "cached_input_tokens": 0
+        },
+        {
+          "input_tokens": 1498,
+          "output_tokens": 166,
+          "cached_input_tokens": 1280
+        },
+        {
+          "input_tokens": 1142,
+          "output_tokens": 69,
+          "cached_input_tokens": 0
+        },
+        {
+          "input_tokens": 1229,
+          "output_tokens": 49,
+          "cached_input_tokens": 1024
+        }
+      ],
+      "durable_estimate_anchors": 4,
+      "persisted_encrypted_reasoning_items": 0
+    },
+    {
+      "model": "gpt-6-luna",
+      "id": "run-18e09697d1101690-3709-1",
+      "model_id": "model-4d67d6c7dbec8ef1",
+      "checkpoint_count": 1,
+      "answer": "PROJECT-CEDAR；验收阈值：23；下一步：运行集成测试。",
+      "measurements": [
+        {
+          "raw_estimated_input_tokens": 1838,
+          "estimated_input_tokens": 1838,
+          "measured_input_tokens": null,
+          "estimated_delta_tokens": 1838,
+          "estimation_margin_tokens": 276,
+          "decision_input_tokens": 2114,
+          "source": "estimated",
+          "actual_input_tokens": 1886,
+          "signed_error_percent": -2.55
+        },
+        {
+          "raw_estimated_input_tokens": 1876,
+          "estimated_input_tokens": 1924,
+          "measured_input_tokens": 1886,
+          "estimated_delta_tokens": 38,
+          "estimation_margin_tokens": 6,
+          "decision_input_tokens": 1930,
+          "source": "provider_calibrated",
+          "actual_input_tokens": 1922,
+          "signed_error_percent": 0.1
+        },
+        {
+          "raw_estimated_input_tokens": 834,
+          "estimated_input_tokens": 834,
+          "measured_input_tokens": null,
+          "estimated_delta_tokens": 834,
+          "estimation_margin_tokens": 126,
+          "decision_input_tokens": 960,
+          "source": "estimated",
+          "actual_input_tokens": 693,
+          "signed_error_percent": 20.35
+        },
+        {
+          "raw_estimated_input_tokens": 884,
+          "estimated_input_tokens": 743,
+          "measured_input_tokens": 693,
+          "estimated_delta_tokens": 50,
+          "estimation_margin_tokens": 8,
+          "decision_input_tokens": 751,
+          "source": "provider_calibrated",
+          "actual_input_tokens": 743,
+          "signed_error_percent": 0.0
+        }
+      ],
+      "usage": {
+        "input_tokens": 5244,
+        "output_tokens": 153,
+        "responses": 4
+      },
+      "restart_answer": "项目代号：PROJECT-CEDAR；验收阈值：23。",
+      "persisted_response_states": 4,
+      "persisted_reasoning_blocks": 0,
+      "durable_usage_samples": [
+        {
+          "input_tokens": 1886,
+          "output_tokens": 7,
+          "cached_input_tokens": 0
+        },
+        {
+          "input_tokens": 1922,
+          "output_tokens": 76,
+          "cached_input_tokens": 1883
+        },
+        {
+          "input_tokens": 693,
+          "output_tokens": 25,
+          "cached_input_tokens": 0
+        },
+        {
+          "input_tokens": 743,
+          "output_tokens": 45,
+          "cached_input_tokens": 0
+        }
+      ],
+      "durable_estimate_anchors": 4,
+      "persisted_encrypted_reasoning_items": 2
+    }
+  ]
+}

@@ -1,7 +1,13 @@
-import type { CreateRunInput } from '../shared/contracts'
+import type {
+  ConfigureModelInput,
+  CreateRunInput,
+  ResolvedModelConfiguration,
+} from '../shared/contracts'
+import { MODEL_TOKEN_LIMIT, resolveModelLimits } from '../shared/model-limits'
 
 export const channels = {
   invoke: 'openharness:invoke',
+  chooseWorkspace: 'openharness:workspace:choose',
   watchStart: 'openharness:watch:start',
   watchStop: 'openharness:watch:stop',
   watchEvent: 'openharness:watch:event',
@@ -9,14 +15,26 @@ export const channels = {
 
 export type BridgeRequest =
   | { operation: 'config' | 'listRuns' }
-  | { operation: 'getRun' | 'cancelRun'; id: string }
+  | {
+      operation: 'getRun' | 'getWorkspace' | 'cancelRun' | 'compactRun' | 'cancelCompaction'
+      id: string
+    }
+  | { operation: 'approveCommand'; id: string; approvalId: string; allow: boolean }
+  | { operation: 'revertFile'; id: string; path: string }
+  | { operation: 'resumeRun'; id: string; message?: string }
+  | { operation: 'configureModel'; input: ConfigureModelInput }
   | { operation: 'createRun'; input: CreateRunInput }
   | { operation: 'submitInput'; id: string; message: string }
 
 export interface ApiRequest {
   path: string
   method: 'GET' | 'POST'
-  body?: CreateRunInput | { message: string }
+  body?:
+    | CreateRunInput
+    | ConfigureModelInput
+    | { message?: string }
+    | { path: string }
+    | { allow: boolean }
 }
 
 function object(value: unknown): Record<string, unknown> {
@@ -37,6 +55,80 @@ function boundedText(value: unknown, maximum: number, field: string): string {
   return value
 }
 
+function absolutePath(path: string): boolean {
+  return path.startsWith('/') || path.startsWith('\\\\') || /^[A-Za-z]:[\\/]/.test(path)
+}
+
+export function modelConfiguration(value: unknown): ConfigureModelInput {
+  const input = object(value)
+  const protocol = input.protocol
+  if (
+    protocol !== 'chat_completions' &&
+    protocol !== 'responses' &&
+    protocol !== 'anthropic_messages'
+  )
+    throw new Error('Invalid model protocol')
+  const base_url = boundedText(input.base_url, 2048, 'base URL').trim()
+  let url: URL
+  try {
+    url = new URL(base_url)
+  } catch {
+    throw new Error('Invalid model base URL')
+  }
+  const local = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)
+  if (
+    (url.protocol !== 'https:' && !(url.protocol === 'http:' && local)) ||
+    url.username ||
+    url.password ||
+    url.search ||
+    url.hash
+  )
+    throw new Error('Use an HTTPS model base URL, or HTTP on localhost')
+  const integer = (value: unknown, min: number, max: number, name: string): number => {
+    if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < min || value > max)
+      throw new Error(`Invalid ${name}`)
+    return value
+  }
+  const context_window =
+    input.context_window === undefined
+      ? undefined
+      : integer(input.context_window, 1024, MODEL_TOKEN_LIMIT, 'context window')
+  const max_output_tokens =
+    input.max_output_tokens === undefined
+      ? undefined
+      : integer(input.max_output_tokens, 64, MODEL_TOKEN_LIMIT, 'output limit')
+  const reasoning_mode = input.reasoning_mode
+  const reasoning_effort = input.reasoning_effort
+  if (
+    !['off', 'standard', 'deepseek'].includes(String(reasoning_mode)) ||
+    !['low', 'medium', 'high'].includes(String(reasoning_effort)) ||
+    (reasoning_mode === 'deepseek' && protocol !== 'chat_completions')
+  )
+    throw new Error('Invalid reasoning configuration')
+  const configuration: ConfigureModelInput = {
+    protocol,
+    base_url,
+    context_window,
+    max_output_tokens,
+    model: boundedText(input.model, 256, 'model').trim(),
+    api_key: boundedText(input.api_key, 4096, 'API key').trim(),
+    reasoning_mode: reasoning_mode as ConfigureModelInput['reasoning_mode'],
+    reasoning_effort: reasoning_effort as ConfigureModelInput['reasoning_effort'],
+  }
+  if (context_window !== undefined && max_output_tokens !== undefined)
+    resolveModelLimits(configuration)
+  return configuration
+}
+
+/** Saved configurations and the Rust API always receive final, validated numbers. */
+export function resolvedModelConfiguration(value: unknown): ResolvedModelConfiguration {
+  const configuration = modelConfiguration(value)
+  const { context_window, max_output_tokens } = configuration
+  if (context_window === undefined || max_output_tokens === undefined)
+    throw new Error('Model capacities must be resolved before saving')
+  return { ...configuration, context_window, max_output_tokens }
+}
+
 export function apiRequest(value: unknown): ApiRequest {
   const request = object(value)
   switch (request.operation) {
@@ -46,16 +138,58 @@ export function apiRequest(value: unknown): ApiRequest {
       return { path: '/api/runs', method: 'GET' }
     case 'getRun':
       return { path: `/api/runs/${identifier(request.id)}`, method: 'GET' }
+    case 'getWorkspace':
+      return { path: `/api/runs/${identifier(request.id)}/workspace`, method: 'GET' }
+    case 'approveCommand':
+      if (typeof request.allow !== 'boolean') throw new Error('Invalid approval decision')
+      return {
+        path: `/api/runs/${identifier(request.id)}/approvals/${identifier(request.approvalId)}`,
+        method: 'POST',
+        body: { allow: request.allow },
+      }
+    case 'revertFile': {
+      const path = boundedText(request.path, 4096, 'file path')
+      if (absolutePath(path) || path.includes('\0') || path.split(/[\\/]/).includes('..'))
+        throw new Error('File path must be relative to the project')
+      return { path: `/api/runs/${identifier(request.id)}/revert`, method: 'POST', body: { path } }
+    }
+    case 'resumeRun':
+      return {
+        path: `/api/runs/${identifier(request.id)}/resume`,
+        method: 'POST',
+        body:
+          request.message === undefined
+            ? {}
+            : { message: boundedText(request.message, 64_000, 'message') },
+      }
     case 'cancelRun':
       return { path: `/api/runs/${identifier(request.id)}/cancel`, method: 'POST' }
+    case 'compactRun':
+      return { path: `/api/runs/${identifier(request.id)}/compact`, method: 'POST' }
+    case 'cancelCompaction':
+      return { path: `/api/runs/${identifier(request.id)}/compact/cancel`, method: 'POST' }
+    case 'configureModel':
+      return { path: '/api/models', method: 'POST', body: modelConfiguration(request.input) }
     case 'createRun': {
       const input = object(request.input)
+      let workspace: Pick<CreateRunInput, 'workspace_path' | 'permission_mode'> = {}
+      if (input.workspace_path !== undefined) {
+        const path = boundedText(input.workspace_path, 4096, 'project path')
+        if (!absolutePath(path) || path.includes('\0')) throw new Error('Invalid project path')
+        const mode = input.permission_mode ?? 'read_only'
+        if (mode !== 'read_only' && mode !== 'workspace_write')
+          throw new Error('Invalid permission mode')
+        workspace = { workspace_path: path, permission_mode: mode }
+      } else if (input.permission_mode !== undefined) {
+        throw new Error('Choose a project before setting permissions')
+      }
       return {
         path: '/api/runs',
         method: 'POST',
         body: {
           prompt: boundedText(input.prompt, 64_000, 'prompt'),
           model_id: boundedText(input.model_id, 256, 'model'),
+          ...workspace,
         },
       }
     }

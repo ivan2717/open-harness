@@ -284,6 +284,7 @@ async fn a_completed_tool_batch_can_resume_without_replaying_its_side_effects() 
         .record(RunEvent::ModelResponseReceived {
             response: None,
             provider_continuation: None,
+            token_usage: None,
             provider_state: None,
             content: "Writing".into(),
         })

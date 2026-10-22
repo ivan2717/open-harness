@@ -528,6 +528,7 @@ async fn canonical_reasoning_is_durable_but_excluded_from_history_tools_and_summ
             .unwrap(),
         ),
         provider_continuation: None,
+        token_usage: None,
     })
     .unwrap();
     let original = run.events().to_vec();

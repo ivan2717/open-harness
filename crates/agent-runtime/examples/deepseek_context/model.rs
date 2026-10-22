@@ -12,7 +12,7 @@ use std::{
 
 use agent_runtime::{
     ApproximateTokenCounter, Model, ModelContextMetadata, ModelMessage, ModelOutput, ModelRequest,
-    ModelResponse, ModelUsage, ProviderContextIdentity, ProviderReplayScope, ProviderResponseState,
+    ModelResponse, ProviderContextIdentity, ProviderReplayScope, ProviderResponseState,
     TokenCounter,
 };
 use serde_json::{Value, json};
@@ -50,8 +50,9 @@ impl DeepSeekModel {
             .as_u64()
             .ok_or_else(|| io::Error::other("/models did not advertise context_window"))?
             as usize;
-        let mut metadata =
-            ModelContextMetadata::new("deepseek", MODEL, window).map_err(io::Error::other)?;
+        let mut metadata = ModelContextMetadata::new("deepseek", MODEL, window)
+            .map_err(io::Error::other)?
+            .with_accounting_identity(accounting_identity(false, false));
         metadata.max_output_tokens = entry["max_output_tokens"].as_u64().map(|n| n as usize);
         metadata.validate().map_err(io::Error::other)?;
         Ok(Self {
@@ -70,6 +71,10 @@ impl DeepSeekModel {
     /// control which drops provider reasoning between tool rounds.
     pub fn with_thinking(&self, replay: bool) -> Self {
         Self {
+            metadata: self
+                .metadata
+                .clone()
+                .with_accounting_identity(accounting_identity(true, replay)),
             thinking: true,
             replay_reasoning: replay,
             ..self.clone()
@@ -132,7 +137,9 @@ impl DeepSeekModel {
         // serialized payload length is never used to estimate hidden state.
         let replay_tokens = usage["completion_tokens_details"]["reasoning_tokens"]
             .as_u64()
-            .map(|tokens| tokens as usize)
+            .map(usize::try_from)
+            .transpose()
+            .map_err(io::Error::other)?
             .unwrap_or(token_field(usage, "completion_tokens")?);
         WireProtocol::ChatCompletions
             .capture_state(
@@ -151,6 +158,14 @@ fn provider_identity() -> ProviderContextIdentity {
         provider: "deepseek".into(),
         model: MODEL.into(),
         format: "chat.completions.v1".into(),
+    }
+}
+
+fn accounting_identity(thinking: bool, replay_reasoning: bool) -> &'static str {
+    match (thinking, replay_reasoning) {
+        (false, _) => "chat.completions.v1:thinking=disabled:counter=approximate.v1",
+        (true, true) => "chat.completions.v1:thinking=high:replay=enabled:counter=approximate.v1",
+        (true, false) => "chat.completions.v1:thinking=high:replay=disabled:counter=approximate.v1",
     }
 }
 
@@ -223,6 +238,12 @@ impl Model for DeepSeekModel {
         Some(&self.metadata)
     }
 
+    fn is_context_overflow(&self, error: &Self::Error) -> bool {
+        error
+            .get_ref()
+            .is_some_and(|source| source.is::<ContextWindowExceeded>())
+    }
+
     fn validate_replay_state(
         &self,
         state: &ProviderResponseState,
@@ -255,9 +276,7 @@ impl Model for DeepSeekModel {
             let candidate = message;
             matches!(&candidate.context, Some(MessageContext::Summary { .. }))
         });
-        let compactor = request
-            .instructions
-            .starts_with("Summarize the supplied run events");
+        let compactor = super::scenarios::is_summary_request(&request);
         let (mut body, replayed) = self.encode(&request)?;
         body["max_tokens"] = json!(
             request
@@ -347,17 +366,14 @@ impl Model for DeepSeekModel {
                 ModelFinishReason::Stop
             },
         };
+        let usage = WireProtocol::ChatCompletions
+            .decode_usage(&wire)
+            .map_err(io::Error::other)?;
         let provider_state = self.capture_provider_state(message, &wire["usage"])?;
         Ok(ModelOutput {
             response,
             provider_state,
-            usage: Some(ModelUsage {
-                input_tokens: token_field(&wire["usage"], "prompt_tokens")?,
-                output_tokens: token_field(&wire["usage"], "completion_tokens")?,
-                cached_input_tokens: wire["usage"]["prompt_cache_hit_tokens"]
-                    .as_u64()
-                    .map(|n| n as usize),
-            }),
+            usage,
             provider_context: None,
             context_compacted: false,
         })
@@ -367,8 +383,35 @@ impl Model for DeepSeekModel {
 fn token_field(value: &Value, field: &str) -> io::Result<usize> {
     value[field]
         .as_u64()
-        .map(|n| n as usize)
+        .and_then(|n| usize::try_from(n).ok())
         .ok_or_else(|| io::Error::other(format!("missing usage field {field}")))
+}
+
+#[derive(Debug)]
+struct ContextWindowExceeded;
+
+impl std::fmt::Display for ContextWindowExceeded {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("DeepSeek context window exceeded")
+    }
+}
+
+impl std::error::Error for ContextWindowExceeded {}
+
+fn transport_error(value: &Value) -> Option<io::Error> {
+    let error = value.get("transport_error")?;
+    if value["http_status"] == 400
+        && error
+            .as_str()
+            .and_then(|body| serde_json::from_str::<Value>(body).ok())
+            .is_some_and(|body| body["error"]["code"] == "context_length_exceeded")
+    {
+        return Some(io::Error::other(ContextWindowExceeded));
+    }
+    Some(io::Error::other(format!(
+        "DeepSeek HTTP {}: {error}",
+        value["http_status"]
+    )))
 }
 
 fn encode_request(
@@ -424,11 +467,8 @@ async fn transport(envelope: Value) -> io::Result<Value> {
             return Err(io::Error::other("DeepSeek transport process failed"));
         }
         let value: Value = serde_json::from_slice(&output.stdout)?;
-        if let Some(error) = value.get("transport_error") {
-            return Err(io::Error::other(format!(
-                "DeepSeek HTTP {}: {error}",
-                value["http_status"]
-            )));
+        if let Some(error) = transport_error(&value) {
+            return Err(error);
         }
         Ok(value)
     })
@@ -443,7 +483,9 @@ mod tests {
 
     fn offline_model() -> DeepSeekModel {
         DeepSeekModel {
-            metadata: ModelContextMetadata::new("deepseek", MODEL, 1_000_000).unwrap(),
+            metadata: ModelContextMetadata::new("deepseek", MODEL, 1_000_000)
+                .unwrap()
+                .with_accounting_identity(accounting_identity(false, false)),
             identity: provider_identity(),
             catalog: json!({}),
             requests: Arc::default(),
@@ -451,6 +493,34 @@ mod tests {
             output_cap: 8192,
             thinking: false,
             replay_reasoning: false,
+        }
+    }
+
+    #[test]
+    fn accounting_identity_changes_with_reasoning_wire_rules() {
+        let plain = offline_model();
+        let thinking = plain.with_thinking(true);
+        let dropped = plain.with_thinking(false);
+        assert_ne!(plain.metadata, thinking.metadata);
+        assert_ne!(thinking.metadata, dropped.metadata);
+        assert_eq!(plain.identity, thinking.identity);
+    }
+
+    #[test]
+    fn only_confirmed_context_error_codes_enable_overflow_recovery() {
+        let model = offline_model();
+        let overflow = json!({
+            "http_status": 400,
+            "transport_error": json!({"error": {"code": "context_length_exceeded"}}).to_string()
+        });
+        assert!(model.is_context_overflow(&transport_error(&overflow).unwrap()));
+        for failure in [
+            json!({"http_status": 400, "transport_error": "context length exceeded"}),
+            json!({"http_status": 400, "transport_error": json!({"error": {"code": "invalid_request_error"}}).to_string()}),
+            json!({"http_status": 429, "transport_error": json!({"error": {"code": "context_length_exceeded"}}).to_string()}),
+            json!({"transport_error": "connection reset"}),
+        ] {
+            assert!(!model.is_context_overflow(&transport_error(&failure).unwrap()));
         }
     }
 

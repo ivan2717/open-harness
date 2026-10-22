@@ -13,7 +13,7 @@ transport; it is not passed in command-line arguments, saved, or logged.
 cargo run -p agent-runtime --example deepseek_context --locked -- all
 ```
 
-Other selectors: `probe`, `large`, `runtime`, `failure`, and `accounting`. Results are written to
+Other selectors: `probe`, `large`, `runtime`, `failure`, `accounting`, and `precision`. Results are written to
 `evals/results/deepseek-context-<selector>.json`. Running a selector again replaces
 its report. An optional third argument adds a report label, for example
 `runtime thinking durable-state`. Normal workspace tests never make network requests.
@@ -36,11 +36,44 @@ its report. An optional third argument adds a report label, for example
   real incomplete provider response. Below the hard input limit, preparation must
   retain the original context. Above the limit, it must reject preparation.
   Neither case may write a checkpoint or mutate canonical events.
+- **Token precision and restart:** `precision` makes six bounded requests across
+  English, Chinese, and code/JSON corpora (30 KB per corpus). It compares a cold
+  request with a follow-up after reopening JSONL and constructing a new context
+  manager. Reports separate raw estimates, calibrated predictions, decision
+  headroom, and actual provider usage. Its `passed` field checks completed calls
+  and durable calibration; inaccurate estimates and insufficient margins remain
+  visible rather than being treated as successful accuracy checks. This selector
+  is explicit-only and is not included in `all`.
 
 The repeated-compaction scenario deliberately overrides the effective window to
 32,768, trigger to 9,000, target to 7,500, recent tail to 6,500, and tool projection
 to 25,000 characters. These are evaluation settings, not production defaults.
 The summary model has a separate 65,536-token window and 2,048-token output cap.
+Runtime reports capture the actual context measurement for every main request;
+summary/window reports without that instrumentation expose only the raw estimate.
+The legacy near-window fixture checks its raw estimate against the threshold.
+With the current 15% headroom for unmeasured input, preparation can reject it
+before sending a request; that fixture does not prove acceptance near the full
+window under the current policy.
+
+```sh
+cargo run -p agent-runtime --example deepseek_context --locked -- precision non-thinking token-meter
+cargo run -p agent-runtime --example deepseek_context --locked -- precision thinking token-meter
+```
+
+The precision probe uses 256 output tokens in plain mode and 8,192 in thinking
+mode. Its first successful reply is mapped to `InputRequired` solely to continue
+the synthetic conversation; reply content, usage, and replay state are preserved.
+It exercises preparation, measurement, and durable recovery directly. The runtime
+scenario separately validates the actual model-driven execution loop and compaction.
+
+Precision and runtime use local approximate counts and calibrate retained
+request prefixes against usage returned by normal model responses. No tokenizer
+installation or separate token-count request is required. The counter includes
+provider reasoning replay costs only when the request will actually retain them;
+unmeasured content keeps estimation headroom. The precision probe verifies that
+a fresh manager restores this usage baseline from JSONL. Legacy large-window
+and failure fixtures are not the precision benchmark.
 
 ## Adapter scope
 
@@ -94,7 +127,7 @@ whole steps stay in canonical history but leave the active context after text
 compaction. This HTTP example returns settled responses through the default
 stream bridge; it does not claim network SSE support.
 
-The counter uses provider-reported reasoning tokens (or a conservative output
+The fallback counter uses provider-reported reasoning tokens (or a conservative output
 count fallback) as extra replay cost when tools are enabled. Readable reasoning
 blocks are not counted again when that state cost is present. Without tools,
 DeepSeek ignores historical reasoning, so the counter excludes that extra cost.
@@ -104,7 +137,7 @@ counts and synthetic-marker presence, never the raw reasoning payload.
 Offline tests separately cover JSONL restart, response-write failures before tool
 effects, all four protocol codecs, summary/history redaction, ordered content,
 stream settlement, custom adapter formats, and legacy/new prefix binding.
-Only DeepSeek has a live HTTP adapter in this evaluation.
+The separate OpenAI example reuses the precision and runtime fixtures with Responses.
 
 `thinking-drop` is a diagnostic control that deliberately omits replay. Although
 the provider documentation describes an error for missing reasoning, actual

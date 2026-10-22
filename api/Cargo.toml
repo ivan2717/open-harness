@@ -5,6 +5,8 @@ edition.workspace = true
 
 [dependencies]
 agent-core.workspace = true
+agent-local = { path = "../crates/agent-local" }
+agent-providers = { path = "../crates/agent-providers" }
 agent-runtime = { path = "../crates/agent-runtime" }
 axum.workspace = true
 futures-util = { version = "0.3.34", default-features = false, features = ["std"] }

@@ -1,0 +1,89 @@
+{
+  "method": "ps RSS sampled every 0.5s; lower bound on peak, not an OS exact high-water mark",
+  "processes": [
+    {
+      "pid": 26504,
+      "executable": "/Users/jiangtao/Desktop/open-harness/target/debug/examples/context_boundary",
+      "peak_rss_kib": 36208,
+      "samples": 67
+    },
+    {
+      "pid": 26505,
+      "executable": "/Users/jiangtao/Desktop/open-harness/target/debug/examples/context_boundary",
+      "peak_rss_kib": 39472,
+      "samples": 85
+    },
+    {
+      "pid": 29077,
+      "executable": "target/debug/examples/context_boundary_runtime",
+      "peak_rss_kib": 32,
+      "samples": 4
+    },
+    {
+      "pid": 30193,
+      "executable": "target/debug/examples/context_boundary_runtime",
+      "peak_rss_kib": 32,
+      "samples": 1
+    },
+    {
+      "pid": 30881,
+      "executable": "/Users/jiangtao/Desktop/open-harness/target/debug/examples/context_boundary_runtime",
+      "peak_rss_kib": 48416,
+      "samples": 8
+    },
+    {
+      "pid": 31444,
+      "executable": "/Users/jiangtao/Desktop/open-harness/target/debug/examples/context_boundary",
+      "peak_rss_kib": 33184,
+      "samples": 7
+    },
+    {
+      "pid": 31445,
+      "executable": "/Users/jiangtao/Desktop/open-harness/target/debug/examples/context_boundary",
+      "peak_rss_kib": 30320,
+      "samples": 14
+    },
+    {
+      "pid": 34536,
+      "executable": "/Users/jiangtao/Desktop/open-harness/target/debug/examples/context_boundary_runtime",
+      "peak_rss_kib": 84656,
+      "samples": 65
+    },
+    {
+      "pid": 34537,
+      "executable": "/Users/jiangtao/Desktop/open-harness/target/debug/examples/context_boundary",
+      "peak_rss_kib": 26176,
+      "samples": 104
+    },
+    {
+      "pid": 35845,
+      "executable": "/Users/jiangtao/Desktop/open-harness/target/debug/examples/context_boundary",
+      "peak_rss_kib": 37280,
+      "samples": 6
+    },
+    {
+      "pid": 35944,
+      "executable": "/Users/jiangtao/Desktop/open-harness/target/debug/examples/context_boundary_runtime",
+      "peak_rss_kib": 81088,
+      "samples": 240
+    },
+    {
+      "pid": 38224,
+      "executable": "/Users/jiangtao/Desktop/open-harness/target/debug/examples/context_boundary",
+      "peak_rss_kib": 27344,
+      "samples": 65
+    },
+    {
+      "pid": 39974,
+      "executable": "/Users/jiangtao/Desktop/open-harness/target/debug/examples/context_boundary",
+      "peak_rss_kib": 27552,
+      "samples": 15
+    },
+    {
+      "pid": 44679,
+      "executable": "/Users/jiangtao/Desktop/open-harness/target/debug/examples/context_boundary_runtime",
+      "peak_rss_kib": 58320,
+      "samples": 71
+    }
+  ]
+}

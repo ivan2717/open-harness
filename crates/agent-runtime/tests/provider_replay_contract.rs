@@ -401,6 +401,7 @@ fn legacy_events_round_trip_without_new_fields_but_required_replay_rejects_missi
         RunEvent::ModelResponseReceived {
             provider_state: None,
             provider_continuation: None,
+            token_usage: None,
             ..
         }
     ));

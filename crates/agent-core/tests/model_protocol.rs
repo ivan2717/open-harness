@@ -31,6 +31,7 @@ fn response_event(response: ModelResponse) -> RunEvent {
         response: Some(response),
         provider_state: None,
         provider_continuation: None,
+        token_usage: None,
     }
 }
 
@@ -98,6 +99,7 @@ fn visible_response_mirror_must_match_ordered_text_on_record_and_restore() {
                 response: Some(response.clone()),
                 provider_state: None,
                 provider_continuation: None,
+                token_usage: None,
             },
             AgentRunError::InvalidCanonicalResponse,
         );

@@ -1,0 +1,84 @@
+{
+  "limitations": [
+    "Synthetic fixtures shared with the DeepSeek evaluation; not a model-quality benchmark.",
+    "The runtime fixture deliberately lowers local thresholds to force repeated compaction; this does not test the provider's physical window boundary.",
+    "Stateless Responses replay; no previous_response_id, provider-native compaction, streaming, or automatic transport retry.",
+    "Passing functional checks does not imply accurate estimates or sufficient decision headroom."
+  ],
+  "model": {
+    "context_window_source": "official_model_documentation_fallback",
+    "created": 1789406102,
+    "documentation": "https://developers.openai.com/api/docs/models/gpt-6-luna",
+    "id": "gpt-6-luna",
+    "max_output_tokens_source": "official_model_documentation_fallback",
+    "object": "model",
+    "owned_by": "system",
+    "reasoning_context": "all_turns",
+    "reasoning_effort": "none",
+    "replay_cost_method": "Provider output_tokens_details.reasoning_tokens is a conservative estimate of additional replay input, not an exact measurement; output_tokens is the upper-bound fallback. Ciphertext length is never tokenized.",
+    "resolved_context_window": 1050000,
+    "resolved_max_output_tokens": 128000,
+    "shutdown_date": null
+  },
+  "probe": {
+    "passed": true,
+    "response_text": "OK",
+    "usage": {
+      "cached_input_tokens": 0,
+      "input_tokens": 18,
+      "output_tokens": 5
+    }
+  },
+  "protocol": "responses",
+  "reasoning_effort": "none",
+  "requested_model": "gpt-6-luna",
+  "requests": [
+    {
+      "completed": true,
+      "effective_reasoning_context": "all_turns",
+      "effective_reasoning_effort": "none",
+      "elapsed_ms": 3706,
+      "estimated_input_tokens": 35,
+      "has_summary": false,
+      "input_items": 1,
+      "kind": "agent",
+      "max_output_tokens": 64,
+      "messages": 1,
+      "output_items": 1,
+      "portable_estimated_input_tokens": 35,
+      "reasoning_context": "all_turns",
+      "reasoning_effort": "none",
+      "replayed_assistant_count": 0,
+      "replayed_output_items": 0,
+      "replayed_reasoning_items": 0,
+      "replayed_reasoning_token_estimate": 0,
+      "request": 1,
+      "response_model": "gpt-6-luna",
+      "response_reasoning_items": 0,
+      "response_tool_calls": 0,
+      "returned_reasoning_tokens": 0,
+      "tools": 0,
+      "usage": {
+        "input_tokens": 18,
+        "input_tokens_details": {
+          "cached_tokens": 0
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 23
+      },
+      "wire_estimated_input_tokens": 35
+    }
+  ],
+  "resolved_default_policy": {
+    "input_limit": 997500,
+    "recent_tail": 24000,
+    "target": 708750,
+    "threshold": 945000,
+    "window": 1050000
+  },
+  "scenario": "probe",
+  "started_at_unix_seconds": 1792577281
+}

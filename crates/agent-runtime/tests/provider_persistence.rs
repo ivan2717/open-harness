@@ -313,6 +313,7 @@ async fn completed_tool_step_restores_state_without_reexecuting_the_tool() {
             run.record(RunEvent::ModelResponseReceived {
                 response: None,
                 provider_continuation: None,
+                token_usage: None,
                 content: "Writing the record".into(),
                 provider_state: Some(expected.clone()),
             })

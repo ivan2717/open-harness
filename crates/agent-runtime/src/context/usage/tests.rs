@@ -1,6 +1,7 @@
 use super::*;
+use crate::context::request_usage_baseline;
 use crate::{
-    ApproximateTokenCounter, ModelResponse, ModelUsage, ProviderContextIdentity,
+    ApproximateTokenCounter, ModelMessage, ModelResponse, ModelUsage, ProviderContextIdentity,
     ProviderContextWindow, ProviderReplayScope, ToolCall, ToolDefinition,
 };
 use agent_adapters::WireProtocol;
@@ -56,7 +57,12 @@ fn calibrated() -> (ContextUsageTracker, ModelRequest, ModelContextMetadata) {
     let mut request = request();
     let metadata = metadata();
     let output = output(1000, 25);
-    tracker.record_request("run", Some(&metadata), &request);
+    tracker.record_request(
+        "run",
+        Some(&metadata),
+        &request,
+        &ApproximateTokenCounter::default(),
+    );
     tracker.observe_response("run", Some(&metadata), &output);
     append_response(&mut request, &output.response);
     (tracker, request, metadata)
@@ -102,7 +108,12 @@ fn discarded_reasoning_output_is_not_charged_as_replayed_input() {
     // Of the 113 generated tokens, only 20 are replayed as the assistant
     // message and tool call; 93 reasoning tokens are discarded by the provider.
     let output = output(70, 113);
-    tracker.record_request("run", Some(&metadata), &request);
+    tracker.record_request(
+        "run",
+        Some(&metadata),
+        &request,
+        &ApproximateTokenCounter::default(),
+    );
     tracker.observe_response("run", Some(&metadata), &output);
     append_response(&mut request, &output.response);
     request.messages.push(ModelMessage::tool_result(
@@ -117,7 +128,12 @@ fn discarded_reasoning_output_is_not_charged_as_replayed_input() {
         100
     );
 
-    tracker.record_request("run", Some(&metadata), &request);
+    tracker.record_request(
+        "run",
+        Some(&metadata),
+        &request,
+        &ApproximateTokenCounter::default(),
+    );
     tracker.observe_response("run", Some(&metadata), &self::output(100, 2000));
     assert_eq!(
         tracker.estimate("run", Some(&metadata), &request, &MessageCounter),
@@ -171,7 +187,12 @@ fn changed_provider_state_invalidates_an_otherwise_identical_input_prefix() {
         "Visible response".into(),
         Some(state),
     ));
-    tracker.record_request("run", Some(&metadata), &request);
+    tracker.record_request(
+        "run",
+        Some(&metadata),
+        &request,
+        &ApproximateTokenCounter::default(),
+    );
     tracker.observe_response("run", Some(&metadata), &output(1000, 25));
     assert_eq!(
         tracker.estimate("run", Some(&metadata), &request, &counter),
@@ -192,23 +213,15 @@ fn changed_provider_state_invalidates_an_otherwise_identical_input_prefix() {
 }
 
 #[test]
-fn changed_requests_invalidate_only_when_recorded_as_the_actual_request() {
+fn changed_fixed_headers_invalidate_only_when_recorded_as_the_actual_request() {
     let counter = ApproximateTokenCounter::default();
     let input_estimate = counter.count_tokens(&request());
-    for change in 0..5 {
+    for change in 0..2 {
         let (tracker, request, metadata) = calibrated();
         let mut changed = request.clone();
         match change {
             0 => changed.instructions.push_str(" Updated."),
             1 => changed.tools[0].input_schema = r#"{"type":"object"}"#.into(),
-            2 => {
-                changed.messages[0] = ModelMessage::user("Different input".into());
-            }
-            3 => changed.messages.clear(),
-            4 => {
-                changed.messages[0] =
-                    ModelMessage::summary("checkpoint".into(), "Investigate this code.".into());
-            }
             _ => unreachable!(),
         }
         assert_eq!(
@@ -221,7 +234,12 @@ fn changed_requests_invalidate_only_when_recorded_as_the_actual_request() {
             tracker.estimate("run", Some(&metadata), &request, &counter),
             1000 + counter.count_tokens(&request) - input_estimate
         );
-        tracker.record_request("run", Some(&metadata), &changed);
+        tracker.record_request(
+            "run",
+            Some(&metadata),
+            &changed,
+            &ApproximateTokenCounter::default(),
+        );
         assert_eq!(
             tracker.estimate("run", Some(&metadata), &request, &counter),
             counter.count_tokens(&request)
@@ -267,7 +285,7 @@ fn missing_model_identity_never_reuses_provider_usage() {
         tracker.estimate("run", Some(&metadata), &request, &counter),
         1000 + counter.count_tokens(&request) - input_estimate
     );
-    tracker.record_request("run", None, &request);
+    tracker.record_request("run", None, &request, &ApproximateTokenCounter::default());
     tracker.observe_response("run", None, &output(10_000, 100));
     assert_eq!(
         tracker.estimate("run", None, &request, &counter),
@@ -296,7 +314,12 @@ fn missing_usage_preserves_only_the_last_matching_baseline() {
     let counter = ApproximateTokenCounter::default();
     let input_estimate = counter.count_tokens(&request());
     let (tracker, mut request, metadata) = calibrated();
-    tracker.record_request("run", Some(&metadata), &request);
+    tracker.record_request(
+        "run",
+        Some(&metadata),
+        &request,
+        &ApproximateTokenCounter::default(),
+    );
     let mut next_output = output(1, 1);
     next_output.usage = None;
     tracker.observe_response("run", Some(&metadata), &next_output);
@@ -313,7 +336,12 @@ fn missing_usage_preserves_only_the_last_matching_baseline() {
         expected
     );
     request.instructions.push_str(" Changed.");
-    tracker.record_request("run", Some(&metadata), &request);
+    tracker.record_request(
+        "run",
+        Some(&metadata),
+        &request,
+        &ApproximateTokenCounter::default(),
+    );
     tracker.observe_response("run", Some(&metadata), &next_output);
     assert_eq!(
         tracker.estimate("run", Some(&metadata), &request, &counter),
@@ -326,7 +354,12 @@ fn zero_input_usage_is_not_applied_to_nonempty_input() {
     let counter = ApproximateTokenCounter::default();
     let (tracker, mut request, metadata) = calibrated();
     let invalid = output(0, 10);
-    tracker.record_request("run", Some(&metadata), &request);
+    tracker.record_request(
+        "run",
+        Some(&metadata),
+        &request,
+        &ApproximateTokenCounter::default(),
+    );
     tracker.observe_response("run", Some(&metadata), &invalid);
     append_response(&mut request, &invalid.response);
     assert_eq!(
@@ -342,7 +375,12 @@ fn output_usage_does_not_change_the_input_baseline() {
         let tracker = ContextUsageTracker::default();
         let metadata = metadata();
         let request = request();
-        tracker.record_request("run", Some(&metadata), &request);
+        tracker.record_request(
+            "run",
+            Some(&metadata),
+            &request,
+            &ApproximateTokenCounter::default(),
+        );
         tracker.observe_response("run", Some(&metadata), &output(input_tokens, output_tokens));
         assert_eq!(
             tracker.estimate("run", Some(&metadata), &request, &counter),
@@ -372,7 +410,12 @@ fn zero_output_usage_still_estimates_replayed_responses() {
         let input_estimate = counter.count_tokens(&request);
         let mut output = output(100, 0);
         output.response = response;
-        tracker.record_request("run", Some(&metadata), &request);
+        tracker.record_request(
+            "run",
+            Some(&metadata),
+            &request,
+            &ApproximateTokenCounter::default(),
+        );
         tracker.observe_response("run", Some(&metadata), &output);
         append_response(&mut request, &output.response);
         assert_eq!(
@@ -404,7 +447,12 @@ fn native_requests_and_responses_use_native_count_without_usage_calibration() {
         tracker.estimate("run", Some(&metadata), &request, &counter),
         counter.count_tokens(&request)
     );
-    tracker.record_request("run", Some(&metadata), &request);
+    tracker.record_request(
+        "run",
+        Some(&metadata),
+        &request,
+        &ApproximateTokenCounter::default(),
+    );
     tracker.observe_response("run", Some(&metadata), &output(1, 1));
     request.provider_context = None;
     assert_eq!(
@@ -413,7 +461,12 @@ fn native_requests_and_responses_use_native_count_without_usage_calibration() {
     );
     for compacted in [false, true] {
         let (tracker, request, metadata) = calibrated();
-        tracker.record_request("run", Some(&metadata), &request);
+        tracker.record_request(
+            "run",
+            Some(&metadata),
+            &request,
+            &ApproximateTokenCounter::default(),
+        );
         let mut output = output(1, 1);
         output.context_compacted = compacted;
         if !compacted {
@@ -440,7 +493,12 @@ fn independent_runs_can_share_clones_and_update_concurrently() {
                 let counter = ApproximateTokenCounter::default();
                 let input_estimate = counter.count_tokens(&request);
                 let output = output(100 + index, 0);
-                tracker.record_request(&run_id, Some(&metadata), &request);
+                tracker.record_request(
+                    &run_id,
+                    Some(&metadata),
+                    &request,
+                    &ApproximateTokenCounter::default(),
+                );
                 tracker.observe_response(&run_id, Some(&metadata), &output);
                 append_response(&mut request, &output.response);
                 assert_eq!(
@@ -466,7 +524,12 @@ fn cache_is_bounded_and_explicit_forget_discards_usage() {
         counter.count_tokens(&request)
     );
     for index in 0..=MAX_TRACKED_RUNS {
-        tracker.record_request(&format!("run-{index}"), Some(&metadata), &request);
+        tracker.record_request(
+            &format!("run-{index}"),
+            Some(&metadata),
+            &request,
+            &ApproximateTokenCounter::default(),
+        );
     }
     let cache = tracker.cache.lock().unwrap();
     assert_eq!(cache.runs.len(), MAX_TRACKED_RUNS);
@@ -486,7 +549,12 @@ fn poisoned_cache_falls_back_without_panicking() {
         .is_err()
     );
     let counter = ApproximateTokenCounter::default();
-    tracker.record_request("run", Some(&metadata), &request);
+    tracker.record_request(
+        "run",
+        Some(&metadata),
+        &request,
+        &ApproximateTokenCounter::default(),
+    );
     tracker.observe_response("run", Some(&metadata), &output(1, 1));
     tracker.forget("run");
     assert_eq!(
@@ -501,7 +569,12 @@ fn calibrated_extension_saturates_and_non_monotonic_counters_fall_back() {
     let metadata = metadata();
     let mut request = request();
     let output = output(usize::MAX - 2, 0);
-    tracker.record_request("run", Some(&metadata), &request);
+    tracker.record_request(
+        "run",
+        Some(&metadata),
+        &request,
+        &ApproximateTokenCounter::default(),
+    );
     tracker.observe_response("run", Some(&metadata), &output);
     append_response(&mut request, &output.response);
     request.messages.push(ModelMessage::tool_result(
@@ -528,4 +601,424 @@ fn calibrated_extension_saturates_and_non_monotonic_counters_fall_back() {
         tracker.estimate("run", Some(&metadata), &request, &NonMonotonicCounter),
         NonMonotonicCounter.count_tokens(&request)
     );
+}
+
+fn usage_event(
+    sequence: u64,
+    metadata: &ModelContextMetadata,
+    request: &ModelRequest,
+    input_tokens: usize,
+) -> RunEventEnvelope {
+    RunEventEnvelope {
+        sequence,
+        step: sequence as u32,
+        occurred_at: std::time::SystemTime::UNIX_EPOCH,
+        event: RunEvent::ModelResponseReceived {
+            content: "done".into(),
+            response: None,
+            provider_state: None,
+            provider_continuation: None,
+            token_usage: Some(Box::new(agent_core::token_usage::ModelUsageRecord {
+                usage: ModelUsage {
+                    input_tokens,
+                    output_tokens: 500,
+                    cached_input_tokens: Some(input_tokens),
+                },
+                baseline: request_usage_baseline(Some(metadata), request),
+            })),
+        },
+    }
+}
+
+#[test]
+fn durable_usage_round_trip_restores_the_same_prediction_and_margin() {
+    let metadata = metadata();
+    let request = request();
+    let event = usage_event(3, &metadata, &request, 1000);
+    let serialized = serde_json::to_string(&event).unwrap();
+    assert!(!serialized.contains("Preserve the constraints"));
+    assert!(!serialized.contains("Investigate this code"));
+    let events = vec![serde_json::from_str(&serialized).unwrap()];
+    let counter = ApproximateTokenCounter::default();
+    let (live, continued, _) = calibrated();
+    let restored = ContextUsageTracker::default();
+    restored.restore("run", Some(&metadata), &continued, &events);
+    let actual = restored.measurement("run", Some(&metadata), &continued, &counter);
+    assert_eq!(
+        actual,
+        live.measurement("run", Some(&metadata), &continued, &counter)
+    );
+    assert_eq!(actual.measured_input_tokens, Some(1000));
+    assert_eq!(
+        actual.source,
+        super::super::measurement::ContextMeasurementSource::ProviderCalibrated
+    );
+    let extension = counter.count_tokens(&continued) - counter.count_tokens(&request);
+    assert_eq!(actual.estimated_delta_tokens, extension);
+    assert_eq!(
+        actual.estimation_margin_tokens,
+        (extension * 15).div_ceil(100)
+    );
+    assert_eq!(
+        actual.decision_input_tokens,
+        1000 + extension + actual.estimation_margin_tokens
+    );
+}
+
+#[test]
+fn restored_baseline_rejects_changed_prefix_tools_model_and_adapter() {
+    let metadata = metadata();
+    let request = request();
+    let events = vec![usage_event(1, &metadata, &request, 1000)];
+    let counter = ApproximateTokenCounter::default();
+    for change in 0..6 {
+        let mut changed = request.clone();
+        let mut changed_metadata = metadata.clone();
+        match change {
+            0 => changed.instructions.push_str(" changed"),
+            1 => changed.tools[0].input_schema = "[]".into(),
+            2 => changed.messages[0] = ModelMessage::user("changed".into()),
+            3 => changed.messages[0] = ModelMessage::summary("summary".into(), "short".into()),
+            4 => changed_metadata.model = "other".into(),
+            5 => changed_metadata.accounting_identity = Some("responses-v2".into()),
+            _ => unreachable!(),
+        }
+        let tracker = ContextUsageTracker::default();
+        tracker.restore("run", Some(&changed_metadata), &changed, &events);
+        let actual = tracker.measurement("run", Some(&changed_metadata), &changed, &counter);
+        assert_eq!(actual.measured_input_tokens, None);
+        assert_eq!(
+            actual.estimated_input_tokens,
+            counter.count_tokens(&changed)
+        );
+    }
+}
+
+#[test]
+fn restore_preserves_pending_request_and_updates_new_durable_samples() {
+    let metadata = metadata();
+    let request = request();
+    let mut events = vec![usage_event(1, &metadata, &request, 1000)];
+    let tracker = ContextUsageTracker::default();
+    let counter = ApproximateTokenCounter::default();
+    tracker.record_request(
+        "run",
+        Some(&metadata),
+        &request,
+        &ApproximateTokenCounter::default(),
+    );
+    tracker.restore("run", Some(&metadata), &request, &events);
+    tracker.observe_response("run", Some(&metadata), &output(2000, 100));
+    assert_eq!(
+        tracker.estimate("run", Some(&metadata), &request, &counter),
+        2000
+    );
+    // A diagnostic read must not roll a freshly observed sample back.
+    tracker.restore("run", Some(&metadata), &request, &events);
+    assert_eq!(
+        tracker.estimate("run", Some(&metadata), &request, &counter),
+        2000
+    );
+    events.push(usage_event(2, &metadata, &request, 3000));
+    tracker.restore("run", Some(&metadata), &request, &events);
+    assert_eq!(
+        tracker.estimate("run", Some(&metadata), &request, &counter),
+        3000
+    );
+}
+
+#[test]
+fn missing_durable_usage_keeps_anchor_but_unbound_or_zero_usage_invalidates_it() {
+    let metadata = metadata();
+    let request = request();
+    let counter = ApproximateTokenCounter::default();
+    for mode in 0..3 {
+        let mut latest = usage_event(2, &metadata, &request, 0);
+        if let RunEvent::ModelResponseReceived { token_usage, .. } = &mut latest.event {
+            match mode {
+                0 => *token_usage = None,
+                1 => token_usage.as_mut().unwrap().baseline = None,
+                2 => {}
+                _ => unreachable!(),
+            }
+        }
+        let events = vec![usage_event(1, &metadata, &request, 1000), latest];
+        let tracker = ContextUsageTracker::default();
+        tracker.restore("run", Some(&metadata), &request, &events);
+        assert_eq!(
+            tracker.estimate("run", Some(&metadata), &request, &counter),
+            if mode == 0 {
+                1000
+            } else {
+                counter.count_tokens(&request)
+            }
+        );
+    }
+}
+
+#[test]
+fn native_measurement_only_adds_margin_to_visible_input() {
+    let tracker = ContextUsageTracker::default();
+    let metadata = metadata();
+    let mut request = request();
+    let counter = ApproximateTokenCounter::default();
+    let visible = counter.count_tokens(&request);
+    request.provider_context = Some(native_window());
+    let measurement = tracker.measurement("run", Some(&metadata), &request, &counter);
+    assert_eq!(measurement.measured_input_tokens, Some(500));
+    assert_eq!(measurement.estimated_delta_tokens, visible);
+    assert_eq!(
+        measurement.estimation_margin_tokens,
+        (visible * 15).div_ceil(100)
+    );
+    assert_eq!(measurement.estimated_input_tokens, visible + 500);
+    assert_eq!(
+        measurement.source,
+        super::super::measurement::ContextMeasurementSource::ProviderNative
+    );
+}
+
+#[test]
+fn measurement_margin_can_be_disabled_recomputed_and_saturates() {
+    let measured = ContextMeasurement::estimated(100).with_margin_percent(20);
+    assert_eq!(measured.decision_input_tokens, 120);
+    assert_eq!(
+        measured
+            .clone()
+            .with_margin_percent(15)
+            .decision_input_tokens,
+        115
+    );
+    assert_eq!(measured.with_margin_percent(0).decision_input_tokens, 100);
+    assert_eq!(
+        ContextMeasurement::estimated(usize::MAX).decision_input_tokens,
+        usize::MAX
+    );
+    let exact = ContextMeasurement::calibrated(100, 2000, 0);
+    assert_eq!(exact.decision_input_tokens, 2000);
+    assert_eq!(exact.estimation_margin_tokens, 0);
+}
+
+#[test]
+fn restoring_native_or_unknown_candidates_does_not_erase_live_calibration() {
+    let (tracker, request, metadata) = calibrated();
+    let counter = ApproximateTokenCounter::default();
+    let expected = tracker.measurement("run", Some(&metadata), &request, &counter);
+    let events = vec![usage_event(1, &metadata, &self::request(), 1000)];
+    let mut native = request.clone();
+    native.provider_context = Some(native_window());
+    tracker.restore("run", Some(&metadata), &native, &events);
+    tracker.restore("run", None, &request, &events);
+    assert_eq!(
+        tracker.measurement("run", Some(&metadata), &request, &counter),
+        expected
+    );
+}
+
+#[test]
+fn spending_only_usage_never_calibrates_requests_or_restored_history() {
+    let (tracker, request, metadata) = calibrated();
+    let counter = ApproximateTokenCounter::default();
+    let events = vec![usage_event(1, &metadata, &self::request(), 1000)];
+    let spending_only = metadata.clone().with_input_usage_calibration(false);
+    assert!(request_usage_baseline(Some(&spending_only), &request).is_none());
+    tracker.restore("run", Some(&spending_only), &request, &events);
+    assert_eq!(
+        tracker
+            .measurement("run", Some(&spending_only), &request, &counter)
+            .measured_input_tokens,
+        None
+    );
+    // Inspecting another route preserves the actual route's anchor.
+    assert_eq!(
+        tracker
+            .measurement("run", Some(&metadata), &request, &counter)
+            .measured_input_tokens,
+        Some(1000)
+    );
+    tracker.record_request(
+        "run",
+        Some(&spending_only),
+        &request,
+        &ApproximateTokenCounter::default(),
+    );
+    tracker.observe_response("run", Some(&spending_only), &output(10_000, 10));
+    assert_eq!(
+        tracker
+            .measurement("run", Some(&spending_only), &request, &counter)
+            .measured_input_tokens,
+        None
+    );
+    assert_eq!(
+        tracker
+            .measurement("run", Some(&metadata), &request, &counter)
+            .measured_input_tokens,
+        None
+    );
+}
+
+#[test]
+fn legacy_log_without_samples_preserves_an_observed_live_baseline() {
+    let (tracker, request, metadata) = calibrated();
+    let counter = ApproximateTokenCounter::default();
+    let expected = tracker.measurement("run", Some(&metadata), &request, &counter);
+    let mut event = usage_event(1, &metadata, &request, 1000);
+    if let RunEvent::ModelResponseReceived { token_usage, .. } = &mut event.event {
+        *token_usage = None;
+    }
+    tracker.restore("run", Some(&metadata), &request, &[event]);
+    assert_eq!(
+        tracker.measurement("run", Some(&metadata), &request, &counter),
+        expected
+    );
+}
+
+#[test]
+fn rewritten_history_retains_conservative_calibration_without_claiming_measurement() {
+    let tracker = ContextUsageTracker::default();
+    let metadata = metadata();
+    let counter = ApproximateTokenCounter::default();
+    let mut original = request();
+    original.messages.push(ModelMessage::assistant(
+        "long prior history".repeat(120),
+        None,
+    ));
+    let anchor_raw = counter.count_tokens(&original);
+    tracker.record_request("run", Some(&metadata), &original, &counter);
+    tracker.observe_response("run", Some(&metadata), &output(anchor_raw + 400, 9000));
+    let mut compacted = original.clone();
+    compacted.messages = vec![ModelMessage::summary(
+        "checkpoint".into(),
+        "short handoff".into(),
+    )];
+    let raw = counter.count_tokens(&compacted);
+    let actual = tracker.measurement("run", Some(&metadata), &compacted, &counter);
+    assert_eq!(actual.raw_estimated_input_tokens, raw);
+    assert_eq!(actual.estimated_input_tokens, raw + 400);
+    assert_eq!(actual.measured_input_tokens, None);
+    assert_eq!(actual.estimated_delta_tokens, raw + 400);
+    assert_eq!(
+        actual.estimation_margin_tokens,
+        ((raw + 400) * 15).div_ceil(100)
+    );
+    assert_eq!(
+        actual.source,
+        super::super::ContextMeasurementSource::ProviderCalibrated
+    );
+
+    // An absent usage sample after a rewrite preserves the original anchor;
+    // repeatedly projecting the request cannot compound the correction.
+    tracker.record_request("run", Some(&metadata), &compacted, &counter);
+    let mut missing = output(1, 1);
+    missing.usage = None;
+    tracker.observe_response("run", Some(&metadata), &missing);
+    assert_eq!(
+        tracker.measurement("run", Some(&metadata), &compacted, &counter),
+        actual
+    );
+    compacted
+        .messages
+        .push(ModelMessage::user("Next step".into()));
+    assert_eq!(
+        tracker.estimate("run", Some(&metadata), &compacted, &counter),
+        counter.count_tokens(&compacted) + 400
+    );
+
+    tracker.record_request("run", Some(&metadata), &compacted, &counter);
+    tracker.observe_response("run", Some(&metadata), &output(200, 8000));
+    let renewed = tracker.measurement("run", Some(&metadata), &compacted, &counter);
+    assert_eq!(renewed.measured_input_tokens, Some(200));
+    assert_eq!(renewed.estimated_delta_tokens, 0);
+}
+
+#[test]
+fn rewritten_history_uses_only_identical_durable_counter_identity() {
+    let metadata = metadata();
+    let counter = ApproximateTokenCounter::default();
+    let original = request();
+    let mut event = usage_event(1, &metadata, &original, 1000);
+    if let RunEvent::ModelResponseReceived { token_usage, .. } = &mut event.event {
+        token_usage.as_mut().unwrap().baseline =
+            request_usage_baseline_with_counter(Some(&metadata), &original, &counter);
+    }
+    let encoded = serde_json::to_string(&event).unwrap();
+    assert!(!encoded.contains("Preserve the constraints"));
+    let events = vec![serde_json::from_str(&encoded).unwrap()];
+    let mut compacted = original.clone();
+    compacted.messages = vec![ModelMessage::summary("checkpoint".into(), "summary".into())];
+    let tracker = ContextUsageTracker::default();
+    tracker.restore("run", Some(&metadata), &compacted, &events);
+    assert_eq!(
+        tracker
+            .measurement("run", Some(&metadata), &compacted, &counter)
+            .source,
+        super::super::ContextMeasurementSource::ProviderCalibrated
+    );
+    for other in [
+        ApproximateTokenCounter::conservative(),
+        ApproximateTokenCounter::new(4).unwrap(),
+    ] {
+        assert_eq!(
+            tracker
+                .measurement("run", Some(&metadata), &compacted, &other)
+                .source,
+            super::super::ContextMeasurementSource::Estimated
+        );
+    }
+    struct Unidentified;
+    impl TokenCounter for Unidentified {
+        fn count_tokens(&self, request: &ModelRequest) -> usize {
+            ApproximateTokenCounter::default().count_tokens(request)
+        }
+    }
+    assert_eq!(
+        tracker
+            .measurement("run", Some(&metadata), &compacted, &Unidentified)
+            .source,
+        super::super::ContextMeasurementSource::Estimated
+    );
+    // Legacy samples are still exact-prefix measurements, but cannot be used
+    // as a signed-delta anchor when the original estimate was never persisted.
+    let legacy = ContextUsageTracker::default();
+    legacy.restore(
+        "run",
+        Some(&metadata),
+        &compacted,
+        &[usage_event(1, &metadata, &original, 1000)],
+    );
+    assert_eq!(
+        legacy.estimate("run", Some(&metadata), &original, &counter),
+        1000
+    );
+    assert_eq!(
+        legacy
+            .measurement("run", Some(&metadata), &compacted, &counter)
+            .source,
+        super::super::ContextMeasurementSource::Estimated
+    );
+}
+
+#[test]
+fn rewritten_calibration_has_a_raw_estimate_floor_and_saturates() {
+    for (raw, measured, anchor, expected) in [
+        (10, 20, 100, 10),
+        (10, 100, 20, 90),
+        (100, 50, 20, 130),
+        (100, usize::MAX, 20, usize::MAX),
+    ] {
+        let actual = ContextMeasurement::recalibrated(raw, measured, anchor);
+        assert_eq!(actual.estimated_input_tokens, expected);
+        assert_eq!(actual.measured_input_tokens, None);
+        assert_eq!(actual.estimated_delta_tokens, expected);
+    }
+}
+
+#[test]
+fn persisted_legacy_baseline_without_estimate_fields_is_readable() {
+    let baseline = request_usage_baseline(Some(&metadata()), &request()).unwrap();
+    let encoded = serde_json::to_string(&baseline).unwrap();
+    assert!(!encoded.contains("raw_estimated_input_tokens"));
+    assert!(!encoded.contains("estimator_identity"));
+    let restored: RequestUsageBaseline = serde_json::from_str(&encoded).unwrap();
+    assert_eq!(restored, baseline);
 }

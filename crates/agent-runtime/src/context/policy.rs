@@ -25,6 +25,9 @@ struct PolicyOverrides {
     compaction_threshold: Option<usize>,
     compaction_target: Option<usize>,
     recent_tail_tokens: Option<usize>,
+    recent_tail_percent: Option<u8>,
+    preserve_all_user_messages: bool,
+    estimation_margin_percent: Option<u8>,
 }
 
 impl ContextPolicy {
@@ -84,8 +87,31 @@ impl ContextPolicy {
         self.recent_tail_tokens
     }
 
+    /// Recent history uses 16% of the input space remaining after instructions
+    /// and tool schemas. An explicit token budget takes precedence.
+    pub fn recent_tail_tokens_for_message_budget(self, available_tokens: usize) -> usize {
+        self.overrides.recent_tail_tokens.unwrap_or_else(|| {
+            percentage(
+                available_tokens,
+                self.overrides.recent_tail_percent.unwrap_or(16),
+            )
+            .max(1)
+            .min(self.compaction_threshold - 1)
+        })
+    }
+
+    pub fn preserve_all_user_messages(self) -> bool {
+        self.overrides.preserve_all_user_messages
+    }
+
     pub fn max_tool_output_chars(self) -> usize {
         self.max_tool_output_chars
+    }
+
+    /// Extra headroom applied only to input that has not been measured by the
+    /// provider. Independent of the fixed model-window safety reservation.
+    pub fn estimation_margin_percent(self) -> u8 {
+        self.overrides.estimation_margin_percent.unwrap_or(15)
     }
 }
 
@@ -152,6 +178,13 @@ impl ContextPolicyBuilder {
         self
     }
 
+    /// Percentage (0..=100) added to the unmeasured input portion. Defaults to
+    /// 15. Zero disables this additional estimation margin.
+    pub fn estimation_margin_percent(mut self, percent: u8) -> Self {
+        self.overrides.estimation_margin_percent = Some(percent);
+        self
+    }
+
     pub fn compaction_threshold(mut self, tokens: usize) -> Self {
         self.overrides.compaction_threshold = Some(tokens);
         self
@@ -164,6 +197,20 @@ impl ContextPolicyBuilder {
 
     pub fn recent_tail_tokens(mut self, tokens: usize) -> Self {
         self.overrides.recent_tail_tokens = Some(tokens);
+        self
+    }
+
+    /// Percentage of available message space retained verbatim (1..=99).
+    /// Explicit `recent_tail_tokens` overrides this ratio.
+    pub fn recent_tail_percent(mut self, percent: u8) -> Self {
+        self.overrides.recent_tail_percent = Some(percent);
+        self
+    }
+
+    /// Keep every historical user message verbatim. By default only the latest
+    /// user input is protected; older inputs remain in the canonical journal.
+    pub fn preserve_all_user_messages(mut self, preserve: bool) -> Self {
+        self.overrides.preserve_all_user_messages = preserve;
         self
     }
 
@@ -193,6 +240,19 @@ fn resolve_policy(
     max_tool_output_chars: usize,
     metadata: Option<&ModelContextMetadata>,
 ) -> Result<ContextPolicy, ContextPolicyError> {
+    if let Some(percent) = overrides.recent_tail_percent
+        && !(1..=99).contains(&percent)
+    {
+        return Err(ContextPolicyError::InvalidRecentTailPercent(percent));
+    }
+    if overrides
+        .estimation_margin_percent
+        .is_some_and(|percent| percent > 100)
+    {
+        return Err(ContextPolicyError::InvalidEstimationMarginPercent(
+            overrides.estimation_margin_percent.unwrap(),
+        ));
+    }
     if let Some(metadata) = metadata {
         metadata
             .validate()
@@ -244,9 +304,14 @@ fn resolve_policy(
             input_token_limit: model_budget.input_token_limit(),
         });
     }
-    let recent_tail_tokens = overrides
-        .recent_tail_tokens
-        .unwrap_or_else(|| 24_000.min((compaction_threshold / 4).max(1)));
+    let recent_tail_tokens = overrides.recent_tail_tokens.unwrap_or_else(|| {
+        percentage(
+            model_budget.input_token_limit(),
+            overrides.recent_tail_percent.unwrap_or(16),
+        )
+        .max(1)
+        .min(compaction_threshold.saturating_sub(1))
+    });
     if recent_tail_tokens == 0 {
         return Err(ContextPolicyError::ZeroRecentTailTokens);
     }
@@ -282,6 +347,8 @@ fn resolve_policy(
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ContextPolicyError {
+    InvalidRecentTailPercent(u8),
+    InvalidEstimationMarginPercent(u8),
     ModelMetadata(ModelContextMetadataError),
     ModelBudget(ModelContextBudgetError),
     ZeroInputTokenLimit,
@@ -305,6 +372,14 @@ pub enum ContextPolicyError {
 impl fmt::Display for ContextPolicyError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::InvalidRecentTailPercent(percent) => write!(
+                formatter,
+                "recent-tail percentage ({percent}) must be between 1 and 99"
+            ),
+            Self::InvalidEstimationMarginPercent(percent) => write!(
+                formatter,
+                "input estimation margin ({percent}) must be between 0 and 100"
+            ),
             Self::ModelMetadata(error) => error.fmt(formatter),
             Self::ModelBudget(error) => error.fmt(formatter),
             Self::ZeroInputTokenLimit => {

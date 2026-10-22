@@ -1,0 +1,219 @@
+{
+  "calls": [
+    {
+      "call": 1,
+      "elapsed_ms": 7821,
+      "finish_reason": "stop",
+      "message_count": 1,
+      "provider_state_retained": true,
+      "provider_usage": {
+        "cached_input_tokens": 892479,
+        "input_tokens": 892482,
+        "output_tokens": 62
+      },
+      "raw_estimated_input_tokens": 864612,
+      "raw_signed_error_percent": -3.1227520555036414,
+      "request_fingerprint": "ac3040956da9746a",
+      "stage": "overflow_anchor_large_turn",
+      "status": "succeeded",
+      "summary_mode": null
+    },
+    {
+      "call": 2,
+      "context_overflow": true,
+      "elapsed_ms": 6771,
+      "error": "model provider rejected the response (ContextOverflow)",
+      "message_count": 3,
+      "raw_estimated_input_tokens": 896482,
+      "request_fingerprint": "00524f84ea3b4e73",
+      "stage": "natural_overflow_recovery",
+      "status": "failed",
+      "summary_mode": null
+    },
+    {
+      "call": 3,
+      "elapsed_ms": 16000,
+      "finish_reason": "stop",
+      "message_count": 2,
+      "provider_state_retained": true,
+      "provider_usage": {
+        "cached_input_tokens": 892479,
+        "input_tokens": 892673,
+        "output_tokens": 507
+      },
+      "raw_estimated_input_tokens": 864868,
+      "raw_signed_error_percent": -3.114802396846328,
+      "request_fingerprint": "dce5d726010ec389",
+      "stage": "natural_overflow_recovery",
+      "status": "succeeded",
+      "summary_mode": "projected_prefix"
+    },
+    {
+      "call": 4,
+      "elapsed_ms": 4199,
+      "finish_reason": "stop",
+      "message_count": 3,
+      "provider_state_retained": true,
+      "provider_usage": {
+        "cached_input_tokens": 0,
+        "input_tokens": 33162,
+        "output_tokens": 40
+      },
+      "raw_estimated_input_tokens": 32214,
+      "raw_signed_error_percent": -2.8586936855436895,
+      "request_fingerprint": "cb052ab7457eb3c8",
+      "stage": "natural_overflow_recovery",
+      "status": "succeeded",
+      "summary_mode": null
+    }
+  ],
+  "checkpoints": [
+    {
+      "after_tokens": 32214,
+      "before_tokens": 896482,
+      "has_summary": true,
+      "id": "context:overflow-boundary:0:3566003e4ae0641957091bdc2e73f2e4",
+      "pruned_results": 0,
+      "run_id": "overflow-boundary",
+      "summary": {
+        "completed_work": [
+          "Identified NEEDLE_START as MINT-R4.",
+          "Identified NEEDLE_MIDDLE as COBALT-P8.",
+          "Identified NEEDLE_END as LARCH-V2."
+        ],
+        "constraints": [
+          "The original request was to return only a JSON object with keys start, middle, end containing the exact marker values, ignoring ordinary filler records.",
+          "The latest request is to provide only a JSON handoff object with exactly the specified fields; do not continue the extraction task or call tools."
+        ],
+        "current_plan": [
+          "Use the identified values if the extraction task is resumed."
+        ],
+        "current_state": "All three marker values are present in the supplied records. No assistant extraction response or tool activity occurred before the handoff request.",
+        "decisions": [
+          "Treat the long row-prefixed amber cedar slate entries as ordinary filler.",
+          "Preserve the exact capitalization and punctuation-free marker values."
+        ],
+        "failed_attempts": [],
+        "important_artifacts": [
+          "Requested extraction mapping: start=MINT-R4, middle=COBALT-P8, end=LARCH-V2."
+        ],
+        "next_action": "Return this handoff JSON; do not resume extraction.",
+        "objective": "Hand off the synthetic-record marker extraction task.",
+        "unresolved_questions": []
+      },
+      "through_sequence": 0
+    }
+  ],
+  "complete": true,
+  "measurements": [
+    {
+      "measurement": {
+        "decision_input_tokens": 994304,
+        "estimated_delta_tokens": 864612,
+        "estimated_input_tokens": 864612,
+        "estimation_margin_tokens": 129692,
+        "measured_input_tokens": null,
+        "raw_estimated_input_tokens": 864612,
+        "source": "estimated"
+      },
+      "request_fingerprint": "ac3040956da9746a",
+      "run_id": "overflow-boundary"
+    },
+    {
+      "measurement": {
+        "decision_input_tokens": 929133,
+        "estimated_delta_tokens": 31870,
+        "estimated_input_tokens": 924352,
+        "estimation_margin_tokens": 4781,
+        "measured_input_tokens": 892482,
+        "raw_estimated_input_tokens": 896482,
+        "source": "provider_calibrated"
+      },
+      "request_fingerprint": "00524f84ea3b4e73",
+      "run_id": "overflow-boundary"
+    },
+    {
+      "measurement": {
+        "decision_input_tokens": 37047,
+        "estimated_delta_tokens": 32214,
+        "estimated_input_tokens": 32214,
+        "estimation_margin_tokens": 4833,
+        "measured_input_tokens": null,
+        "raw_estimated_input_tokens": 32214,
+        "source": "estimated"
+      },
+      "request_fingerprint": "cb052ab7457eb3c8",
+      "run_id": "overflow-boundary"
+    }
+  ],
+  "metadata": {
+    "compaction_target": 708750,
+    "compaction_threshold": 945000,
+    "context_window": 1050000,
+    "default_policy": true,
+    "estimation_margin_percent": 15,
+    "fixture_version": "ascii-fixed-records-v1",
+    "input_limit": 997500,
+    "max_model_calls": 6,
+    "mode": "overflow",
+    "model": "gpt-6-luna",
+    "output_reserve": 8192,
+    "protocol": "responses",
+    "provenance": "Every historical response and usage anchor is produced by the live provider through the runtime. The first user input contains synthetic records; the second adds only filler and requests previously observed markers. No errors, counters, policy thresholds or model windows are substituted.",
+    "provider": "openai",
+    "reasoning": "high",
+    "rows": 111547
+  },
+  "overflow_anchor": {
+    "answer": "{\"start\":\"MINT-R4\",\"middle\":\"COBALT-P8\",\"end\":\"LARCH-V2\"}",
+    "bytes": 3458231,
+    "checkpoints": 0,
+    "elapsed_ms": 8340,
+    "error": null,
+    "markers_retained": true,
+    "provider_calls": 1,
+    "rows": 111547
+  },
+  "passed": true,
+  "scenarios": [
+    {
+      "request_fingerprint": "00524f84ea3b4e73",
+      "run_id": "overflow-boundary",
+      "stage": "overflow_recovery_requested"
+    },
+    {
+      "additional_input_bytes": 127229,
+      "additional_rows": 4096,
+      "all_turns_and_usage_anchors_live": true,
+      "answer": "{\"start\":\"MINT-R4\",\"middle\":\"COBALT-P8\",\"end\":\"LARCH-V2\"}",
+      "elapsed_ms": 36863,
+      "final_retry_count": 1,
+      "first_input_rows": 111547,
+      "marker_retention": true,
+      "original_log_unchanged": true,
+      "passed": true,
+      "provider_calls": 4,
+      "rejected_measurement": {
+        "measurement": {
+          "decision_input_tokens": 929133,
+          "estimated_delta_tokens": 31870,
+          "estimated_input_tokens": 924352,
+          "estimation_margin_tokens": 4781,
+          "measured_input_tokens": 892482,
+          "raw_estimated_input_tokens": 896482,
+          "source": "provider_calibrated"
+        },
+        "request_fingerprint": "00524f84ea3b4e73",
+        "run_id": "overflow-boundary"
+      },
+      "rejected_request_usage_calibrated": true,
+      "runtime_error": null,
+      "runtime_recovery_count": 1,
+      "scenario": "overflow",
+      "summary_after_rejection": true,
+      "summary_before_rejection": false,
+      "summary_checkpoints": 1,
+      "typed_overflow_count": 1
+    }
+  ]
+}

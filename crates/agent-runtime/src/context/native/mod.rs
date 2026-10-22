@@ -90,13 +90,10 @@ impl<C, K, N> NativeContextManager<C, K, N> {
 impl<C: NativeContextCompactor, K: NativeContextCheckpointStore, N: TokenCounter>
     NativeContextManager<C, K, N>
 {
-    fn count_tokens(&self, input: ContextInputRef<'_>, request: &ModelRequest) -> usize {
-        self.usage.estimate(
-            input.run_id,
-            input.model_metadata,
-            request,
-            &self.token_counter,
-        )
+    fn decision_tokens(&self, input: ContextInputRef<'_>, request: &ModelRequest) -> usize {
+        self.measure_request(input, request)
+            .expect("the built-in context manager always measures requests")
+            .decision_input_tokens
     }
 
     fn validate_window(
@@ -221,7 +218,7 @@ impl<C: NativeContextCompactor, K: NativeContextCheckpointStore, N: TokenCounter
         policy: ContextPolicy,
         checkpoint: Option<&NativeContextCheckpoint>,
     ) -> Result<PreparedContext, NativeContextError<C::Error, K::Error>> {
-        let projection = ToolOutputProjection::new(input, policy.max_tool_output_chars());
+        let projection = ToolOutputProjection::restored(input, None);
         let tail = events_after(
             input.events,
             checkpoint.map(|checkpoint| checkpoint.through_sequence),
@@ -244,11 +241,21 @@ impl<C: NativeContextCompactor, K: NativeContextCheckpointStore, N: TokenCounter
                 ),
             })
             .or(clipped);
-        let mut request =
-            build_compacted_request(input, None, tail, &projection, omitted_history.is_some());
+        let mut request = build_compacted_request(
+            input,
+            None,
+            tail,
+            &projection,
+            omitted_history.is_some(),
+            policy.preserve_all_user_messages(),
+        );
         if let Some(checkpoint) = checkpoint
             && checkpoint.needs_protected_context
-            && let Some(protected) = protected_user_context(input, checkpoint.through_sequence)
+            && let Some(protected) = protected_user_context(
+                input,
+                checkpoint.through_sequence,
+                policy.preserve_all_user_messages(),
+            )
         {
             // Keep pending native tool declarations adjacent to their tail
             // results before appending historical user context.
@@ -285,19 +292,29 @@ impl<C: NativeContextCompactor, K: NativeContextCheckpointStore, N: TokenCounter
         })
     }
 
-    fn protected_tokens(&self, input: ContextInputRef<'_>, initial: &PreparedContext) -> usize {
+    fn protected_request(
+        &self,
+        input: ContextInputRef<'_>,
+        initial: &PreparedContext,
+    ) -> ModelRequest {
         let mut fixed = initial.request.clone();
         fixed.provider_context = None;
         fixed.messages = input
             .events
             .last()
-            .and_then(|last| protected_user_context(input, last.sequence))
+            .and_then(|last| {
+                protected_user_context(
+                    input,
+                    last.sequence,
+                    self.policy.preserve_all_user_messages(),
+                )
+            })
             .into_iter()
             .collect();
         if initial.omitted_history.is_none() {
             fixed.tools.extend_from_slice(input.deferred_tools);
         }
-        self.token_counter.count_tokens(&fixed)
+        fixed
     }
 
     async fn compact(
@@ -305,15 +322,20 @@ impl<C: NativeContextCompactor, K: NativeContextCheckpointStore, N: TokenCounter
         input: ContextInputRef<'_>,
         policy: ContextPolicy,
         initial: &PreparedContext,
+        force_compaction: bool,
     ) -> Result<PreparedContext, NativeContextError<C::Error, K::Error>> {
-        let before = self.count_tokens(input, &initial.request);
+        let before = self.decision_tokens(input, &initial.request);
         if before > self.compactor.input_token_limit() {
             return Err(NativeContextError::CompactionInputLimitExceeded {
                 tokens: before,
                 limit: self.compactor.input_token_limit(),
             });
         }
-        let fixed_tokens = self.protected_tokens(input, initial);
+        let fixed = self.protected_request(input, initial);
+        let mut fixed_tokens = self.token_counter.count_tokens(&fixed);
+        if fixed_tokens >= policy.input_token_limit() {
+            fixed_tokens = self.decision_tokens(input, &fixed);
+        }
         if fixed_tokens >= policy.input_token_limit() {
             return Err(NativeContextError::ProtectedContextLimitExceeded {
                 tokens: fixed_tokens,
@@ -351,7 +373,7 @@ impl<C: NativeContextCompactor, K: NativeContextCheckpointStore, N: TokenCounter
         }
         let checkpoint = self.checkpoint(input, window, true)?;
         let candidate = self.project(input, policy, Some(&checkpoint))?;
-        let after = self.count_tokens(input, &candidate.request);
+        let after = self.decision_tokens(input, &candidate.request);
         if after > policy.input_token_limit() {
             return Err(NativeContextError::InputTokenLimitExceeded {
                 tokens: after,
@@ -365,7 +387,13 @@ impl<C: NativeContextCompactor, K: NativeContextCheckpointStore, N: TokenCounter
             .count_tokens(&comparable)
             .saturating_sub(self.token_counter.count_tokens(&initial.request));
         let before = before.saturating_add(added_tool_tokens);
-        if after >= before {
+        let did_not_shrink = if force_compaction {
+            self.token_counter.count_tokens(&candidate.request)
+                >= self.token_counter.count_tokens(&initial.request)
+        } else {
+            after >= before
+        };
+        if did_not_shrink {
             return Err(NativeContextError::CompactionDidNotReduceTokens { before, after });
         }
         self.checkpoint_store
@@ -383,6 +411,7 @@ impl<C: NativeContextCompactor, K: NativeContextCheckpointStore, N: TokenCounter
         &self,
         input: ContextInputRef<'_>,
         policy: ContextPolicy,
+        force_compaction: bool,
     ) -> Result<PreparedContext, NativeContextError<C::Error, K::Error>> {
         if input
             .events
@@ -397,7 +426,9 @@ impl<C: NativeContextCompactor, K: NativeContextCheckpointStore, N: TokenCounter
             Err(_) if journal.is_some() => None,
             Err(error) => {
                 let fallback = self.project(input, policy, None)?;
-                if self.count_tokens(input, &fallback.request) <= policy.input_token_limit() {
+                if !force_compaction
+                    && self.decision_tokens(input, &fallback.request) <= policy.input_token_limit()
+                {
                     return Ok(fallback);
                 }
                 return Err(NativeContextError::CheckpointStore(error));
@@ -410,7 +441,9 @@ impl<C: NativeContextCompactor, K: NativeContextCheckpointStore, N: TokenCounter
                 && journal.is_none()
             {
                 let fallback = self.project(input, policy, None)?;
-                if self.count_tokens(input, &fallback.request) <= policy.input_token_limit() {
+                if !force_compaction
+                    && self.decision_tokens(input, &fallback.request) <= policy.input_token_limit()
+                {
                     return Ok(fallback);
                 }
                 return Err(NativeContextError::CheckpointStore(error));
@@ -425,24 +458,30 @@ impl<C: NativeContextCompactor, K: NativeContextCheckpointStore, N: TokenCounter
             previous = Some(journal);
         }
         let initial = self.project(input, policy, previous.as_ref())?;
-        let tokens = self.count_tokens(input, &initial.request);
-        let threshold =
-            policy.effective_compaction_threshold(self.protected_tokens(input, &initial), None);
-        if tokens <= threshold {
+        let tokens = self.decision_tokens(input, &initial.request);
+        let threshold = policy.effective_compaction_threshold(
+            self.token_counter
+                .count_tokens(&self.protected_request(input, &initial)),
+            None,
+        );
+        if !force_compaction && tokens <= threshold {
             return Ok(initial);
         }
-        match self.compact(input, policy, &initial).await {
+        match self
+            .compact(input, policy, &initial, force_compaction)
+            .await
+        {
             Ok(candidate) => Ok(candidate),
             Err(error @ NativeContextError::Replay(_)) => Err(error),
-            Err(_) if tokens <= policy.input_token_limit() => Ok(initial),
+            Err(_) if !force_compaction && tokens <= policy.input_token_limit() => Ok(initial),
             Err(error) => {
                 // A durable native continuation may encode server compaction
                 // that cannot be reconstructed from portable response events.
-                if self.journal_checkpoint(input)?.is_some() {
+                if force_compaction || self.journal_checkpoint(input)?.is_some() {
                     return Err(error);
                 }
                 let fallback = self.project(input, policy, None)?;
-                if self.count_tokens(input, &fallback.request) <= policy.input_token_limit() {
+                if self.decision_tokens(input, &fallback.request) <= policy.input_token_limit() {
                     tracing::warn!(
                         run_id = input.run_id,
                         error = %error,
@@ -465,8 +504,56 @@ impl<C: NativeContextCompactor, K: NativeContextCheckpointStore, N: TokenCounter
         Some(self.policy.max_tool_output_chars())
     }
 
+    fn request_usage_baseline(
+        &self,
+        metadata: Option<&crate::ModelContextMetadata>,
+        request: &ModelRequest,
+    ) -> Option<crate::RequestUsageBaseline> {
+        crate::context::request_usage_baseline_with_counter(metadata, request, &self.token_counter)
+    }
+
     fn estimate_request_tokens(&self, request: &ModelRequest) -> Option<usize> {
         Some(self.token_counter.count_tokens(request))
+    }
+
+    fn measure_request(
+        &self,
+        input: ContextInputRef<'_>,
+        request: &ModelRequest,
+    ) -> Option<super::ContextMeasurement> {
+        self.usage
+            .restore(input.run_id, input.model_metadata, request, input.events);
+        let measurement = self.usage.measurement(
+            input.run_id,
+            input.model_metadata,
+            request,
+            &self.token_counter,
+        );
+        Some(measurement.with_margin_percent(self.policy.estimation_margin_percent()))
+    }
+
+    async fn recover_overflow(
+        &self,
+        input: ContextInputRef<'_>,
+        rejected: &ModelRequest,
+    ) -> Result<Option<PreparedContext>, Self::Error> {
+        let policy = self
+            .policy
+            .resolve(input.model_metadata)
+            .map_err(NativeContextError::Policy)?;
+        let prepared = self.prepare_context(input, policy, true).await?;
+        if self.token_counter.count_tokens(&prepared.request)
+            >= self.token_counter.count_tokens(rejected)
+        {
+            return Ok(None);
+        }
+        self.usage.record_request(
+            input.run_id,
+            input.model_metadata,
+            &prepared.request,
+            &self.token_counter,
+        );
+        Ok(Some(prepared))
     }
 
     async fn prepare(&self, input: ContextInputRef<'_>) -> Result<PreparedContext, Self::Error> {
@@ -474,9 +561,13 @@ impl<C: NativeContextCompactor, K: NativeContextCheckpointStore, N: TokenCounter
             .policy
             .resolve(input.model_metadata)
             .map_err(NativeContextError::Policy)?;
-        let prepared = self.prepare_context(input, policy).await?;
-        self.usage
-            .record_request(input.run_id, input.model_metadata, &prepared.request);
+        let prepared = self.prepare_context(input, policy, false).await?;
+        self.usage.record_request(
+            input.run_id,
+            input.model_metadata,
+            &prepared.request,
+            &self.token_counter,
+        );
         Ok(prepared)
     }
 
@@ -498,7 +589,7 @@ impl<C: NativeContextCompactor, K: NativeContextCheckpointStore, N: TokenCounter
         if let Err(error) = self.checkpoint_store.save(checkpoint).await {
             let journal = self.journal_checkpoint(input)?;
             let fallback = self.project(input, policy, journal.as_ref())?;
-            if self.count_tokens(input, &fallback.request) <= policy.input_token_limit() {
+            if self.decision_tokens(input, &fallback.request) <= policy.input_token_limit() {
                 // Canonical response events preserve native continuations as
                 // well as response-local payloads; the cache is derived only.
                 tracing::warn!(

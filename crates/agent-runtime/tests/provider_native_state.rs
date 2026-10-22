@@ -317,6 +317,7 @@ fn journal_tool_history(compacted: bool) -> AgentRun {
     run.record(RunEvent::ModelResponseReceived {
         response: None,
         content: "Inspecting".into(),
+        token_usage: None,
         provider_state: None,
         provider_continuation: Some(Box::new(ProviderContinuation {
             window: native,
@@ -450,6 +451,7 @@ async fn canonical_continuation_overrides_an_older_cached_window() {
     run.record(RunEvent::ModelResponseReceived {
         response: None,
         content: "Latest".into(),
+        token_usage: None,
         provider_state: None,
         provider_continuation: Some(Box::new(ProviderContinuation {
             window: window(35, "latest-journal"),
@@ -482,6 +484,7 @@ async fn invalid_local_state_cannot_be_sent_to_compactor_or_hidden_by_fallback()
         content: "Visible".into(),
         provider_state: Some(state),
         provider_continuation: None,
+        token_usage: None,
     })
     .unwrap();
     let manager = manager(InMemoryNativeContextCheckpointStore::new(), 10_000, 1000);

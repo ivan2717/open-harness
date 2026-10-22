@@ -10,14 +10,22 @@ import {
   UserRound,
 } from 'lucide-react'
 import type { ChatMessage, RunDetail } from '../../shared/contracts'
-import { statusLabels } from '../lib/format'
+import { statusLabels, toolOutcome } from '../lib/format'
 
 function Message({ message }: { message: ChatMessage }) {
+  if (
+    message.role === 'assistant' &&
+    message.status === 'complete' &&
+    !message.text &&
+    !message.reasoning
+  )
+    return null
   const toolRunning = message.status === 'streaming' || message.status === 'pending'
+  const outcome = toolOutcome(message)
   if (message.role === 'tool')
     return (
       <div className="tool-row">
-        <details className={`tool-card ${message.is_error ? 'tool-error' : ''}`}>
+        <details className={`tool-card ${outcome.failed ? 'tool-error' : ''}`}>
           <summary>
             <span className="tool-card-icon">
               <Terminal size={14} />
@@ -26,12 +34,12 @@ function Message({ message }: { message: ChatMessage }) {
             <span className="tool-status">
               {toolRunning ? (
                 <LoaderCircle className="animate-spin" size={12} />
-              ) : message.is_error ? (
+              ) : outcome.failed ? (
                 <CircleAlert size={12} />
               ) : (
                 <Check size={12} />
               )}
-              {message.is_error ? '失败' : toolRunning ? '执行中' : '已完成'}
+              {outcome.label}
             </span>
             <ChevronRight className="details-chevron" size={13} />
           </summary>
@@ -134,7 +142,7 @@ export function Conversation({ run }: { run: RunDetail }) {
               {run.status === 'completed' ? <Check size={13} /> : <CircleAlert size={13} />}
               <span>{statusLabels[run.status]}</span>
               {run.status === 'interrupted' && (
-                <span>服务重启前的运行已结束，可新建会话重试。</span>
+                <span>执行已中断，历史已保存。可继续任务或补充说明。</span>
               )}
             </div>
           )}

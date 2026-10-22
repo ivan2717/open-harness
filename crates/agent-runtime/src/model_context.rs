@@ -10,6 +10,12 @@ use std::{error::Error, fmt};
 pub struct ModelContextMetadata {
     pub provider: String,
     pub model: String,
+    /// Versioned adapter accounting/replay format. Set this when the same
+    /// provider/model can be routed through different wire protocols or modes.
+    pub accounting_identity: Option<String>,
+    /// False when reported input includes provider-internal prompts or several
+    /// model calls. Such usage is spending data, not a reusable request prefix.
+    pub usage_is_input_measurement: bool,
     pub context_window: usize,
     pub max_context_window: Option<usize>,
     pub auto_compact_token_limit: Option<usize>,
@@ -26,6 +32,8 @@ impl ModelContextMetadata {
         let metadata = Self {
             provider: provider.into(),
             model: model.into(),
+            accounting_identity: None,
+            usage_is_input_measurement: true,
             context_window,
             max_context_window: None,
             auto_compact_token_limit: None,
@@ -36,9 +44,25 @@ impl ModelContextMetadata {
         Ok(metadata)
     }
 
+    pub fn with_accounting_identity(mut self, identity: impl Into<String>) -> Self {
+        self.accounting_identity = Some(identity.into());
+        self
+    }
+
+    pub fn with_input_usage_calibration(mut self, enabled: bool) -> Self {
+        self.usage_is_input_measurement = enabled;
+        self
+    }
+
     /// Validate catalog data again after callers customize its public fields.
     pub fn validate(&self) -> Result<(), ModelContextMetadataError> {
-        if self.provider.trim().is_empty() || self.model.trim().is_empty() {
+        if self.provider.trim().is_empty()
+            || self.model.trim().is_empty()
+            || self
+                .accounting_identity
+                .as_ref()
+                .is_some_and(|id| id.trim().is_empty())
+        {
             return Err(ModelContextMetadataError::EmptyIdentity);
         }
         if self.context_window == 0 {
@@ -117,3 +141,24 @@ impl fmt::Display for ModelContextMetadataError {
 }
 
 impl Error for ModelContextMetadataError {}
+
+/// Both runtime usage and same-route summarization must bind the adapter's
+/// fallback wire identity identically when explicit accounting metadata is absent.
+pub(crate) fn model_accounting_metadata<M: crate::Model>(
+    model: &M,
+) -> Option<ModelContextMetadata> {
+    let mut metadata = model.context_metadata()?.clone();
+    if metadata.accounting_identity.is_none()
+        && let Some(identity) = model.provider_context_identity()
+    {
+        metadata.accounting_identity = Some(
+            serde_json::json!({
+                "provider": identity.provider,
+                "model": identity.model,
+                "format": identity.format,
+            })
+            .to_string(),
+        );
+    }
+    Some(metadata)
+}

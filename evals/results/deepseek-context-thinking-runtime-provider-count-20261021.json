@@ -1,0 +1,1286 @@
+{
+  "limitations": [
+    "Synthetic fixtures; not a production reliability or model-quality benchmark.",
+    "The compaction scenario explicitly lowers thresholds to exercise repeated compression.",
+    "Provider-native compaction is not covered. Thinking replay uses durable per-response state; separate offline tests cover restart and other protocols.",
+    "No transport retry; errors are recorded rather than masked."
+  ],
+  "mode": "thinking",
+  "model": {
+    "api_capabilities": {
+      "anthropic_messages": {
+        "system_prompt_update": "in-history"
+      }
+    },
+    "context_window": 1048576,
+    "effort": {
+      "default_level": "high",
+      "supported_levels": [
+        "low",
+        "high",
+        "max"
+      ]
+    },
+    "id": "deepseek-flash",
+    "input_modalities": [
+      "text",
+      "image"
+    ],
+    "max_output_tokens": 393216,
+    "name": "DeepSeek-V4.1-Flash",
+    "object": "model",
+    "output_modalities": [
+      "text"
+    ],
+    "owned_by": "deepseek"
+  },
+  "reasoning_effort": "high",
+  "requested_revision": "DeepSeek-V4.1-Flash-1017",
+  "requests": [
+    {
+      "elapsed_ms": 918,
+      "encoded_messages_contains_archive_pin": false,
+      "estimated_input_tokens": 394,
+      "finish_reason": "tool_calls",
+      "has_summary": false,
+      "kind": "agent",
+      "max_output_tokens": 8192,
+      "messages": 1,
+      "model": "deepseek-flash",
+      "portable_estimated_input_tokens": 394,
+      "reasoning_effort": "high",
+      "reasoning_replay_enabled": true,
+      "replayed_assistant_count": 0,
+      "replayed_reasoning_chars": 0,
+      "replayed_reasoning_contains_archive_pin": false,
+      "request": 1,
+      "response_reasoning_chars": 0,
+      "returned_reasoning_tokens": 0,
+      "returned_tool_names": [
+        "read_synthetic_batch"
+      ],
+      "thinking": true,
+      "tool_names": [
+        "read_synthetic_batch"
+      ],
+      "usage": {
+        "completion_tokens": 49,
+        "completion_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "prompt_cache_hit_tokens": 384,
+        "prompt_cache_miss_tokens": 185,
+        "prompt_tokens": 569,
+        "prompt_tokens_details": {
+          "cached_tokens": 384
+        },
+        "total_tokens": 618
+      },
+      "wire_estimated_input_tokens": 394
+    },
+    {
+      "elapsed_ms": 3827,
+      "encoded_messages_contains_archive_pin": false,
+      "estimated_input_tokens": 509,
+      "finish_reason": "stop",
+      "has_summary": false,
+      "kind": "compactor",
+      "max_output_tokens": 8192,
+      "messages": 1,
+      "model": "deepseek-flash",
+      "portable_estimated_input_tokens": 509,
+      "reasoning_effort": "high",
+      "reasoning_replay_enabled": true,
+      "replayed_assistant_count": 0,
+      "replayed_reasoning_chars": 0,
+      "replayed_reasoning_contains_archive_pin": false,
+      "request": 2,
+      "response_reasoning_chars": 1408,
+      "returned_reasoning_tokens": 291,
+      "returned_tool_names": [],
+      "thinking": true,
+      "tool_names": [],
+      "usage": {
+        "completion_tokens": 797,
+        "completion_tokens_details": {
+          "reasoning_tokens": 291
+        },
+        "prompt_cache_hit_tokens": 0,
+        "prompt_cache_miss_tokens": 466,
+        "prompt_tokens": 466,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "total_tokens": 1263
+      },
+      "wire_estimated_input_tokens": 509
+    },
+    {
+      "elapsed_ms": 1159,
+      "encoded_messages_contains_archive_pin": false,
+      "estimated_input_tokens": 7077,
+      "finish_reason": "tool_calls",
+      "has_summary": false,
+      "kind": "agent",
+      "max_output_tokens": 8192,
+      "messages": 3,
+      "model": "deepseek-flash",
+      "portable_estimated_input_tokens": 7077,
+      "reasoning_effort": "high",
+      "reasoning_replay_enabled": true,
+      "replayed_assistant_count": 1,
+      "replayed_reasoning_chars": 0,
+      "replayed_reasoning_contains_archive_pin": false,
+      "request": 3,
+      "response_reasoning_chars": 44,
+      "returned_reasoning_tokens": 16,
+      "returned_tool_names": [
+        "read_synthetic_batch"
+      ],
+      "thinking": true,
+      "tool_names": [
+        "read_synthetic_batch",
+        "search_run_history",
+        "read_run_history"
+      ],
+      "usage": {
+        "completion_tokens": 73,
+        "completion_tokens_details": {
+          "reasoning_tokens": 16
+        },
+        "prompt_cache_hit_tokens": 8576,
+        "prompt_cache_miss_tokens": 196,
+        "prompt_tokens": 8772,
+        "prompt_tokens_details": {
+          "cached_tokens": 8576
+        },
+        "total_tokens": 8845
+      },
+      "wire_estimated_input_tokens": 7077
+    },
+    {
+      "elapsed_ms": 4393,
+      "encoded_messages_contains_archive_pin": false,
+      "estimated_input_tokens": 7052,
+      "finish_reason": "stop",
+      "has_summary": false,
+      "kind": "compactor",
+      "max_output_tokens": 8192,
+      "messages": 1,
+      "model": "deepseek-flash",
+      "portable_estimated_input_tokens": 7052,
+      "reasoning_effort": "high",
+      "reasoning_replay_enabled": true,
+      "replayed_assistant_count": 0,
+      "replayed_reasoning_chars": 0,
+      "replayed_reasoning_contains_archive_pin": false,
+      "request": 4,
+      "response_reasoning_chars": 1103,
+      "returned_reasoning_tokens": 239,
+      "returned_tool_names": [],
+      "thinking": true,
+      "tool_names": [],
+      "usage": {
+        "completion_tokens": 881,
+        "completion_tokens_details": {
+          "reasoning_tokens": 239
+        },
+        "prompt_cache_hit_tokens": 384,
+        "prompt_cache_miss_tokens": 8550,
+        "prompt_tokens": 8934,
+        "prompt_tokens_details": {
+          "cached_tokens": 384
+        },
+        "total_tokens": 9815
+      },
+      "wire_estimated_input_tokens": 7052
+    },
+    {
+      "elapsed_ms": 1412,
+      "encoded_messages_contains_archive_pin": false,
+      "estimated_input_tokens": 7764,
+      "finish_reason": "tool_calls",
+      "has_summary": true,
+      "kind": "agent",
+      "max_output_tokens": 8192,
+      "messages": 4,
+      "model": "deepseek-flash",
+      "portable_estimated_input_tokens": 7748,
+      "reasoning_effort": "high",
+      "reasoning_replay_enabled": true,
+      "replayed_assistant_count": 1,
+      "replayed_reasoning_chars": 44,
+      "replayed_reasoning_contains_archive_pin": false,
+      "request": 5,
+      "response_reasoning_chars": 0,
+      "returned_reasoning_tokens": 0,
+      "returned_tool_names": [
+        "read_synthetic_batch"
+      ],
+      "thinking": true,
+      "tool_names": [
+        "read_synthetic_batch",
+        "search_run_history",
+        "read_run_history"
+      ],
+      "usage": {
+        "completion_tokens": 60,
+        "completion_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "prompt_cache_hit_tokens": 768,
+        "prompt_cache_miss_tokens": 8672,
+        "prompt_tokens": 9440,
+        "prompt_tokens_details": {
+          "cached_tokens": 768
+        },
+        "total_tokens": 9500
+      },
+      "wire_estimated_input_tokens": 7764
+    },
+    {
+      "elapsed_ms": 4609,
+      "encoded_messages_contains_archive_pin": false,
+      "estimated_input_tokens": 7442,
+      "finish_reason": "stop",
+      "has_summary": false,
+      "kind": "compactor",
+      "max_output_tokens": 8192,
+      "messages": 1,
+      "model": "deepseek-flash",
+      "portable_estimated_input_tokens": 7442,
+      "reasoning_effort": "high",
+      "reasoning_replay_enabled": true,
+      "replayed_assistant_count": 0,
+      "replayed_reasoning_chars": 0,
+      "replayed_reasoning_contains_archive_pin": false,
+      "request": 6,
+      "response_reasoning_chars": 1968,
+      "returned_reasoning_tokens": 462,
+      "returned_tool_names": [],
+      "thinking": true,
+      "tool_names": [],
+      "usage": {
+        "completion_tokens": 1106,
+        "completion_tokens_details": {
+          "reasoning_tokens": 462
+        },
+        "prompt_cache_hit_tokens": 0,
+        "prompt_cache_miss_tokens": 9333,
+        "prompt_tokens": 9333,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "total_tokens": 10439
+      },
+      "wire_estimated_input_tokens": 7442
+    },
+    {
+      "elapsed_ms": 2007,
+      "encoded_messages_contains_archive_pin": false,
+      "estimated_input_tokens": 7748,
+      "finish_reason": "tool_calls",
+      "has_summary": true,
+      "kind": "agent",
+      "max_output_tokens": 8192,
+      "messages": 4,
+      "model": "deepseek-flash",
+      "portable_estimated_input_tokens": 7748,
+      "reasoning_effort": "high",
+      "reasoning_replay_enabled": true,
+      "replayed_assistant_count": 1,
+      "replayed_reasoning_chars": 0,
+      "replayed_reasoning_contains_archive_pin": false,
+      "request": 7,
+      "response_reasoning_chars": 90,
+      "returned_reasoning_tokens": 23,
+      "returned_tool_names": [
+        "read_synthetic_batch"
+      ],
+      "thinking": true,
+      "tool_names": [
+        "read_synthetic_batch",
+        "search_run_history",
+        "read_run_history"
+      ],
+      "usage": {
+        "completion_tokens": 86,
+        "completion_tokens_details": {
+          "reasoning_tokens": 23
+        },
+        "prompt_cache_hit_tokens": 1024,
+        "prompt_cache_miss_tokens": 8393,
+        "prompt_tokens": 9417,
+        "prompt_tokens_details": {
+          "cached_tokens": 1024
+        },
+        "total_tokens": 9503
+      },
+      "wire_estimated_input_tokens": 7748
+    },
+    {
+      "elapsed_ms": 4931,
+      "encoded_messages_contains_archive_pin": false,
+      "estimated_input_tokens": 7443,
+      "finish_reason": "stop",
+      "has_summary": false,
+      "kind": "compactor",
+      "max_output_tokens": 8192,
+      "messages": 1,
+      "model": "deepseek-flash",
+      "portable_estimated_input_tokens": 7443,
+      "reasoning_effort": "high",
+      "reasoning_replay_enabled": true,
+      "replayed_assistant_count": 0,
+      "replayed_reasoning_chars": 0,
+      "replayed_reasoning_contains_archive_pin": false,
+      "request": 8,
+      "response_reasoning_chars": 1688,
+      "returned_reasoning_tokens": 377,
+      "returned_tool_names": [],
+      "thinking": true,
+      "tool_names": [],
+      "usage": {
+        "completion_tokens": 1029,
+        "completion_tokens_details": {
+          "reasoning_tokens": 377
+        },
+        "prompt_cache_hit_tokens": 256,
+        "prompt_cache_miss_tokens": 9079,
+        "prompt_tokens": 9335,
+        "prompt_tokens_details": {
+          "cached_tokens": 256
+        },
+        "total_tokens": 10364
+      },
+      "wire_estimated_input_tokens": 7443
+    },
+    {
+      "elapsed_ms": 1461,
+      "encoded_messages_contains_archive_pin": false,
+      "estimated_input_tokens": 7790,
+      "finish_reason": "tool_calls",
+      "has_summary": true,
+      "kind": "agent",
+      "max_output_tokens": 8192,
+      "messages": 4,
+      "model": "deepseek-flash",
+      "portable_estimated_input_tokens": 7767,
+      "reasoning_effort": "high",
+      "reasoning_replay_enabled": true,
+      "replayed_assistant_count": 1,
+      "replayed_reasoning_chars": 90,
+      "replayed_reasoning_contains_archive_pin": false,
+      "request": 9,
+      "response_reasoning_chars": 39,
+      "returned_reasoning_tokens": 10,
+      "returned_tool_names": [
+        "search_run_history"
+      ],
+      "thinking": true,
+      "tool_names": [
+        "read_synthetic_batch",
+        "search_run_history",
+        "read_run_history"
+      ],
+      "usage": {
+        "completion_tokens": 81,
+        "completion_tokens_details": {
+          "reasoning_tokens": 10
+        },
+        "prompt_cache_hit_tokens": 896,
+        "prompt_cache_miss_tokens": 8548,
+        "prompt_tokens": 9444,
+        "prompt_tokens_details": {
+          "cached_tokens": 896
+        },
+        "total_tokens": 9525
+      },
+      "wire_estimated_input_tokens": 7790
+    },
+    {
+      "elapsed_ms": 1235,
+      "encoded_messages_contains_archive_pin": false,
+      "estimated_input_tokens": 7878,
+      "finish_reason": "tool_calls",
+      "has_summary": true,
+      "kind": "agent",
+      "max_output_tokens": 8192,
+      "messages": 6,
+      "model": "deepseek-flash",
+      "portable_estimated_input_tokens": 7845,
+      "reasoning_effort": "high",
+      "reasoning_replay_enabled": true,
+      "replayed_assistant_count": 2,
+      "replayed_reasoning_chars": 129,
+      "replayed_reasoning_contains_archive_pin": false,
+      "request": 10,
+      "response_reasoning_chars": 19,
+      "returned_reasoning_tokens": 7,
+      "returned_tool_names": [
+        "search_run_history"
+      ],
+      "thinking": true,
+      "tool_names": [
+        "read_synthetic_batch",
+        "search_run_history",
+        "read_run_history"
+      ],
+      "usage": {
+        "completion_tokens": 65,
+        "completion_tokens_details": {
+          "reasoning_tokens": 7
+        },
+        "prompt_cache_hit_tokens": 9344,
+        "prompt_cache_miss_tokens": 205,
+        "prompt_tokens": 9549,
+        "prompt_tokens_details": {
+          "cached_tokens": 9344
+        },
+        "total_tokens": 9614
+      },
+      "wire_estimated_input_tokens": 7878
+    },
+    {
+      "elapsed_ms": 1143,
+      "encoded_messages_contains_archive_pin": false,
+      "estimated_input_tokens": 8249,
+      "finish_reason": "tool_calls",
+      "has_summary": true,
+      "kind": "agent",
+      "max_output_tokens": 8192,
+      "messages": 8,
+      "model": "deepseek-flash",
+      "portable_estimated_input_tokens": 8209,
+      "reasoning_effort": "high",
+      "reasoning_replay_enabled": true,
+      "replayed_assistant_count": 3,
+      "replayed_reasoning_chars": 148,
+      "replayed_reasoning_contains_archive_pin": false,
+      "request": 11,
+      "response_reasoning_chars": 82,
+      "returned_reasoning_tokens": 25,
+      "returned_tool_names": [
+        "read_run_history"
+      ],
+      "thinking": true,
+      "tool_names": [
+        "read_synthetic_batch",
+        "search_run_history",
+        "read_run_history"
+      ],
+      "usage": {
+        "completion_tokens": 84,
+        "completion_tokens_details": {
+          "reasoning_tokens": 25
+        },
+        "prompt_cache_hit_tokens": 9600,
+        "prompt_cache_miss_tokens": 392,
+        "prompt_tokens": 9992,
+        "prompt_tokens_details": {
+          "cached_tokens": 9600
+        },
+        "total_tokens": 10076
+      },
+      "wire_estimated_input_tokens": 8249
+    },
+    {
+      "elapsed_ms": 5878,
+      "encoded_messages_contains_archive_pin": false,
+      "estimated_input_tokens": 8218,
+      "finish_reason": "stop",
+      "has_summary": false,
+      "kind": "compactor",
+      "max_output_tokens": 8192,
+      "messages": 1,
+      "model": "deepseek-flash",
+      "portable_estimated_input_tokens": 8218,
+      "reasoning_effort": "high",
+      "reasoning_replay_enabled": true,
+      "replayed_assistant_count": 0,
+      "replayed_reasoning_chars": 0,
+      "replayed_reasoning_contains_archive_pin": false,
+      "request": 12,
+      "response_reasoning_chars": 2066,
+      "returned_reasoning_tokens": 462,
+      "returned_tool_names": [],
+      "thinking": true,
+      "tool_names": [],
+      "usage": {
+        "completion_tokens": 1327,
+        "completion_tokens_details": {
+          "reasoning_tokens": 462
+        },
+        "prompt_cache_hit_tokens": 256,
+        "prompt_cache_miss_tokens": 10041,
+        "prompt_tokens": 10297,
+        "prompt_tokens_details": {
+          "cached_tokens": 256
+        },
+        "total_tokens": 11624
+      },
+      "wire_estimated_input_tokens": 8218
+    },
+    {
+      "elapsed_ms": 2051,
+      "encoded_messages_contains_archive_pin": true,
+      "estimated_input_tokens": 8000,
+      "finish_reason": "stop",
+      "has_summary": true,
+      "kind": "agent",
+      "max_output_tokens": 8192,
+      "messages": 4,
+      "model": "deepseek-flash",
+      "portable_estimated_input_tokens": 7975,
+      "reasoning_effort": "high",
+      "reasoning_replay_enabled": true,
+      "replayed_assistant_count": 1,
+      "replayed_reasoning_chars": 82,
+      "replayed_reasoning_contains_archive_pin": false,
+      "request": 13,
+      "response_reasoning_chars": 488,
+      "returned_reasoning_tokens": 114,
+      "returned_tool_names": [],
+      "thinking": true,
+      "tool_names": [
+        "read_synthetic_batch",
+        "search_run_history",
+        "read_run_history"
+      ],
+      "usage": {
+        "completion_tokens": 193,
+        "completion_tokens_details": {
+          "reasoning_tokens": 114
+        },
+        "prompt_cache_hit_tokens": 1024,
+        "prompt_cache_miss_tokens": 9160,
+        "prompt_tokens": 10184,
+        "prompt_tokens_details": {
+          "cached_tokens": 1024
+        },
+        "total_tokens": 10377
+      },
+      "wire_estimated_input_tokens": 8000
+    }
+  ],
+  "resolved_default_policy": {
+    "input_limit": 996147,
+    "recent_tail": 24000,
+    "target": 707789,
+    "threshold": 943718,
+    "window": 1048576
+  },
+  "runtime": {
+    "canonical_event_count": 32,
+    "canonical_tool_output_chars": 186707,
+    "checkpoints": [
+      {
+        "after_tokens": 10856,
+        "before_tokens": 19169,
+        "id": "context:deepseek-repeated-compaction:4:8e5c3c04ebbf3e517dfa709d47aebe94",
+        "run_id": "deepseek-repeated-compaction",
+        "source_fingerprint": "8e5c3c04ebbf3e517dfa709d47aebe94",
+        "summary": {
+          "completed_work": [
+            "Read batch 1 exactly once with read_synthetic_batch.",
+            "Observed release identifier: ORBIT-42.",
+            "Observed batch 1 rows are nominal with sample amber-cedar-slate; ARCHIVE_PIN is stated to be in the record's clipped middle section."
+          ],
+          "constraints": [
+            "Mode must remain dry-run.",
+            "Preserve the public API.",
+            "Latency ceiling is 250 ms.",
+            "Deployment region is eu-west-1.",
+            "Read batches 1, 2, 3, and 4 in order using read_synthetic_batch exactly once each, one tool call per response.",
+            "After all four batches, use search_run_history then read_run_history to recover ARCHIVE_PIN from batch 1; the first read chunk includes the pin, so no additional chunks are needed.",
+            "Do not guess ARCHIVE_PIN.",
+            "Final response must be only JSON with keys: release, region, ceiling_ms, mode, preserve_api, archive_pin, batches, rollback_label, validation_command.",
+            "batches must be the integer array [1, 2, 3, 4], not a count.",
+            "Do not finish before all four batches and both history tools have been used."
+          ],
+          "current_plan": [
+            "Read batch 2 with one read_synthetic_batch call.",
+            "Read batch 3 with one read_synthetic_batch call.",
+            "Read batch 4 with one read_synthetic_batch call.",
+            "Call search_run_history to locate batch 1's history entry.",
+            "Call read_run_history and use the first chunk to extract ARCHIVE_PIN.",
+            "Return the final JSON object with all required keys and evidence-based values."
+          ],
+          "current_state": "Batch 1 of 4 has been read successfully. Batches 2, 3, and 4 remain unread; search_run_history and read_run_history have not yet been called. ARCHIVE_PIN, rollback_label, and validation_command are still unresolved.",
+          "decisions": [
+            "Follow the required order: batches 1 through 4 first, then search_run_history, then read_run_history.",
+            "Use only the first read_run_history chunk because it contains ARCHIVE_PIN.",
+            "Do not infer or guess missing values; use tool evidence or stated requirements."
+          ],
+          "failed_attempts": [],
+          "important_artifacts": [
+            "Release identifier: ORBIT-42",
+            "Required final keys: release, region, ceiling_ms, mode, preserve_api, archive_pin, batches, rollback_label, validation_command",
+            "Required batches value: [1, 2, 3, 4]",
+            "Tools: read_synthetic_batch, search_run_history, read_run_history"
+          ],
+          "next_action": "Call read_synthetic_batch with {\"batch\": 2}.",
+          "objective": "Audit synthetic release evidence and return a single JSON object with the required release metadata and archived pin.",
+          "unresolved_questions": [
+            "What is ARCHIVE_PIN?",
+            "What are rollback_label and validation_command?",
+            "Do batches 2-4 contain additional release facts needed for the final JSON?"
+          ]
+        },
+        "through_sequence": 4
+      },
+      {
+        "after_tokens": 10830,
+        "before_tokens": 19907,
+        "id": "context:deepseek-repeated-compaction:8:834560ffb6ba4e028a21bf60f287189a",
+        "run_id": "deepseek-repeated-compaction",
+        "source_fingerprint": "834560ffb6ba4e028a21bf60f287189a",
+        "summary": {
+          "completed_work": [
+            "Read batch 1 exactly once with read_synthetic_batch.",
+            "Observed release identifier: ORBIT-42.",
+            "Read batch 2 exactly once with read_synthetic_batch.",
+            "Observed rollback label from batch 2: rollback/amber-17.",
+            "Batch 2 rows are nominal with sample amber-cedar-slate."
+          ],
+          "constraints": [
+            "Mode must remain dry-run.",
+            "Preserve the public API.",
+            "Latency ceiling is 250 ms.",
+            "Deployment region is eu-west-1.",
+            "Read batches 1, 2, 3, and 4 in order using read_synthetic_batch exactly once each, one tool call per response.",
+            "After all four batches, use search_run_history then read_run_history to recover ARCHIVE_PIN from batch 1; the first read chunk includes the pin, so no additional chunks are needed.",
+            "Do not guess ARCHIVE_PIN.",
+            "Final response must be only JSON with keys: release, region, ceiling_ms, mode, preserve_api, archive_pin, batches, rollback_label, validation_command.",
+            "batches must be the integer array [1, 2, 3, 4], not a count.",
+            "Do not finish before all four batches and both history tools have been used."
+          ],
+          "current_plan": [
+            "Read batch 3 with one read_synthetic_batch call.",
+            "Read batch 4 with one read_synthetic_batch call.",
+            "Call search_run_history to locate batch 1's history entry.",
+            "Call read_run_history and use the first chunk to extract ARCHIVE_PIN.",
+            "Return the final JSON object with all required keys and evidence-based values."
+          ],
+          "current_state": "Batches 1 and 2 of 4 have been read successfully. Batches 3 and 4 remain unread; search_run_history and read_run_history have not yet been called. ARCHIVE_PIN and validation_command are still unresolved.",
+          "decisions": [
+            "Follow the required order: batches 1 through 4 first, then search_run_history, then read_run_history.",
+            "Use only the first read_run_history chunk because it contains ARCHIVE_PIN.",
+            "Do not infer or guess missing values; use tool evidence or stated requirements."
+          ],
+          "failed_attempts": [],
+          "important_artifacts": [
+            "Release identifier: ORBIT-42",
+            "Rollback label: rollback/amber-17",
+            "Required final keys: release, region, ceiling_ms, mode, preserve_api, archive_pin, batches, rollback_label, validation_command",
+            "Required batches value: [1, 2, 3, 4]",
+            "Tools: read_synthetic_batch, search_run_history, read_run_history"
+          ],
+          "next_action": "Call read_synthetic_batch with {\"batch\": 3}.",
+          "objective": "Audit synthetic release evidence and return a single JSON object with the required release metadata and archived pin.",
+          "unresolved_questions": [
+            "What is ARCHIVE_PIN?",
+            "What is validation_command?",
+            "Do batches 3-4 contain additional release facts needed for the final JSON?"
+          ]
+        },
+        "through_sequence": 8
+      },
+      {
+        "after_tokens": 10861,
+        "before_tokens": 19902,
+        "id": "context:deepseek-repeated-compaction:12:d1aba3605922df6ec3ee8b0576f6c302",
+        "run_id": "deepseek-repeated-compaction",
+        "source_fingerprint": "d1aba3605922df6ec3ee8b0576f6c302",
+        "summary": {
+          "completed_work": [
+            "Read batch 1 exactly once with read_synthetic_batch; observed release identifier ORBIT-42.",
+            "Read batch 2 exactly once with read_synthetic_batch; observed rollback label rollback/amber-17.",
+            "Read batch 3 exactly once with read_synthetic_batch; rows were nominal with sample amber-cedar-slate.",
+            "Recovered validation_command from batch 3: cargo test --workspace --offline."
+          ],
+          "constraints": [
+            "Mode must remain dry-run.",
+            "Preserve the public API.",
+            "Latency ceiling is 250 ms.",
+            "Deployment region is eu-west-1.",
+            "Read batches 1, 2, 3, and 4 in order using read_synthetic_batch exactly once each, one tool call per response.",
+            "After all four batches, use search_run_history then read_run_history to recover ARCHIVE_PIN from batch 1; the first read chunk includes the pin, so no additional chunks are needed.",
+            "Do not guess ARCHIVE_PIN.",
+            "Final response must be only JSON with keys: release, region, ceiling_ms, mode, preserve_api, archive_pin, batches, rollback_label, validation_command.",
+            "batches must be the integer array [1, 2, 3, 4], not a count.",
+            "Do not finish before all four batches and both history tools have been used."
+          ],
+          "current_plan": [
+            "Read batch 4 with one read_synthetic_batch call.",
+            "Call search_run_history to locate batch 1's history entry.",
+            "Call read_run_history and use the first chunk to extract ARCHIVE_PIN.",
+            "Return the final JSON object with all required keys and evidence-based values."
+          ],
+          "current_state": "Batches 1, 2, and 3 of 4 have been read successfully. Batch 4 remains unread. search_run_history and read_run_history have not yet been called, so ARCHIVE_PIN is still unresolved.",
+          "decisions": [
+            "Follow the required order: finish batch 4 first, then call search_run_history, then read_run_history.",
+            "Use only the first read_run_history chunk because it contains ARCHIVE_PIN.",
+            "Do not infer or guess missing values; use tool evidence or stated requirements."
+          ],
+          "failed_attempts": [],
+          "important_artifacts": [
+            "Release identifier: ORBIT-42",
+            "Rollback label: rollback/amber-17",
+            "Validation command: cargo test --workspace --offline",
+            "Required final keys: release, region, ceiling_ms, mode, preserve_api, archive_pin, batches, rollback_label, validation_command",
+            "Required batches value: [1, 2, 3, 4]",
+            "Tools: read_synthetic_batch, search_run_history, read_run_history"
+          ],
+          "next_action": "Call read_synthetic_batch with {\"batch\": 4}.",
+          "objective": "Audit synthetic release evidence and return a single JSON object with the required release metadata and archived pin.",
+          "unresolved_questions": [
+            "What is ARCHIVE_PIN?",
+            "Do batches 4 contain any additional release facts needed for the final JSON?"
+          ]
+        },
+        "through_sequence": 12
+      },
+      {
+        "after_tokens": 11712,
+        "before_tokens": 21162,
+        "id": "context:deepseek-repeated-compaction:24:fa50c94ea1402c6945d232b38b67e314",
+        "run_id": "deepseek-repeated-compaction",
+        "source_fingerprint": "fa50c94ea1402c6945d232b38b67e314",
+        "summary": {
+          "completed_work": [
+            "Read batch 1 exactly once with read_synthetic_batch; observed release identifier ORBIT-42.",
+            "Read batch 2 exactly once with read_synthetic_batch; observed rollback label rollback/amber-17.",
+            "Read batch 3 exactly once with read_synthetic_batch; recovered validation_command cargo test --workspace --offline.",
+            "Read batch 4 exactly once with read_synthetic_batch; all four evidence batches are now available and the audit evidence set is complete.",
+            "Called search_run_history successfully with limit 8 and query ARCHIVE_PIN after an initial over-limit attempt failed."
+          ],
+          "constraints": [
+            "Mode must remain dry-run.",
+            "Preserve the public API.",
+            "Latency ceiling is 250 ms.",
+            "Deployment region is eu-west-1.",
+            "Read batches 1, 2, 3, and 4 in order using read_synthetic_batch exactly once each, one tool call per response.",
+            "After all four batches, use search_run_history then read_run_history to recover ARCHIVE_PIN from batch 1; the first read chunk includes the pin, so no additional chunks are needed.",
+            "Do not guess ARCHIVE_PIN.",
+            "Final response must be only JSON with keys: release, region, ceiling_ms, mode, preserve_api, archive_pin, batches, rollback_label, validation_command.",
+            "batches must be the integer array [1, 2, 3, 4], not a count.",
+            "Do not finish before all four batches and both history tools have been used."
+          ],
+          "current_plan": [
+            "Call read_run_history using the successful search result to retrieve the batch 1 history entry.",
+            "Extract ARCHIVE_PIN from the first read_run_history chunk.",
+            "Return the final JSON object with all required keys and evidence-based values."
+          ],
+          "current_state": "All four batches have been read exactly once. search_run_history succeeded and returned checkpoint_id context:deepseek-repeated-compaction:12:d1aba3605922df6ec3ee8b0576f6c302, through_sequence 16, total_matches 2, and a batch 1 hit preview indicating ARCHIVE_PIN is in the middle of the record. ARCHIVE_PIN is still unresolved, and read_run_history has not yet been called.",
+          "decisions": [
+            "Follow the required order: finish batch 4 first, then call search_run_history, then read_run_history.",
+            "Use search_run_history with limit no greater than the configured limit of 8.",
+            "Use only the first read_run_history chunk because it contains ARCHIVE_PIN.",
+            "Do not infer or guess missing values; use tool evidence or stated requirements."
+          ],
+          "failed_attempts": [
+            "search_run_history with {\"query\":\"ARCHIVE_PIN\",\"limit\":10} failed because the configured result limit is 8; retried successfully with limit 8."
+          ],
+          "important_artifacts": [
+            "Release identifier: ORBIT-42",
+            "Rollback label: rollback/amber-17",
+            "Validation command: cargo test --workspace --offline",
+            "Required final keys: release, region, ceiling_ms, mode, preserve_api, archive_pin, batches, rollback_label, validation_command",
+            "Required batches value: [1, 2, 3, 4]",
+            "Required fixed values: region eu-west-1, ceiling_ms 250, mode dry-run, preserve_api true",
+            "History checkpoint_id: context:deepseek-repeated-compaction:12:d1aba3605922df6ec3ee8b0576f6c302",
+            "History through_sequence: 16",
+            "Tools: read_synthetic_batch, search_run_history, read_run_history"
+          ],
+          "next_action": "Call read_run_history using checkpoint_id context:deepseek-repeated-compaction:12:d1aba3605922df6ec3ee8b0576f6c302 and through_sequence 16 to retrieve the earliest available chunk containing batch 1.",
+          "objective": "Audit synthetic release evidence and return a single JSON object with the required release metadata and archived pin.",
+          "unresolved_questions": [
+            "What is ARCHIVE_PIN?"
+          ]
+        },
+        "through_sequence": 24
+      }
+    ],
+    "checks": [
+      {
+        "name": "every_main_call_has_matching_context_measurement",
+        "passed": true
+      },
+      {
+        "name": "runtime_completed",
+        "passed": true
+      },
+      {
+        "name": "at_least_two_saved_compactions",
+        "passed": true
+      },
+      {
+        "name": "at_least_two_real_summary_calls",
+        "passed": true
+      },
+      {
+        "name": "checkpoint_boundaries_advance",
+        "passed": true
+      },
+      {
+        "name": "every_checkpoint_reduces_context",
+        "passed": true
+      },
+      {
+        "name": "exact_user_constraints_preserved_in_every_main_request",
+        "passed": true
+      },
+      {
+        "name": "early_release_fact_survives_repeated_summaries",
+        "passed": true
+      },
+      {
+        "name": "four_batches_executed_once_in_order",
+        "passed": true
+      },
+      {
+        "name": "model_used_history_search",
+        "passed": true
+      },
+      {
+        "name": "history_search_located_canonical_tool_output",
+        "passed": true
+      },
+      {
+        "name": "model_used_history_read",
+        "passed": true
+      },
+      {
+        "name": "archive_pin_absent_from_context_before_history_read",
+        "passed": true
+      },
+      {
+        "name": "history_read_returned_clipped_archive_pin",
+        "passed": true
+      },
+      {
+        "name": "canonical_tool_output_recovered_exactly",
+        "passed": true
+      },
+      {
+        "name": "canonical_event_log_unchanged",
+        "passed": true
+      },
+      {
+        "name": "final_archive_pin",
+        "passed": true
+      },
+      {
+        "name": "final_batches",
+        "passed": true
+      },
+      {
+        "name": "final_ceiling_ms",
+        "passed": true
+      },
+      {
+        "name": "final_mode",
+        "passed": true
+      },
+      {
+        "name": "final_preserve_api",
+        "passed": true
+      },
+      {
+        "name": "final_region",
+        "passed": true
+      },
+      {
+        "name": "final_release",
+        "passed": true
+      },
+      {
+        "name": "final_rollback_label",
+        "passed": true
+      },
+      {
+        "name": "final_validation_command",
+        "passed": true
+      }
+    ],
+    "direct_recovery_error": null,
+    "evaluation_threshold_override": {
+      "compaction_target": 7500,
+      "compaction_threshold": 9000,
+      "main_output_reserve": 8192,
+      "max_tool_output_chars": 25000,
+      "summary_output_reserve": 8192
+    },
+    "final_answer": "{\"release\":\"ORBIT-42\",\"region\":\"eu-west-1\",\"ceiling_ms\":250,\"mode\":\"dry-run\",\"preserve_api\":true,\"archive_pin\":\"CEDAR-7Q9\",\"batches\":[1,2,3,4],\"rollback_label\":\"rollback/amber-17\",\"validation_command\":\"cargo test --workspace --offline\"}",
+    "main_calls": [
+      {
+        "actual_input_tokens": 569,
+        "call": 1,
+        "decision_signed_error_percent": 15.114235500878733,
+        "error": null,
+        "estimated_input_tokens": 569,
+        "measurement": {
+          "decision_input_tokens": 655,
+          "estimated_delta_tokens": 569,
+          "estimated_input_tokens": 569,
+          "estimation_margin_tokens": 86,
+          "measured_input_tokens": null,
+          "raw_estimated_input_tokens": 394,
+          "source": "tokenizer_estimated"
+        },
+        "measurement_matches_request": true,
+        "prediction_signed_error_percent": 0.0,
+        "provider_usage": {
+          "cached_input_tokens": 384,
+          "input_tokens": 569,
+          "output_tokens": 49
+        },
+        "raw_estimated_input_tokens": 394,
+        "raw_signed_error_percent": -30.755711775043938,
+        "request_fingerprint": "013721d8d3ec5650",
+        "summary_messages": 0
+      },
+      {
+        "actual_input_tokens": 8772,
+        "call": 2,
+        "decision_signed_error_percent": 15.002279981760147,
+        "error": null,
+        "estimated_input_tokens": 8772,
+        "measurement": {
+          "decision_input_tokens": 10088,
+          "estimated_delta_tokens": 8772,
+          "estimated_input_tokens": 8772,
+          "estimation_margin_tokens": 1316,
+          "measured_input_tokens": null,
+          "raw_estimated_input_tokens": 7077,
+          "source": "tokenizer_estimated"
+        },
+        "measurement_matches_request": true,
+        "prediction_signed_error_percent": 0.0,
+        "provider_usage": {
+          "cached_input_tokens": 8576,
+          "input_tokens": 8772,
+          "output_tokens": 73
+        },
+        "raw_estimated_input_tokens": 7077,
+        "raw_signed_error_percent": -19.32284541723666,
+        "request_fingerprint": "13a1e96760ae034b",
+        "summary_messages": 0
+      },
+      {
+        "actual_input_tokens": 9440,
+        "call": 3,
+        "decision_signed_error_percent": 15.0,
+        "error": null,
+        "estimated_input_tokens": 9440,
+        "measurement": {
+          "decision_input_tokens": 10856,
+          "estimated_delta_tokens": 9440,
+          "estimated_input_tokens": 9440,
+          "estimation_margin_tokens": 1416,
+          "measured_input_tokens": null,
+          "raw_estimated_input_tokens": 7764,
+          "source": "tokenizer_estimated"
+        },
+        "measurement_matches_request": true,
+        "prediction_signed_error_percent": 0.0,
+        "provider_usage": {
+          "cached_input_tokens": 768,
+          "input_tokens": 9440,
+          "output_tokens": 60
+        },
+        "raw_estimated_input_tokens": 7764,
+        "raw_signed_error_percent": -17.754237288135595,
+        "request_fingerprint": "119da6f94f5df4f8",
+        "summary_messages": 1
+      },
+      {
+        "actual_input_tokens": 9417,
+        "call": 4,
+        "decision_signed_error_percent": 15.004778591908252,
+        "error": null,
+        "estimated_input_tokens": 9417,
+        "measurement": {
+          "decision_input_tokens": 10830,
+          "estimated_delta_tokens": 9417,
+          "estimated_input_tokens": 9417,
+          "estimation_margin_tokens": 1413,
+          "measured_input_tokens": null,
+          "raw_estimated_input_tokens": 7748,
+          "source": "tokenizer_estimated"
+        },
+        "measurement_matches_request": true,
+        "prediction_signed_error_percent": 0.0,
+        "provider_usage": {
+          "cached_input_tokens": 1024,
+          "input_tokens": 9417,
+          "output_tokens": 86
+        },
+        "raw_estimated_input_tokens": 7748,
+        "raw_signed_error_percent": -17.723266433046618,
+        "request_fingerprint": "d14ad120da81782a",
+        "summary_messages": 1
+      },
+      {
+        "actual_input_tokens": 9444,
+        "call": 5,
+        "decision_signed_error_percent": 15.004235493434987,
+        "error": null,
+        "estimated_input_tokens": 9444,
+        "measurement": {
+          "decision_input_tokens": 10861,
+          "estimated_delta_tokens": 9444,
+          "estimated_input_tokens": 9444,
+          "estimation_margin_tokens": 1417,
+          "measured_input_tokens": null,
+          "raw_estimated_input_tokens": 7790,
+          "source": "tokenizer_estimated"
+        },
+        "measurement_matches_request": true,
+        "prediction_signed_error_percent": 0.0,
+        "provider_usage": {
+          "cached_input_tokens": 896,
+          "input_tokens": 9444,
+          "output_tokens": 81
+        },
+        "raw_estimated_input_tokens": 7790,
+        "raw_signed_error_percent": -17.5137653536637,
+        "request_fingerprint": "3cbeb339ee871581",
+        "summary_messages": 1
+      },
+      {
+        "actual_input_tokens": 9549,
+        "call": 6,
+        "decision_signed_error_percent": 15.00680699549691,
+        "error": null,
+        "estimated_input_tokens": 9549,
+        "measurement": {
+          "decision_input_tokens": 10982,
+          "estimated_delta_tokens": 9549,
+          "estimated_input_tokens": 9549,
+          "estimation_margin_tokens": 1433,
+          "measured_input_tokens": null,
+          "raw_estimated_input_tokens": 7878,
+          "source": "tokenizer_estimated"
+        },
+        "measurement_matches_request": true,
+        "prediction_signed_error_percent": 0.0,
+        "provider_usage": {
+          "cached_input_tokens": 9344,
+          "input_tokens": 9549,
+          "output_tokens": 65
+        },
+        "raw_estimated_input_tokens": 7878,
+        "raw_signed_error_percent": -17.499214577442665,
+        "request_fingerprint": "d7107662b7e7261d",
+        "summary_messages": 1
+      },
+      {
+        "actual_input_tokens": 9992,
+        "call": 7,
+        "decision_signed_error_percent": 15.002001601281027,
+        "error": null,
+        "estimated_input_tokens": 9992,
+        "measurement": {
+          "decision_input_tokens": 11491,
+          "estimated_delta_tokens": 9992,
+          "estimated_input_tokens": 9992,
+          "estimation_margin_tokens": 1499,
+          "measured_input_tokens": null,
+          "raw_estimated_input_tokens": 8249,
+          "source": "tokenizer_estimated"
+        },
+        "measurement_matches_request": true,
+        "prediction_signed_error_percent": 0.0,
+        "provider_usage": {
+          "cached_input_tokens": 9600,
+          "input_tokens": 9992,
+          "output_tokens": 84
+        },
+        "raw_estimated_input_tokens": 8249,
+        "raw_signed_error_percent": -17.443955164131307,
+        "request_fingerprint": "996e55c1f6944965",
+        "summary_messages": 1
+      },
+      {
+        "actual_input_tokens": 10184,
+        "call": 8,
+        "decision_signed_error_percent": 15.003927729772194,
+        "error": null,
+        "estimated_input_tokens": 10184,
+        "measurement": {
+          "decision_input_tokens": 11712,
+          "estimated_delta_tokens": 10184,
+          "estimated_input_tokens": 10184,
+          "estimation_margin_tokens": 1528,
+          "measured_input_tokens": null,
+          "raw_estimated_input_tokens": 8000,
+          "source": "tokenizer_estimated"
+        },
+        "measurement_matches_request": true,
+        "prediction_signed_error_percent": 0.0,
+        "provider_usage": {
+          "cached_input_tokens": 1024,
+          "input_tokens": 10184,
+          "output_tokens": 193
+        },
+        "raw_estimated_input_tokens": 8000,
+        "raw_signed_error_percent": -21.445404556166537,
+        "request_fingerprint": "e5f1dd99d3645580",
+        "summary_messages": 1
+      }
+    ],
+    "passed": true,
+    "runtime_error": null,
+    "scenario": "repeated_compaction_and_clipped_history",
+    "summary_calls": [
+      {
+        "actual_input_tokens": 466,
+        "call": 1,
+        "decision_signed_error_percent": null,
+        "error": null,
+        "estimated_input_tokens": null,
+        "measurement": null,
+        "measurement_matches_request": null,
+        "prediction_signed_error_percent": null,
+        "provider_usage": {
+          "cached_input_tokens": 0,
+          "input_tokens": 466,
+          "output_tokens": 797
+        },
+        "raw_estimated_input_tokens": 509,
+        "raw_signed_error_percent": 9.2274678111588,
+        "request_fingerprint": "810990bb00cc2b7e",
+        "summary_messages": 0
+      },
+      {
+        "actual_input_tokens": 8934,
+        "call": 2,
+        "decision_signed_error_percent": null,
+        "error": null,
+        "estimated_input_tokens": null,
+        "measurement": null,
+        "measurement_matches_request": null,
+        "prediction_signed_error_percent": null,
+        "provider_usage": {
+          "cached_input_tokens": 384,
+          "input_tokens": 8934,
+          "output_tokens": 881
+        },
+        "raw_estimated_input_tokens": 7052,
+        "raw_signed_error_percent": -21.065592119991045,
+        "request_fingerprint": "e0e4856c9ad5dafb",
+        "summary_messages": 0
+      },
+      {
+        "actual_input_tokens": 9333,
+        "call": 3,
+        "decision_signed_error_percent": null,
+        "error": null,
+        "estimated_input_tokens": null,
+        "measurement": null,
+        "measurement_matches_request": null,
+        "prediction_signed_error_percent": null,
+        "provider_usage": {
+          "cached_input_tokens": 0,
+          "input_tokens": 9333,
+          "output_tokens": 1106
+        },
+        "raw_estimated_input_tokens": 7442,
+        "raw_signed_error_percent": -20.26143790849673,
+        "request_fingerprint": "1da3ac148b149bcb",
+        "summary_messages": 0
+      },
+      {
+        "actual_input_tokens": 9335,
+        "call": 4,
+        "decision_signed_error_percent": null,
+        "error": null,
+        "estimated_input_tokens": null,
+        "measurement": null,
+        "measurement_matches_request": null,
+        "prediction_signed_error_percent": null,
+        "provider_usage": {
+          "cached_input_tokens": 256,
+          "input_tokens": 9335,
+          "output_tokens": 1029
+        },
+        "raw_estimated_input_tokens": 7443,
+        "raw_signed_error_percent": -20.267809319764325,
+        "request_fingerprint": "e49691174c4613af",
+        "summary_messages": 0
+      },
+      {
+        "actual_input_tokens": 10297,
+        "call": 5,
+        "decision_signed_error_percent": null,
+        "error": null,
+        "estimated_input_tokens": null,
+        "measurement": null,
+        "measurement_matches_request": null,
+        "prediction_signed_error_percent": null,
+        "provider_usage": {
+          "cached_input_tokens": 256,
+          "input_tokens": 10297,
+          "output_tokens": 1327
+        },
+        "raw_estimated_input_tokens": 8218,
+        "raw_signed_error_percent": -20.190346702923183,
+        "request_fingerprint": "52d261e4df747580",
+        "summary_messages": 0
+      }
+    ],
+    "synthetic": true,
+    "tool_calls": [
+      {
+        "arguments": "{\"batch\": 1}",
+        "call_id": "call_00_ET_9TCvhl3SWjQfVaL22Rif7452",
+        "sequence": 3,
+        "tool": "read_synthetic_batch"
+      },
+      {
+        "arguments": "{\"batch\": 2}",
+        "call_id": "call_00_idatQkzL4DhALMCsbOlq3108",
+        "sequence": 7,
+        "tool": "read_synthetic_batch"
+      },
+      {
+        "arguments": "{\"batch\": 3}",
+        "call_id": "call_00_ET_6LMM5xUoI1Y5FUtRnzH90404",
+        "sequence": 11,
+        "tool": "read_synthetic_batch"
+      },
+      {
+        "arguments": "{\"batch\": 4}",
+        "call_id": "call_00_RQTi8pvfq0iAX2mIukxK2899",
+        "sequence": 15,
+        "tool": "read_synthetic_batch"
+      },
+      {
+        "arguments": "{\"query\": \"ARCHIVE_PIN\", \"limit\": 10}",
+        "call_id": "call_00_vIJyxilxY4a8H2iCGZ6x6270",
+        "sequence": 19,
+        "tool": "search_run_history"
+      },
+      {
+        "arguments": "{\"limit\": 8, \"query\": \"ARCHIVE_PIN\"}",
+        "call_id": "call_00_qDcCo88UnEYuvn8h49Ks5171",
+        "sequence": 23,
+        "tool": "search_run_history"
+      },
+      {
+        "arguments": "{\"from_sequence\": 4, \"to_sequence\": 4}",
+        "call_id": "call_00_1FRyBRbsB4EgNXeyu7EN2387",
+        "sequence": 27,
+        "tool": "read_run_history"
+      }
+    ]
+  },
+  "scenario": "runtime",
+  "started_at_unix_seconds": 1792582605,
+  "thinking_verified": {
+    "criterion": "At least one provider response reports nonzero reasoning_tokens.",
+    "passed": true
+  }
+}

@@ -492,6 +492,7 @@ async fn assert_range_reads(store: &impl EventStore) {
     run.record(RunEvent::ModelResponseReceived {
         response: None,
         provider_continuation: None,
+        token_usage: None,
         provider_state: None,
         content: "Done".to_owned(),
     })
@@ -571,6 +572,7 @@ async fn assert_tool_call_lookups(store: &impl EventStore) {
         RunEvent::ModelResponseReceived {
             response: None,
             provider_continuation: None,
+            token_usage: None,
             provider_state: None,
             content: "Read files".to_owned(),
         },

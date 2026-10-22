@@ -1,0 +1,387 @@
+{
+  "calls": [
+    {
+      "call": 1,
+      "elapsed_ms": 3867,
+      "finish_reason": "stop",
+      "message_count": 1,
+      "provider_state_retained": true,
+      "provider_usage": {
+        "cached_input_tokens": 0,
+        "input_tokens": 79,
+        "output_tokens": 87
+      },
+      "raw_estimated_input_tokens": 113,
+      "raw_signed_error_percent": 43.03797468354431,
+      "request_fingerprint": "7ec2d21b4ffd2ea6",
+      "stage": "summary_seed_1",
+      "status": "succeeded",
+      "summary_mode": null
+    },
+    {
+      "call": 2,
+      "elapsed_ms": 4567,
+      "finish_reason": "stop",
+      "message_count": 1,
+      "provider_state_retained": true,
+      "provider_usage": {
+        "cached_input_tokens": 0,
+        "input_tokens": 79,
+        "output_tokens": 88
+      },
+      "raw_estimated_input_tokens": 113,
+      "raw_signed_error_percent": 43.03797468354431,
+      "request_fingerprint": "7c7952713d707dd8",
+      "stage": "summary_seed_2",
+      "status": "succeeded",
+      "summary_mode": null
+    },
+    {
+      "call": 3,
+      "elapsed_ms": 62837,
+      "finish_reason": "stop",
+      "message_count": 1,
+      "provider_state_retained": true,
+      "provider_usage": {
+        "cached_input_tokens": 0,
+        "input_tokens": 577313,
+        "output_tokens": 1091
+      },
+      "raw_estimated_input_tokens": 513267,
+      "raw_signed_error_percent": -11.09380873113891,
+      "request_fingerprint": "85212b6b9cbe6116",
+      "stage": "automatic_summary_and_answer",
+      "status": "succeeded",
+      "summary_mode": "event_batch"
+    },
+    {
+      "call": 4,
+      "elapsed_ms": 38756,
+      "finish_reason": "stop",
+      "message_count": 1,
+      "provider_state_retained": true,
+      "provider_usage": {
+        "cached_input_tokens": 0,
+        "input_tokens": 577525,
+        "output_tokens": 793
+      },
+      "raw_estimated_input_tokens": 513548,
+      "raw_signed_error_percent": -11.077788840309942,
+      "request_fingerprint": "5d41a69f4c2b7b8d",
+      "stage": "automatic_summary_and_answer",
+      "status": "succeeded",
+      "summary_mode": "event_batch"
+    },
+    {
+      "call": 5,
+      "elapsed_ms": 2845,
+      "finish_reason": "stop",
+      "message_count": 3,
+      "provider_state_retained": true,
+      "provider_usage": {
+        "cached_input_tokens": 0,
+        "input_tokens": 538,
+        "output_tokens": 45
+      },
+      "raw_estimated_input_tokens": 621,
+      "raw_signed_error_percent": 15.427509293680309,
+      "request_fingerprint": "84413f167abd4c07",
+      "stage": "automatic_summary_and_answer",
+      "status": "succeeded",
+      "summary_mode": null
+    },
+    {
+      "call": 6,
+      "elapsed_ms": 3402,
+      "finish_reason": "stop",
+      "message_count": 5,
+      "provider_state_retained": true,
+      "provider_usage": {
+        "cached_input_tokens": 0,
+        "input_tokens": 607,
+        "output_tokens": 37
+      },
+      "raw_estimated_input_tokens": 689,
+      "raw_signed_error_percent": 13.509060955518937,
+      "request_fingerprint": "7fbd3e32d7a5b95c",
+      "stage": "restored_followup",
+      "status": "succeeded",
+      "summary_mode": null
+    },
+    {
+      "call": 7,
+      "elapsed_ms": 3022,
+      "finish_reason": "tool_calls",
+      "message_count": 1,
+      "provider_state_retained": true,
+      "provider_usage": {
+        "cached_input_tokens": 0,
+        "input_tokens": 98,
+        "output_tokens": 15
+      },
+      "raw_estimated_input_tokens": 148,
+      "raw_signed_error_percent": 51.020408163265294,
+      "request_fingerprint": "24090e50894c5be9",
+      "stage": "pressure_tool_pruning",
+      "status": "succeeded",
+      "summary_mode": null
+    },
+    {
+      "call": 8,
+      "elapsed_ms": 5463,
+      "finish_reason": "stop",
+      "message_count": 3,
+      "provider_state_retained": true,
+      "provider_usage": {
+        "cached_input_tokens": 0,
+        "input_tokens": 8380,
+        "output_tokens": 45
+      },
+      "raw_estimated_input_tokens": 8185,
+      "raw_signed_error_percent": -2.3269689737470123,
+      "request_fingerprint": "e8d8234061bed92b",
+      "stage": "pressure_tool_pruning",
+      "status": "succeeded",
+      "summary_mode": null
+    }
+  ],
+  "checkpoints": [
+    {
+      "after_tokens": 715,
+      "before_tokens": 1143159,
+      "has_summary": true,
+      "id": "context:summary-boundary:4:3080793922ed69dd2abb654354b21360",
+      "pruned_results": 0,
+      "run_id": "summary-boundary",
+      "summary": {
+        "completed_work": [
+          "Confirmed NEEDLE_START = MINT-R4 from earlier run context.",
+          "Read NEEDLE_MIDDLE = COBALT-P8 in the newly supplied records.",
+          "Read NEEDLE_END = LARCH-V2 in the newly supplied records.",
+          "The latest records explicitly end with END SYNTHETIC RECORDS."
+        ],
+        "constraints": [
+          "The final answer to the original task must be only JSON with exactly the keys start, middle, and end.",
+          "Ignore ordinary filler records such as repeated “amber cedar slate.” rows."
+        ],
+        "current_plan": [
+          "Return the three confirmed marker values in the required JSON-only format."
+        ],
+        "current_state": "All three marker values are known; the records are complete. No further retrieval or inspection is needed.",
+        "decisions": [
+          "Use the literal marker values, excluding the marker labels.",
+          "Treat repeated filler records as irrelevant."
+        ],
+        "failed_attempts": [
+          "An earlier assistant response was “ACK” rather than the requested extraction JSON."
+        ],
+        "important_artifacts": [
+          "Earlier records place NEEDLE_START between row00001281 and row00001283.",
+          "Latest continuation contains NEEDLE_MIDDLE near row00064104 and NEEDLE_END after row00126927; the dataset closes with END SYNTHETIC RECORDS."
+        ],
+        "next_action": "Respond with {\"start\":\"MINT-R4\",\"middle\":\"COBALT-P8\",\"end\":\"LARCH-V2\"} and no additional text.",
+        "objective": "Complete the extraction task by returning the exact values of NEEDLE_START, NEEDLE_MIDDLE, and NEEDLE_END.",
+        "unresolved_questions": []
+      },
+      "through_sequence": 4
+    },
+    {
+      "after_tokens": 9341,
+      "before_tokens": 1142905,
+      "has_summary": false,
+      "id": "context-pruned:pruning-boundary:4:b0c050a9df05d86c32a5326a90da617e",
+      "pruned_results": 1,
+      "run_id": "pruning-boundary",
+      "summary": {
+        "completed_work": [],
+        "constraints": [],
+        "current_plan": [],
+        "current_state": "",
+        "decisions": [],
+        "failed_attempts": [],
+        "important_artifacts": [],
+        "next_action": "",
+        "objective": "",
+        "unresolved_questions": []
+      },
+      "through_sequence": 4
+    }
+  ],
+  "complete": true,
+  "measurements": [
+    {
+      "measurement": {
+        "decision_input_tokens": 715,
+        "estimated_delta_tokens": 621,
+        "estimated_input_tokens": 621,
+        "estimation_margin_tokens": 94,
+        "measured_input_tokens": null,
+        "raw_estimated_input_tokens": 621,
+        "source": "estimated"
+      },
+      "request_fingerprint": "84413f167abd4c07",
+      "run_id": "summary-boundary"
+    },
+    {
+      "measurement": {
+        "decision_input_tokens": 617,
+        "estimated_delta_tokens": 68,
+        "estimated_input_tokens": 606,
+        "estimation_margin_tokens": 11,
+        "measured_input_tokens": 538,
+        "raw_estimated_input_tokens": 689,
+        "source": "provider_calibrated"
+      },
+      "request_fingerprint": "7fbd3e32d7a5b95c",
+      "run_id": "summary-boundary"
+    },
+    {
+      "measurement": {
+        "decision_input_tokens": 171,
+        "estimated_delta_tokens": 148,
+        "estimated_input_tokens": 148,
+        "estimation_margin_tokens": 23,
+        "measured_input_tokens": null,
+        "raw_estimated_input_tokens": 148,
+        "source": "estimated"
+      },
+      "request_fingerprint": "24090e50894c5be9",
+      "run_id": "pruning-boundary"
+    },
+    {
+      "measurement": {
+        "decision_input_tokens": 9341,
+        "estimated_delta_tokens": 8037,
+        "estimated_input_tokens": 8135,
+        "estimation_margin_tokens": 1206,
+        "measured_input_tokens": 98,
+        "raw_estimated_input_tokens": 8185,
+        "source": "provider_calibrated"
+      },
+      "request_fingerprint": "e8d8234061bed92b",
+      "run_id": "pruning-boundary"
+    }
+  ],
+  "metadata": {
+    "compaction_target": 708750,
+    "compaction_threshold": 945000,
+    "context_window": 1050000,
+    "default_policy": true,
+    "estimation_margin_percent": 15,
+    "fixture_version": "ascii-fixed-records-v1",
+    "input_limit": 997500,
+    "max_model_calls": 10,
+    "mode": "all",
+    "model": "gpt-6-luna",
+    "output_reserve": 8192,
+    "protocol": "responses",
+    "provenance": "Two synthetic historical user turns use two actual tiny seed assistant responses and their exact replay envelopes. Seed inputs differ from fixture inputs; seed usage is not attached to synthetic history. No provider usage is fabricated. Pre-compaction size is local/extrapolated; summary and main call usage is actual.",
+    "provider": "openai",
+    "reasoning": "high",
+    "rows": 128210
+  },
+  "passed": true,
+  "scenarios": [
+    {
+      "elapsed_ms": 2,
+      "error": "context management failed: protected user requirements, instructions, and tools need an estimated 1681992 tokens, exceeding the input limit of 997500; they cannot be discarded by compaction",
+      "expected": "oversized latest user input is rejected locally without a provider call",
+      "input_bytes": 5850000,
+      "passed": true,
+      "provider_calls": 0,
+      "scenario": "protected"
+    },
+    {
+      "answer": "{\"start\":\"MINT-R4\",\"middle\":\"COBALT-P8\",\"end\":\"LARCH-V2\"}",
+      "before_measurement": {
+        "decision_input_tokens": 1143159,
+        "estimated_delta_tokens": 994051,
+        "estimated_input_tokens": 994051,
+        "estimation_margin_tokens": 149108,
+        "measured_input_tokens": null,
+        "raw_estimated_input_tokens": 994051,
+        "source": "estimated"
+      },
+      "elapsed_until_answer_ms": 105071,
+      "followup_answer": "{\"start\":\"MINT-R4\",\"middle\":\"COBALT-P8\",\"end\":\"LARCH-V2\"}",
+      "followup_error": null,
+      "followup_marker_retention": true,
+      "followup_measurement": {
+        "measurement": {
+          "decision_input_tokens": 617,
+          "estimated_delta_tokens": 68,
+          "estimated_input_tokens": 606,
+          "estimation_margin_tokens": 11,
+          "measured_input_tokens": 538,
+          "raw_estimated_input_tokens": 689,
+          "source": "provider_calibrated"
+        },
+        "request_fingerprint": "7fbd3e32d7a5b95c",
+        "run_id": "summary-boundary"
+      },
+      "followup_usage_calibrated_after_restore": true,
+      "marker_retention": true,
+      "original_log_unchanged": true,
+      "passed": true,
+      "provider_calls": 6,
+      "runtime_error": null,
+      "scenario": "summary",
+      "summary_checkpoints": 1
+    },
+    {
+      "answer": "{\"start\":\"MARBLE-6\",\"end\":\"SPRUCE-9\"}",
+      "checkpoints": [
+        {
+          "after_tokens": 9341,
+          "before_tokens": 1142905,
+          "has_summary": false,
+          "id": "context-pruned:pruning-boundary:4:b0c050a9df05d86c32a5326a90da617e",
+          "pruned_results": 1,
+          "run_id": "pruning-boundary",
+          "summary": {
+            "completed_work": [],
+            "constraints": [],
+            "current_plan": [],
+            "current_state": "",
+            "decisions": [],
+            "failed_attempts": [],
+            "important_artifacts": [],
+            "next_action": "",
+            "objective": "",
+            "unresolved_questions": []
+          },
+          "through_sequence": 4
+        }
+      ],
+      "elapsed_ms": 8928,
+      "head_tail_markers_retained": true,
+      "limitation": "Head/tail markers tested; interior content verified intact in canonical log, not re-queried through history tools.",
+      "no_model_summary_needed": true,
+      "original_tool_output_bytes": 3974835,
+      "original_tool_result_unchanged": true,
+      "passed": true,
+      "provider_calls": 2,
+      "pruning_checkpoint_created": true,
+      "runtime_error": null,
+      "scenario": "prune"
+    }
+  ],
+  "summary_fixture": {
+    "actual_precompaction_usage": null,
+    "before_measurement": {
+      "decision_input_tokens": 1143159,
+      "estimated_delta_tokens": 994051,
+      "estimated_input_tokens": 994051,
+      "estimation_margin_tokens": 149108,
+      "measured_input_tokens": null,
+      "raw_estimated_input_tokens": 994051,
+      "source": "estimated"
+    },
+    "bytes": 3974784,
+    "historical_turns": 2,
+    "original_events": 9,
+    "original_fingerprint": "dca20395ce244d11",
+    "rows": 128210,
+    "synthetic_seed_usage_records": 0
+  }
+}

@@ -10,6 +10,7 @@ fn respond(run: &mut AgentRun) {
     run.record(RunEvent::ModelResponseReceived {
         response: None,
         provider_continuation: None,
+        token_usage: None,
         provider_state: None,
         content: "response".to_owned(),
     })
@@ -74,6 +75,7 @@ fn events_are_ordered_and_grouped_by_step() {
     run.record(RunEvent::ModelResponseReceived {
         response: None,
         provider_continuation: None,
+        token_usage: None,
         provider_state: None,
         content: "I need to inspect the project.".to_owned(),
     })
@@ -144,6 +146,7 @@ fn step_events_require_begin_step() {
         .record(RunEvent::ModelResponseReceived {
             response: None,
             provider_continuation: None,
+            token_usage: None,
             provider_state: None,
             content: "response".to_owned(),
         })
@@ -201,6 +204,7 @@ fn an_event_history_restores_the_run_projection() {
         .record(RunEvent::ModelResponseReceived {
             response: None,
             provider_continuation: None,
+            token_usage: None,
             provider_state: None,
             content: "I need the repository name.".to_owned(),
         })
@@ -263,6 +267,7 @@ fn restore_rejects_an_event_from_the_wrong_step() {
         .record(RunEvent::ModelResponseReceived {
             response: None,
             provider_continuation: None,
+            token_usage: None,
             provider_state: None,
             content: "response".to_owned(),
         })
@@ -308,6 +313,7 @@ fn a_model_response_must_arrive_before_the_step_can_finish() {
         RunEvent::ModelResponseReceived {
             response: None,
             provider_continuation: None,
+            token_usage: None,
             provider_state: None,
             content: "duplicate".to_owned(),
         },
@@ -505,6 +511,7 @@ fn prepared_events_reject_stale_runs_unrelated_runs_and_diverged_clones() {
         .prepare_event(RunEvent::ModelResponseReceived {
             response: None,
             provider_continuation: None,
+            token_usage: None,
             provider_state: None,
             content: "branch response".to_owned(),
         })

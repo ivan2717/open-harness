@@ -24,8 +24,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         serde_json::json!({"event":"ready", "address":address.to_string()})
     );
 
-    axum::serve(listener, api::app(state))
-        .with_graceful_shutdown(shutdown_signal())
+    axum::serve(listener, api::app(state.clone()))
+        .with_graceful_shutdown(async move {
+            shutdown_signal().await;
+            state.shutdown().await;
+        })
         .await?;
 
     Ok(())

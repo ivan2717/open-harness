@@ -142,6 +142,7 @@ fn append_context_step(run: &mut AgentRun, marker: &str) {
     run.record(RunEvent::ModelResponseReceived {
         response: None,
         provider_continuation: None,
+        token_usage: None,
         provider_state: None,
         content: format!("{marker}-assistant-{}", "a".repeat(90)),
     })
@@ -289,7 +290,7 @@ async fn compacting_runtime_sends_a_summary_without_deleting_durable_events() {
         candidate.role == ModelRole::User && candidate.context.is_none() && {
             let text = candidate.text();
             let content = text.as_str();
-            content == original_instruction
+            content == "staging"
         }
     }));
 
@@ -403,6 +404,7 @@ async fn the_hard_limit_can_emergency_compact_the_latest_completed_step() {
     run.record(RunEvent::ModelResponseReceived {
         response: None,
         provider_continuation: None,
+        token_usage: None,
         provider_state: None,
         content: "Inspect these results together.".to_owned(),
     })
@@ -542,6 +544,7 @@ async fn soft_compaction_falls_back_when_deferred_tools_push_it_over_the_hard_li
             content,
             provider_state: None,
             provider_continuation: None,
+            token_usage: None,
         })
         .unwrap();
         run.record(RunEvent::ToolCallRequested {
@@ -567,6 +570,9 @@ async fn soft_compaction_falls_back_when_deferred_tools_push_it_over_the_hard_li
     let original = compacting_manager(
         ContextPolicy::builder()
             .input_token_limit(2_500)
+            // This fixture isolates deferred-schema overhead at an exact
+            // character budget; uncertainty headroom is tested separately.
+            .estimation_margin_percent(0)
             .compaction_threshold(2_500)
             .recent_tail_tokens(100)
             .max_tool_output_chars(32_000)
@@ -590,6 +596,7 @@ async fn soft_compaction_falls_back_when_deferred_tools_push_it_over_the_hard_li
         ContextPolicy::builder()
             .input_token_limit(2_500)
             .compaction_threshold(1_800)
+            .estimation_margin_percent(0)
             .recent_tail_tokens(100)
             .max_tool_output_chars(32_000)
             .build()
@@ -644,7 +651,8 @@ async fn the_model_compactor_requests_strict_json_without_exposing_tools() {
 
     assert_eq!(summary.objective, "Finish the context test");
     let requests = compactor.model().requests();
-    assert_eq!(estimated, counter.count_tokens(&requests[0]));
+    let raw = counter.count_tokens(&requests[0]);
+    assert_eq!(estimated, raw + (raw * 15).div_ceil(100));
     assert!(requests[0].tools.is_empty());
     assert_eq!(requests[0].messages.len(), 1);
     assert!(
@@ -657,12 +665,18 @@ async fn the_model_compactor_requests_strict_json_without_exposing_tools() {
 #[tokio::test]
 async fn clipped_tail_details_remain_available_through_history_access() {
     let hidden_detail = "ONLY-IN-THE-ORIGINAL-EVENT";
-    let full_output = format!("{}{}{}", "a".repeat(250), hidden_detail, "b".repeat(250));
+    let full_output = format!(
+        "{}{}{}",
+        "a".repeat(2_500),
+        hidden_detail,
+        "b".repeat(2_500)
+    );
     let mut run = AgentRun::new("clipped-tail", "context-agent", "inspect a large result");
     run.begin_step().unwrap();
     run.record(RunEvent::ModelResponseReceived {
         response: None,
         provider_continuation: None,
+        token_usage: None,
         provider_state: None,
         content: "Read the large file.".to_owned(),
     })
@@ -682,8 +696,8 @@ async fn clipped_tail_details_remain_available_through_history_access() {
     let access = EventStoreHistoryAccess::new();
     let manager = compacting_manager(
         ContextPolicy::builder()
-            .input_token_limit(5_000)
-            .compaction_threshold(4_000)
+            .input_token_limit(12_000)
+            .compaction_threshold(5_000)
             .recent_tail_tokens(500)
             .max_tool_output_chars(100)
             .build()
@@ -1016,6 +1030,7 @@ async fn saved_history_responses_repage_without_skipping_text_when_context_budge
         run.record(RunEvent::ModelResponseReceived {
             response: None,
             provider_continuation: None,
+            token_usage: None,
             provider_state: None,
             content: "Read the file.".to_owned(),
         })
@@ -1087,6 +1102,7 @@ async fn saved_history_responses_repage_without_skipping_text_when_context_budge
             run.record(RunEvent::ModelResponseReceived {
                 response: None,
                 provider_continuation: None,
+                token_usage: None,
                 provider_state: None,
                 content: "Recover the next page.".to_owned(),
             })
@@ -1103,10 +1119,18 @@ async fn saved_history_responses_repage_without_skipping_text_when_context_budge
             })
             .unwrap();
             let input = context_input(&run);
-            let prepared = manager
-                .prepare(input.as_ref().with_tool_output_projector(&access))
-                .await
-                .unwrap();
+            let prepared = if page == 0 {
+                manager
+                    .compact_now(input.as_ref().with_tool_output_projector(&access))
+                    .await
+                    .unwrap()
+                    .unwrap()
+            } else {
+                manager
+                    .prepare(input.as_ref().with_tool_output_projector(&access))
+                    .await
+                    .unwrap()
+            };
             let projected = prepared
                 .request
                 .messages

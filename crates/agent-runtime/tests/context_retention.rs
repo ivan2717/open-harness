@@ -67,6 +67,7 @@ fn append_tool_step(run: &mut AgentRun, label: &str) {
     run.record(RunEvent::ModelResponseReceived {
         response: None,
         provider_continuation: None,
+        token_usage: None,
         provider_state: None,
         content: format!("Inspect both files for {label}."),
     })
@@ -95,6 +96,7 @@ fn append_correction(run: &mut AgentRun, correction: &str) {
     run.record(RunEvent::ModelResponseReceived {
         response: None,
         provider_continuation: None,
+        token_usage: None,
         provider_state: None,
         content: "Confirm the current requirements.".to_owned(),
     })
@@ -142,7 +144,7 @@ fn assert_complete_tool_groups(request: &ModelRequest) {
 }
 
 #[tokio::test]
-async fn repeated_compaction_preserves_user_constraints_and_recoverable_evidence() {
+async fn opt_in_repeated_compaction_preserves_all_user_inputs_and_recoverable_evidence() {
     let initial = "Refactor the parser; do not change the public API or delete fixtures.";
     let corrections = [
         "Correction: use the existing parser API; keep identifiers exactly as written.",
@@ -154,6 +156,7 @@ async fn repeated_compaction_preserves_user_constraints_and_recoverable_evidence
     let checkpoints = InMemoryContextCheckpointStore::new();
     let counter = ApproximateTokenCounter::new(1).unwrap();
     let policy = ContextPolicy::builder()
+        .preserve_all_user_messages(true)
         .input_token_limit(16_000)
         .compaction_threshold(5_000)
         .compaction_target(3_500)
@@ -308,7 +311,7 @@ async fn a_new_user_correction_is_not_duplicated_when_a_checkpoint_is_reused() {
             ))
             .await
             .unwrap();
-        assert_eq!(user_messages(&prepared.request), vec![initial, latest]);
+        assert_eq!(user_messages(&prepared.request), vec![latest]);
         assert_eq!(prepared.omitted_history, first.omitted_history);
         assert_eq!(compactor.calls.lock().unwrap().len(), calls_after_first);
     }

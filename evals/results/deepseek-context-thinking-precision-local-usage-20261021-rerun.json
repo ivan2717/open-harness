@@ -1,0 +1,447 @@
+{
+  "limitations": [
+    "Synthetic fixtures; not a production reliability or model-quality benchmark.",
+    "The compaction scenario explicitly lowers thresholds to exercise repeated compression.",
+    "Provider-native compaction is not covered. Thinking replay uses durable per-response state; separate offline tests cover restart and other protocols.",
+    "No transport retry; errors are recorded rather than masked."
+  ],
+  "mode": "thinking",
+  "model": {
+    "api_capabilities": {
+      "anthropic_messages": {
+        "system_prompt_update": "in-history"
+      }
+    },
+    "context_window": 1048576,
+    "effort": {
+      "default_level": "high",
+      "supported_levels": [
+        "low",
+        "high",
+        "max"
+      ]
+    },
+    "id": "deepseek-flash",
+    "input_modalities": [
+      "text",
+      "image"
+    ],
+    "max_output_tokens": 393216,
+    "name": "DeepSeek-V4.1-Flash",
+    "object": "model",
+    "output_modalities": [
+      "text"
+    ],
+    "owned_by": "deepseek"
+  },
+  "precision": {
+    "aggregate": {
+      "actual_input_tokens": 43290,
+      "actual_output_tokens": 223,
+      "decision_covered_requests": 4,
+      "predicted_mean_absolute_relative_error_percent": 9.058015256839003,
+      "raw_mean_absolute_relative_error_percent": 16.9608620788378,
+      "requests": 6
+    },
+    "cold": {
+      "actual_input_tokens": 20899,
+      "actual_output_tokens": 154,
+      "decision_covered_requests": 2,
+      "predicted_mean_absolute_relative_error_percent": 16.932879585937656,
+      "raw_mean_absolute_relative_error_percent": 16.932879585937656,
+      "requests": 3
+    },
+    "durable_event_round_trip_verified": true,
+    "errors": [],
+    "maximum_corpus_bytes_per_fixture": 30000,
+    "passed": true,
+    "restored": {
+      "actual_input_tokens": 22391,
+      "actual_output_tokens": 69,
+      "decision_covered_requests": 2,
+      "predicted_mean_absolute_relative_error_percent": 1.1831509277403487,
+      "raw_mean_absolute_relative_error_percent": 16.98884457173794,
+      "requests": 3
+    },
+    "rows": [
+      {
+        "actual_cached_input_tokens": 6784,
+        "actual_input_tokens": 7028,
+        "actual_output_tokens": 26,
+        "corpus": "english_prose",
+        "decision_covers_actual_input": true,
+        "measurement": {
+          "decision_input_tokens": 8132,
+          "estimated_delta_tokens": 7071,
+          "estimated_input_tokens": 7071,
+          "estimation_margin_tokens": 1061,
+          "measured_input_tokens": null,
+          "raw_estimated_input_tokens": 7071,
+          "source": "estimated"
+        },
+        "predicted_absolute_relative_error_percent": 0.6118383608423449,
+        "predicted_error_tokens": 43,
+        "predicted_relative_error_percent": 0.6118383608423449,
+        "raw_absolute_relative_error_percent": 0.6118383608423449,
+        "raw_error_tokens": 43,
+        "raw_relative_error_percent": 0.6118383608423449,
+        "stage": "cold"
+      },
+      {
+        "actual_cached_input_tokens": 7296,
+        "actual_input_tokens": 7532,
+        "actual_output_tokens": 31,
+        "corpus": "english_prose",
+        "decision_covers_actual_input": true,
+        "measurement": {
+          "decision_input_tokens": 7622,
+          "estimated_delta_tokens": 516,
+          "estimated_input_tokens": 7544,
+          "estimation_margin_tokens": 78,
+          "measured_input_tokens": 7028,
+          "raw_estimated_input_tokens": 7587,
+          "source": "provider_calibrated"
+        },
+        "predicted_absolute_relative_error_percent": 0.15932023366967604,
+        "predicted_error_tokens": 12,
+        "predicted_relative_error_percent": 0.15932023366967604,
+        "raw_absolute_relative_error_percent": 0.7302177376526819,
+        "raw_error_tokens": 55,
+        "raw_relative_error_percent": 0.7302177376526819,
+        "stage": "restored"
+      },
+      {
+        "actual_cached_input_tokens": 5120,
+        "actual_input_tokens": 5321,
+        "actual_output_tokens": 57,
+        "corpus": "chinese_prose",
+        "decision_covers_actual_input": true,
+        "measurement": {
+          "decision_input_tokens": 8132,
+          "estimated_delta_tokens": 7071,
+          "estimated_input_tokens": 7071,
+          "estimation_margin_tokens": 1061,
+          "measured_input_tokens": null,
+          "raw_estimated_input_tokens": 7071,
+          "source": "estimated"
+        },
+        "predicted_absolute_relative_error_percent": 32.888554782935536,
+        "predicted_error_tokens": 1750,
+        "predicted_relative_error_percent": 32.888554782935536,
+        "raw_absolute_relative_error_percent": 32.888554782935536,
+        "raw_error_tokens": 1750,
+        "raw_relative_error_percent": 32.888554782935536,
+        "stage": "cold"
+      },
+      {
+        "actual_cached_input_tokens": 5504,
+        "actual_input_tokens": 5701,
+        "actual_output_tokens": 2,
+        "corpus": "chinese_prose",
+        "decision_covers_actual_input": true,
+        "measurement": {
+          "decision_input_tokens": 5915,
+          "estimated_delta_tokens": 516,
+          "estimated_input_tokens": 5837,
+          "estimation_margin_tokens": 78,
+          "measured_input_tokens": 5321,
+          "raw_estimated_input_tokens": 7587,
+          "source": "provider_calibrated"
+        },
+        "predicted_absolute_relative_error_percent": 2.3855463953692335,
+        "predicted_error_tokens": 136,
+        "predicted_relative_error_percent": 2.3855463953692335,
+        "raw_absolute_relative_error_percent": 33.081915453429225,
+        "raw_error_tokens": 1886,
+        "raw_relative_error_percent": 33.081915453429225,
+        "stage": "restored"
+      },
+      {
+        "actual_cached_input_tokens": 8320,
+        "actual_input_tokens": 8550,
+        "actual_output_tokens": 71,
+        "corpus": "code_and_json",
+        "decision_covers_actual_input": false,
+        "measurement": {
+          "decision_input_tokens": 8132,
+          "estimated_delta_tokens": 7071,
+          "estimated_input_tokens": 7071,
+          "estimation_margin_tokens": 1061,
+          "measured_input_tokens": null,
+          "raw_estimated_input_tokens": 7071,
+          "source": "estimated"
+        },
+        "predicted_absolute_relative_error_percent": 17.29824561403509,
+        "predicted_error_tokens": -1479,
+        "predicted_relative_error_percent": -17.29824561403509,
+        "raw_absolute_relative_error_percent": 17.29824561403509,
+        "raw_error_tokens": -1479,
+        "raw_relative_error_percent": -17.29824561403509,
+        "stage": "cold"
+      },
+      {
+        "actual_cached_input_tokens": 8960,
+        "actual_input_tokens": 9158,
+        "actual_output_tokens": 36,
+        "corpus": "code_and_json",
+        "decision_covers_actual_input": false,
+        "measurement": {
+          "decision_input_tokens": 9144,
+          "estimated_delta_tokens": 516,
+          "estimated_input_tokens": 9066,
+          "estimation_margin_tokens": 78,
+          "measured_input_tokens": 8550,
+          "raw_estimated_input_tokens": 7587,
+          "source": "provider_calibrated"
+        },
+        "predicted_absolute_relative_error_percent": 1.004586154182136,
+        "predicted_error_tokens": -92,
+        "predicted_relative_error_percent": -1.004586154182136,
+        "raw_absolute_relative_error_percent": 17.154400524131905,
+        "raw_error_tokens": -1571,
+        "raw_relative_error_percent": -17.154400524131905,
+        "stage": "restored"
+      }
+    ],
+    "scope": "Six bounded real requests across English, Chinese, and code/JSON. Cold and JSONL-restored requests are prepared and measured by CompactingContextManager using local estimates and durable provider usage calibration. No extra counting requests are made. First successful replies are mapped to InputRequired only for the probe lifecycle. Passing validates completed calls and durable calibration, not estimation accuracy or margin coverage. No compaction is induced in this scenario."
+  },
+  "reasoning_effort": "high",
+  "requested_revision": "DeepSeek-V4.1-Flash-1017",
+  "requests": [
+    {
+      "elapsed_ms": 1060,
+      "encoded_messages_contains_archive_pin": false,
+      "estimated_input_tokens": 7071,
+      "finish_reason": "stop",
+      "has_summary": false,
+      "kind": "agent",
+      "max_output_tokens": 8192,
+      "messages": 1,
+      "model": "deepseek-flash",
+      "portable_estimated_input_tokens": 7071,
+      "reasoning_effort": "high",
+      "reasoning_replay_enabled": true,
+      "replayed_assistant_count": 0,
+      "replayed_reasoning_chars": 0,
+      "replayed_reasoning_contains_archive_pin": false,
+      "request": 1,
+      "response_reasoning_chars": 109,
+      "returned_reasoning_tokens": 24,
+      "returned_tool_names": [],
+      "thinking": true,
+      "tool_names": [],
+      "usage": {
+        "completion_tokens": 26,
+        "completion_tokens_details": {
+          "reasoning_tokens": 24
+        },
+        "prompt_cache_hit_tokens": 6784,
+        "prompt_cache_miss_tokens": 244,
+        "prompt_tokens": 7028,
+        "prompt_tokens_details": {
+          "cached_tokens": 6784
+        },
+        "total_tokens": 7054
+      },
+      "wire_estimated_input_tokens": 7071
+    },
+    {
+      "elapsed_ms": 1211,
+      "encoded_messages_contains_archive_pin": false,
+      "estimated_input_tokens": 7587,
+      "finish_reason": "stop",
+      "has_summary": false,
+      "kind": "agent",
+      "max_output_tokens": 8192,
+      "messages": 3,
+      "model": "deepseek-flash",
+      "portable_estimated_input_tokens": 7587,
+      "reasoning_effort": "high",
+      "reasoning_replay_enabled": true,
+      "replayed_assistant_count": 1,
+      "replayed_reasoning_chars": 109,
+      "replayed_reasoning_contains_archive_pin": false,
+      "request": 2,
+      "response_reasoning_chars": 121,
+      "returned_reasoning_tokens": 29,
+      "returned_tool_names": [],
+      "thinking": true,
+      "tool_names": [],
+      "usage": {
+        "completion_tokens": 31,
+        "completion_tokens_details": {
+          "reasoning_tokens": 29
+        },
+        "prompt_cache_hit_tokens": 7296,
+        "prompt_cache_miss_tokens": 236,
+        "prompt_tokens": 7532,
+        "prompt_tokens_details": {
+          "cached_tokens": 7296
+        },
+        "total_tokens": 7563
+      },
+      "wire_estimated_input_tokens": 7587
+    },
+    {
+      "elapsed_ms": 1245,
+      "encoded_messages_contains_archive_pin": false,
+      "estimated_input_tokens": 7071,
+      "finish_reason": "stop",
+      "has_summary": false,
+      "kind": "agent",
+      "max_output_tokens": 8192,
+      "messages": 1,
+      "model": "deepseek-flash",
+      "portable_estimated_input_tokens": 7071,
+      "reasoning_effort": "high",
+      "reasoning_replay_enabled": true,
+      "replayed_assistant_count": 0,
+      "replayed_reasoning_chars": 0,
+      "replayed_reasoning_contains_archive_pin": false,
+      "request": 3,
+      "response_reasoning_chars": 237,
+      "returned_reasoning_tokens": 55,
+      "returned_tool_names": [],
+      "thinking": true,
+      "tool_names": [],
+      "usage": {
+        "completion_tokens": 57,
+        "completion_tokens_details": {
+          "reasoning_tokens": 55
+        },
+        "prompt_cache_hit_tokens": 5120,
+        "prompt_cache_miss_tokens": 201,
+        "prompt_tokens": 5321,
+        "prompt_tokens_details": {
+          "cached_tokens": 5120
+        },
+        "total_tokens": 5378
+      },
+      "wire_estimated_input_tokens": 7071
+    },
+    {
+      "elapsed_ms": 1133,
+      "encoded_messages_contains_archive_pin": false,
+      "estimated_input_tokens": 7587,
+      "finish_reason": "stop",
+      "has_summary": false,
+      "kind": "agent",
+      "max_output_tokens": 8192,
+      "messages": 3,
+      "model": "deepseek-flash",
+      "portable_estimated_input_tokens": 7587,
+      "reasoning_effort": "high",
+      "reasoning_replay_enabled": true,
+      "replayed_assistant_count": 1,
+      "replayed_reasoning_chars": 237,
+      "replayed_reasoning_contains_archive_pin": false,
+      "request": 4,
+      "response_reasoning_chars": 0,
+      "returned_reasoning_tokens": 0,
+      "returned_tool_names": [],
+      "thinking": true,
+      "tool_names": [],
+      "usage": {
+        "completion_tokens": 2,
+        "completion_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "prompt_cache_hit_tokens": 5504,
+        "prompt_cache_miss_tokens": 197,
+        "prompt_tokens": 5701,
+        "prompt_tokens_details": {
+          "cached_tokens": 5504
+        },
+        "total_tokens": 5703
+      },
+      "wire_estimated_input_tokens": 7587
+    },
+    {
+      "elapsed_ms": 1345,
+      "encoded_messages_contains_archive_pin": false,
+      "estimated_input_tokens": 7071,
+      "finish_reason": "stop",
+      "has_summary": false,
+      "kind": "agent",
+      "max_output_tokens": 8192,
+      "messages": 1,
+      "model": "deepseek-flash",
+      "portable_estimated_input_tokens": 7071,
+      "reasoning_effort": "high",
+      "reasoning_replay_enabled": true,
+      "replayed_assistant_count": 0,
+      "replayed_reasoning_chars": 0,
+      "replayed_reasoning_contains_archive_pin": false,
+      "request": 5,
+      "response_reasoning_chars": 317,
+      "returned_reasoning_tokens": 69,
+      "returned_tool_names": [],
+      "thinking": true,
+      "tool_names": [],
+      "usage": {
+        "completion_tokens": 71,
+        "completion_tokens_details": {
+          "reasoning_tokens": 69
+        },
+        "prompt_cache_hit_tokens": 8320,
+        "prompt_cache_miss_tokens": 230,
+        "prompt_tokens": 8550,
+        "prompt_tokens_details": {
+          "cached_tokens": 8320
+        },
+        "total_tokens": 8621
+      },
+      "wire_estimated_input_tokens": 7071
+    },
+    {
+      "elapsed_ms": 1503,
+      "encoded_messages_contains_archive_pin": false,
+      "estimated_input_tokens": 7587,
+      "finish_reason": "stop",
+      "has_summary": false,
+      "kind": "agent",
+      "max_output_tokens": 8192,
+      "messages": 3,
+      "model": "deepseek-flash",
+      "portable_estimated_input_tokens": 7587,
+      "reasoning_effort": "high",
+      "reasoning_replay_enabled": true,
+      "replayed_assistant_count": 1,
+      "replayed_reasoning_chars": 317,
+      "replayed_reasoning_contains_archive_pin": false,
+      "request": 6,
+      "response_reasoning_chars": 159,
+      "returned_reasoning_tokens": 34,
+      "returned_tool_names": [],
+      "thinking": true,
+      "tool_names": [],
+      "usage": {
+        "completion_tokens": 36,
+        "completion_tokens_details": {
+          "reasoning_tokens": 34
+        },
+        "prompt_cache_hit_tokens": 8960,
+        "prompt_cache_miss_tokens": 198,
+        "prompt_tokens": 9158,
+        "prompt_tokens_details": {
+          "cached_tokens": 8960
+        },
+        "total_tokens": 9194
+      },
+      "wire_estimated_input_tokens": 7587
+    }
+  ],
+  "resolved_default_policy": {
+    "input_limit": 996147,
+    "recent_tail": 24000,
+    "target": 707789,
+    "threshold": 943718,
+    "window": 1048576
+  },
+  "scenario": "precision",
+  "started_at_unix_seconds": 1792595778,
+  "thinking_verified": {
+    "criterion": "At least one provider response reports nonzero reasoning_tokens.",
+    "passed": true
+  }
+}

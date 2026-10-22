@@ -18,6 +18,21 @@ export const runsOptions = queryOptions({
     mergeRunLists(old as RunSummary[] | undefined, incoming as RunSummary[]),
 })
 
+export function useWorkspace(id: string, enabled: boolean, running: boolean) {
+  const query = useQuery({
+    queryKey: ['workspace', id],
+    queryFn: () => window.harness.getWorkspace(id),
+    enabled,
+    refetchInterval: enabled ? (running ? 1_000 : 5_000) : false,
+    retry: 1,
+  })
+  const { refetch } = query
+  useEffect(() => {
+    if (enabled) void refetch()
+  }, [id, enabled, running, refetch])
+  return query
+}
+
 export function storeSnapshot(client: QueryClient, snapshot: RunDetail): void {
   const current = client.getQueryData<RunDetail>(['run', snapshot.id])
   const accepted = latestSnapshot(current, snapshot)

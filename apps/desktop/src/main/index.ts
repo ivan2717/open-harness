@@ -3,14 +3,27 @@ import {
   BrowserWindow,
   ipcMain,
   session,
+  safeStorage,
+  dialog,
   type IpcMainEvent,
   type IpcMainInvokeEvent,
 } from 'electron'
 import { isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { realpath } from 'node:fs/promises'
 import { Backend } from './backend'
-import { apiRequest, channels, identifier, watchRequest } from './protocol'
+import {
+  apiRequest,
+  channels,
+  identifier,
+  resolvedModelConfiguration,
+  watchRequest,
+} from './protocol'
 import { SubscriptionRegistry } from './subscriptions'
+import { ModelVault } from './model-vault'
+import { fetchModelCapacity } from './model-metadata'
+import { resolveModelLimits } from '../shared/model-limits'
+import type { AppConfig, ConfigureModelInput, ModelInfo } from '../shared/contracts'
 
 const dataDirectory = process.env.OPENHARNESS_DESKTOP_DATA_DIR
 if (dataDirectory) {
@@ -25,6 +38,11 @@ const subscriptions = new SubscriptionRegistry()
 let window: BrowserWindow | undefined
 let backend: Backend | undefined
 let quitting = false
+let modelVault: ModelVault | undefined
+let modelsReady: Promise<void> = Promise.resolve()
+let modelConfigError: string | undefined
+// A renderer can only start work in directories selected through the native dialog.
+const selectedWorkspaces = new Set<string>()
 
 function trustedUrl(url: string): boolean {
   try {
@@ -49,10 +67,49 @@ function assertSender(event: IpcMainInvokeEvent | IpcMainEvent): void {
 }
 
 function installBridge(): void {
+  ipcMain.handle(channels.chooseWorkspace, async (event) => {
+    assertSender(event)
+    const result = await dialog.showOpenDialog(window!, {
+      title: '选择项目目录',
+      buttonLabel: '选择项目',
+      properties: ['openDirectory'],
+    })
+    if (result.canceled || !result.filePaths[0]) return null
+    const path = await realpath(result.filePaths[0])
+    selectedWorkspaces.add(path)
+    return path
+  })
   ipcMain.handle(channels.invoke, async (event, request: unknown) => {
     assertSender(event)
     if (!backend) throw new Error('The local runtime is starting')
-    return backend.request(apiRequest(request))
+    const mapped = apiRequest(request)
+    if (
+      mapped.path === '/api/runs' &&
+      mapped.method === 'POST' &&
+      mapped.body &&
+      'workspace_path' in mapped.body
+    ) {
+      if (!mapped.body.workspace_path || !selectedWorkspaces.has(mapped.body.workspace_path))
+        throw new Error('请先通过“选择项目”授权此目录')
+    }
+    await modelsReady
+    if (mapped.path === '/api/models') {
+      const input = mapped.body as ConfigureModelInput
+      const capacity = await fetchModelCapacity(input)
+      const limits = resolveModelLimits(input, capacity)
+      const resolved = resolvedModelConfiguration({
+        ...input,
+        context_window: limits.context_window,
+        max_output_tokens: limits.max_output_tokens,
+      })
+      const model = (await backend.request({ ...mapped, body: resolved })) as ModelInfo
+      const persisted = (await modelVault?.save(model.id, resolved)) ?? false
+      return { model, persisted, limits, capacity }
+    }
+    const result = await backend.request(mapped)
+    if (mapped.path === '/api/config')
+      return { ...(result as AppConfig), model_config_error: modelConfigError }
+    return result
   })
   ipcMain.on(channels.watchStart, (event, request: unknown) => {
     try {
@@ -145,6 +202,26 @@ if (!app.requestSingleInstanceLock()) {
       ? join(process.resourcesPath, 'bin', binaryName)
       : join(targetDirectory, 'debug', binaryName)
     backend = new Backend(binary, join(app.getPath('userData'), 'runtime'))
+    modelVault = new ModelVault(join(app.getPath('userData'), 'models.encrypted'), {
+      isEncryptionAvailable: () =>
+        safeStorage.isEncryptionAvailable() &&
+        (process.platform !== 'linux' || safeStorage.getSelectedStorageBackend() !== 'basic_text'),
+      encryptString: (value) => safeStorage.encryptString(value),
+      decryptString: (value) => safeStorage.decryptString(value),
+    })
+    modelsReady = (async () => {
+      try {
+        for (const input of await modelVault!.load()) {
+          try {
+            await backend!.request({ path: '/api/models', method: 'POST', body: input })
+          } catch {
+            modelConfigError = '部分模型配置未能恢复，可重新接入对应模型。'
+          }
+        }
+      } catch {
+        modelConfigError = '已保存的模型配置未能恢复。可在这里重新接入；本地会话记录仍然可用。'
+      }
+    })()
     void backend.start().catch(() => undefined) // Bridge calls surface startup failures in the workbench.
     installBridge()
     createWindow()

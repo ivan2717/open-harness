@@ -16,10 +16,53 @@ npm ci
 npm run dev
 ```
 
-The first version provides an explicitly labelled offline demonstration model
-that exercises the actual Rust execution and context-management code. It makes
-no model API requests. See [desktop setup and architecture](apps/desktop/README.md)
+The desktop includes an offline demonstration model and configurable real-model
+connections through Chat Completions, Responses, and Anthropic Messages. Settings
+accept the model's capacity and reasoning configuration; credentials are encrypted
+by Electron's OS secret facility when available. Conversations support follow-up
+turns and cancellable manual context compaction. The offline demo makes no model
+API requests. See [desktop setup and architecture](apps/desktop/README.md)
 for state ownership, persistence, checks, and packaging.
+
+### Local project tasks
+
+Choose a project directory and a configured model to work on actual local files.
+New projects default to **read-only**. With **workspace write** enabled, the model
+can make focused edits; each shell command still requires a separate approval.
+The desktop shows pending approvals, command results, and file changes in an
+on-demand project panel. The offline demonstration does not operate on projects.
+
+The local tools read, list, search, create, and edit bounded UTF-8 files. Paths
+are relative to the selected directory; symlinks, hard-linked files, credential
+paths, and Git internals are rejected by file tools. Project `AGENTS.md` guidance
+is captured when the conversation starts; nested guidance can be read on demand.
+Each conversation keeps its original instruction snapshot when it is reopened,
+so persisted provider reasoning and prefix bindings remain valid.
+
+Command execution currently requires the macOS `sandbox-exec` facility. Commands
+run with a clean environment, network access disabled, project-scoped writes,
+bounded output, a 60-second default timeout (120 seconds maximum), and owned
+process-group cancellation. A pipe watchdog also stops the owned process group
+when the host exits unexpectedly. Commands must be foreground tasks: daemons or
+processes that deliberately detach into a new session are unsupported and cannot
+be guaranteed to stop with that group. If the supported sandbox is unavailable, commands
+are refused; there is no unrestricted fallback. Other platforms can still use
+file tools. Projects need installed dependencies for offline test commands.
+
+File-tool changes are journaled before writing and can be reverted while idle
+only if the file still matches the agent's last saved content. This preserves
+pre-existing user modifications and refuses to overwrite later external edits.
+Command changes are recorded for review but require manual resolution, because
+the host cannot reliably distinguish command writes from concurrent user edits.
+Review snapshots exclude dependency/build directories and are bounded; they are
+not a full filesystem backup or a Git reset. Overlapping project directories
+cannot execute in two sessions concurrently within the application service.
+
+Interrupted, cancelled, failed, and completed conversations can continue in place.
+Recovery commits an explicit event, keeps completed results, and marks missing
+tool outcomes as unknown or not started. It never re-executes old tool calls.
+The model is instructed to inspect actual state before taking further action.
+Missing project directories disable execution without making history unreadable.
 
 ## Development
 
@@ -51,6 +94,8 @@ cargo run -p api --locked
   codecs, transport clients, tool execution, or storage implementation.
 - `agent-adapters`: protocol-specific response codecs and replay validation for
   Chat Completions, Responses, Anthropic Messages, and Gemini generateContent.
+  `WireProtocol::decode_usage` normalizes settled usage snapshots, including
+  each protocol's cache and reasoning accounting.
   Transport adapters can reuse these helpers; a new protocol can implement the
   same model contract without changing the core.
 - `agent-runtime/model`: the provider-neutral model interface; capabilities and
@@ -65,6 +110,9 @@ cargo run -p api --locked
   JSONL implementations. JSONL indexing stays with the JSONL implementation.
 - `agent-runtime/runtime`: lifecycle and persistence coordination, the execution
   loop, and process-local cancellation controls.
+- `agent-local`: execution-host file tools, permissions, command approvals and
+  OS isolation, change journals, and conditional file undo. It does not depend
+  on Electron or HTTP, and is composed into the API's model-neutral tool executor.
 - `api`: local application service, run management, public UI projections,
   authenticated event subscriptions, HTTP routing, and process startup.
 - `apps/desktop`: Electron lifecycle and a restricted preload bridge; React
@@ -124,6 +172,10 @@ using the previous interfaces need these changes:
 | `ModelResponse::{FinalAnswer, ToolCalls, InputRequired}` | Use ordered `content` plus `ModelFinishReason`; convenience constructors are `final_answer`, `tool_calls`, and `input_required`. |
 | Core `ProviderProtocol` and `ProviderResponseState::validate_response` | Use adapter-owned format keys and `Model::validate_replay_state`; built-in codecs live in `agent-adapters::WireProtocol`. |
 | Direct `ModelRequest::validate_provider_state` | This checks generic invariants only; use `Model::validate_request` or `validate_provider_state_with` to include adapter payload validation. |
+| `RunEvent::ModelResponseReceived` literals | Supply `token_usage` (`None` for legacy/manual events). Existing serialized logs still load without it. |
+| Raw `estimate_request_tokens` diagnostics | Use `measure_request(input, request)` for the same calibrated estimate and headroom used by the context policy. |
+| Wrappers around a `ContextManager` | Forward `request_usage_baseline` to preserve its counter-bound durable estimate anchors; forward `compact_now` to expose manual maintenance. |
+| Custom `TokenCounter` | Optionally implement a stable, versioned `estimator_identity` to retain calibration after history rewrites and restarts. Exact-prefix calibration still works without it. |
 
 Cancellation drops locally owned model/tool futures and lets event persistence
 finish. Adapters must clean up their resources on drop; already committed
@@ -213,15 +265,17 @@ explicit trigger, automatic compaction uses the smaller of the model's trigger
 Explicit triggers remain explicit and are rejected if they exceed the input
 limit. Output reservations are capped by the model's maximum output tokens.
 The default desired post-compaction size is 75% of the resolved trigger. The
-preferred recent tail remains capped at 24,000 tokens (and shrinks for small
-windows); increasing the window does not inflate every retention budget.
+preferred recent tail is 16% of the input space left after fixed instructions
+and tool schemas, retaining complete steps. Configure another ratio with
+`recent_tail_percent(1..=99)`; an explicit `recent_tail_tokens` takes precedence.
 
-| Configuration | Input limit | Trigger | Desired size | Preferred recent tail |
+| Configuration | Input limit | Trigger | Desired size | Tail before fixed-cost adjustment |
 | --- | ---: | ---: | ---: | ---: |
-| No metadata: 128,000 fallback window | 117,760 | 115,200 | 86,400 | 24,000 |
-| Model default window 1,000,000, effective 95% | 950,000 | 900,000 | 675,000 | 24,000 |
+| No metadata: 128,000 fallback window | 117,760 | 115,200 | 86,400 | 18,841 |
+| Model default window 1,000,000, effective 95% | 950,000 | 900,000 | 675,000 | 152,000 |
 
 Both rows use the default 8,192 output reservation and 2,048 safety margin.
+Actual tail budgets subtract the current instructions and schemas first.
 Unknown adapters retain the fallback; adapters must advertise their real limits
 to use a larger window automatically. `policy.resolve(model.context_metadata())`
 exposes the effective configuration for inspection.
@@ -253,14 +307,24 @@ The legacy `input_token_limit(n)` setter specifies an input-only budget and
 clears output/margin reservations; known model limits still apply. Use
 `model_budget` for a complete window with an explicit output reservation.
 
-The text strategy preserves every user-authored `RunStarted` and `InputReceived`
-message verbatim and in order, even after its event is covered by a summary.
-Inputs still in the active tail appear only once. This preserves corrections
-and constraints without relying on another model to extract them correctly.
-Fixed instructions and tools are also counted. If those protected inputs alone
-exceed the hard budget, preparation returns an explicit error instead of
-summarizing them away. Long conversations with extensive user-supplied data
-therefore still have a finite protected-input capacity.
+By default, the latest user input is protected verbatim. Older `RunStarted` and
+`InputReceived` messages can enter a summary; their exact content remains in the
+canonical journal and is available through history tools. Summaries preserve
+requirements and corrections, and newer user input takes precedence. Set
+`preserve_all_user_messages(true)` when every user input must remain verbatim.
+Inputs retained in the active tail appear only once. Fixed instructions and tool
+schemas are counted in every request. If the protected input alone exceeds the
+hard budget, preparation returns an explicit error.
+
+Under the soft trigger, the portable manager retains complete tool results.
+When pressure reaches the trigger, it first prunes oversized tool results using
+`max_tool_output_chars` and the tool's structured-output projector. It stores the
+exact replacements in a derived checkpoint and measures the resulting request
+again. A sufficient reduction avoids a summary call. Otherwise it summarizes
+complete old steps and retains a recent tail. Persisted pruning survives restart,
+cancellation, and summary failure; canonical events are never rewritten. A
+failed optional summary can continue with a fitting pruned projection. Requests
+with prefix-bound provider state require native compaction before any rewrite.
 
 `ModelContextCompactor` resolves its own model metadata independently of the
 main model. `with_budget` and `with_token_counter` override its configuration;
@@ -269,33 +333,120 @@ cap, and both input and returned output are checked against its own budget.
 Recursive batches use the compactor's input limit. Older summaries are derived
 notes; newer evidence and explicit user corrections can revise them.
 
+For a compatible same-model route, the manager offers the exact projected prefix
+to `estimate_projected_input_tokens` and `compact_projected`. The model compactor
+keeps instructions, tool schemas, and prior messages unchanged and appends a user
+request for one `ContextSummary` JSON object. This preserves a cacheable prefix
+where the provider supports caching; cache hits are not guaranteed. The request
+must end at a complete tool-call/result boundary and pass the adapter's replay
+validation. Its own budget includes the appended instruction and estimation
+margin. A different route, unsafe replay, or oversized prefix uses sanitized
+portable event batches instead. Custom compactors keep their batch behavior
+through the new methods' defaults. Summary responses cannot execute tools.
+
 The default `ApproximateTokenCounter` estimates one token per four UTF-8 bytes
-and adds framing allowances. This is a heuristic, not an exact tokenizer;
-non-ASCII and provider-specific encodings may differ. Supply a provider
-`TokenCounter` for precise accounting, or use `ApproximateTokenCounter::conservative()`
-for the previous one-byte-per-token fallback. Explicit `new(chars_per_token)`
-retains the calibrated character-ratio mode. Native item costs always use their
-declared token count, never the length of encrypted data.
+and adds framing allowances. Counting is local: the runtime and provider examples
+do not load model tokenizers or make separate token-count API requests. The
+estimate covers instructions, tool schemas, messages, and retained provider
+state, but cannot exactly reproduce every provider's encoding. Use
+`ApproximateTokenCounter::conservative()` for the previous one-byte-per-token
+fallback. Explicit `new(chars_per_token)` retains the calibrated character-ratio
+mode. Native item costs always use their declared token count, never the length
+of encrypted data.
+
+Both context managers measure the initial projection and each candidate/fallback
+used for budget decisions. `ModelContextCompactor` checks summary input against
+its own budget with the same local estimation interface. Output reservations,
+estimation margins, and bounded overflow recovery remain necessary because local
+estimates can undercount unfamiliar content or protocol overhead.
 
 The managers calibrate continuing text requests from the most recent successful
 `ModelUsage`: reported input tokens for the exact previous request, plus the
 configured counter's estimate of the replayed response and subsequent messages.
 Generated output is not automatically future input: reasoning may be discarded
-or ignored by a protocol. Retained opaque state supplies its own replay cost. Cached input still occupies the window and is not
-subtracted. A baseline requires the same run, model metadata, instructions,
-tool schemas, and exact message prefix. Compaction, changed projections, or a
-model switch cannot reuse a mismatched baseline. Trying a candidate projection
-does not destroy the original baseline; only selecting a new request commits
-the change. Provider-native windows keep their separately reported item cost
-and are not calibrated a second time.
+or ignored by a protocol. Retained opaque state supplies its own replay cost.
+Cached input still occupies the window and is not subtracted or added twice.
+Exact-prefix calibration requires the same run, model metadata, instructions,
+tool schemas, and message prefix.
+
+After compaction or pruning changes that prefix, a compatible durable raw
+estimate can retain a conservative correction: previous reported input plus
+the signed change in the local estimate, floored at the new raw estimate. This
+requires the same model/protocol, fixed instructions, tool schemas, and versioned
+counter configuration. The rewritten request is entirely estimated:
+`measured_input_tokens` is `None`, and its whole prediction receives estimation
+headroom. Changed opaque replay state, incompatible identities, and legacy
+anchors without a raw estimate use the local fallback. A successful response
+establishes a fresh exact-prefix baseline. Trying a candidate projection does
+not destroy the original anchor. Provider-native windows keep their separately
+reported item cost and are not calibrated a second time.
 Adapters that omit model metadata still expose usage in tracing, but use the
 configured counter without calibration because their model identity is unknown.
 
-These disposable hints use a bounded in-memory cache of 128 runs and do not
-store conversation text. After restart, eviction, or invalid usage, accounting
-falls back to the configured counter. Prefix estimates for the built-in counter
-avoid cloning the long conversation. Custom counters may override
-`count_prefix_tokens` for the same optimization.
+Successful response events atomically store usage, versioned request
+fingerprints, and an optional raw estimate with its counter identity. The bounded
+cache of 128 runs can be rebuilt from those events after restart or eviction;
+it never duplicates prompt text. Legacy logs without usage fall back to local
+estimates; older usage anchors still support exact-prefix calibration.
+`ContextManager::request_usage_baseline` binds the durable anchor to the same
+counter used by the manager. Wrappers should forward this hook. Custom counters
+can opt into durable rewrite calibration with a stable `estimator_identity` and
+can override `count_prefix_tokens` to avoid cloning long message prefixes.
+
+`ContextManager::measure_request` returns a shared `ContextMeasurement`: raw
+estimate, input prediction, measured prefix/native items,
+unmeasured extension, estimation margin, decision count, and source. The default
+margin is 15% of **only the unmeasured portion**. Configure it with
+`ContextPolicy::builder().estimation_margin_percent(0..=100)`. The decision count
+includes this margin, while the model budget
+still reserves output capacity and its fixed safety margin separately. A
+rewritten prediction can remain `provider_calibrated` while containing no
+measured prefix; inspect `measured_input_tokens` rather than treating the source
+label as proof of a complete measurement. Current sources are `provider_calibrated`,
+`provider_native`, and `estimated`. Historical records with `provider_counted`
+or `tokenizer_estimated` remain readable; these sources are no longer produced.
+The desktop exposes these same values rather than recomputing a second count.
+The offline DemoModel uses heuristic estimation. Configured provider models and
+the opt-in OpenAI and DeepSeek evaluators compare local predictions with usage
+returned by normal generation requests.
+
+`ModelUsage.input_tokens` includes all cached input, and `output_tokens` includes
+reasoning already present in the provider's output total. Neither cache nor
+reasoning is added twice. Set `ModelContextMetadata::with_accounting_identity`
+to a versioned protocol/replay-mode key when one model has several adapters or
+thinking modes. The runtime derives a fallback from the provider context identity
+when available. Disable input calibration with `with_input_usage_calibration(false)`
+for usage that includes provider-internal prompts or multiple model calls;
+these observations are retained as spending data without becoming input anchors.
+The UI's observed totals cover successful responses with reported usage, not
+unreported usage or the complete provider bill.
+
+Context overflow recovery is separate from network retries. Adapters opt in
+through `Model::is_context_overflow` (or `StreamingModel`); the core never
+classifies errors by message text. Before any stream event has been emitted,
+the runtime may ask `ContextManager::recover_overflow` for one durably smaller
+request and retry within the same model step. Built-in managers bypass the soft
+threshold for this recovery, retain user requirements and tool-call pairs, and
+verify shrinkage with the same local counter. A retry cannot execute prior tools
+again, and cancellation still drops model/compactor futures. Unsupported
+recovery, unchanged context, partial streams, and a second rejection stop the run.
+
+### Manual maintenance
+
+`AgentRuntime::compact_now(&agent, &mut run)` performs context maintenance on a
+settled run even below the automatic trigger. It returns whether a smaller
+durable projection was committed and leaves the run's lifecycle status intact.
+The summary adapter may make a model call, but no ordinary assistant turn or
+tool execution is started. The operation shares the execution guard with model
+work and input submission; it rejects active or durably `Running` runs.
+`is_compacting(run_id)` exposes progress and `cancel_compaction(run_id)` cancels
+maintenance without cancelling the conversation. Already saved pruning remains
+valid. Repeating maintenance with no useful reduction returns `false`.
+
+Applications that support ongoing conversations can enable
+`with_continue_after_response(true)`. A normal model stop then waits for the next
+user turn, and the step budget applies per user turn, including restored turns.
+Manual compaction also works on completed runs without reopening them.
 
 ### Durable reasoning and response replay
 
@@ -352,15 +503,18 @@ a bound prefix, switching to an incompatible model, or loading required history
 without state fails before a model request. Native windows carry a fixed
 instructions/tools binding so replacing messages with a window cannot bypass it.
 
-Opaque payloads and readable reasoning stay out of text compaction input and
-history read/search results. Opaque payloads are redacted from `Debug` output.
+Portable event-batch compaction and history read/search omit opaque payloads
+and readable reasoning. The cache-friendly same-model summary route can retain
+provider state only as part of the unchanged, adapter-validated original prefix.
+Opaque payloads are redacted from `Debug` output.
 Canonical event serialization intentionally retains both; protect event storage
 and raw subscriptions as provider conversation data. `replay_tokens` includes
 replayed reasoning and opaque input cost beyond visible text/tool calls. The
 built-in counter skips display reasoning when state supplies this cost, avoiding
 double counting; without state, it estimates reasoning as text. Ciphertext or
-signature length is not a tokenizer. Adapters can account for ignored reasoning
-or use provider token-counting APIs.
+signature length does not reveal its token cost. Adapters declare an estimated
+replay cost using available usage and the protocol's actual retention rules;
+reasoning excluded from later input contributes no replay cost.
 
 Protocol references: [OpenAI conversation state](https://developers.openai.com/api/docs/guides/conversation-state),
 [Anthropic preserved thinking](https://platform.claude.com/docs/en/build-with-claude/preserved-thinking),
@@ -369,8 +523,9 @@ and [DeepSeek thinking mode](https://api-docs.deepseek.com/guides/thinking_mode/
 
 ### Native provider integration
 
-This repository supplies the strategy and contracts, not a vendor HTTP client.
-A native integration implements `NativeContextCompactor` and a `Model` adapter:
+The runtime supplies the strategy and contracts; provider transport remains in
+adapters. A native integration implements `NativeContextCompactor` and a `Model`
+adapter:
 
 - `ProviderContextWindow` contains the **entire ordered window**, its input
   token cost, and provider/model/format identity. Preserve retained messages,
@@ -381,7 +536,7 @@ A native integration implements `NativeContextCompactor` and a `Model` adapter:
   complete updated window containing the request and response. Returning only
   the response's new items violates this contract.
 - Mark `ModelOutput::context_compacted` when the provider compacted during the
-  response. Protected user history is reinjected after compaction as historical
+  response. Protected user input is reinjected after compaction as historical
   user-authority context, following pending tool results. Ordinary full-window
   snapshots already include that protection and do not accumulate another copy
   each turn. Never promote this material to system/developer authority.
@@ -411,9 +566,10 @@ for comparison with the provider's actual usage. Keep stable instructions and to
 where possible, and measure total cost and latency rather than compression
 ratio or cache hit rate alone.
 
-The context regression tests cover repeated compaction, verbatim constraints,
-history recovery, model-dependent budgets, actual-usage calibration, independent
-summary budgets, native item preservation, checkpoint compatibility, and
-cancellation before tool effects. They use deterministic
+The context regression tests cover repeated and manual compaction, latest-input
+and opt-in full-user retention, durable pruning, history recovery, model-dependent
+budgets, calibration across history rewrites and restarts, cache-friendly summary
+prefixes, independent summary budgets, native item preservation, checkpoint
+compatibility, and cancellation before tool effects. They use deterministic
 adapters to verify these contracts; real-model task completion and semantic
 summary quality still require provider-backed evaluations.

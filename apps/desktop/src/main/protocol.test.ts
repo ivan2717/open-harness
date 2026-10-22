@@ -26,6 +26,84 @@ describe('desktop bridge request boundary', () => {
     }
     expect(() => watchRequest({ id: 'ok', token: {} })).toThrow()
   })
+  it('defaults project access to read-only and rejects malformed permission grants', () => {
+    expect(
+      apiRequest({
+        operation: 'createRun',
+        input: { prompt: 'Inspect', model_id: 'm', workspace_path: '/tmp/project' },
+      }).body,
+    ).toEqual({
+      prompt: 'Inspect',
+      model_id: 'm',
+      workspace_path: '/tmp/project',
+      permission_mode: 'read_only',
+    })
+    for (const workspace_path of ['relative/path', '/tmp/evil\0path', 23]) {
+      expect(() =>
+        apiRequest({
+          operation: 'createRun',
+          input: { prompt: 'Inspect', model_id: 'm', workspace_path },
+        }),
+      ).toThrow()
+    }
+    expect(() =>
+      apiRequest({
+        operation: 'createRun',
+        input: {
+          prompt: 'Inspect',
+          model_id: 'm',
+          workspace_path: '/tmp/p',
+          permission_mode: 'unrestricted',
+        },
+      }),
+    ).toThrow()
+    expect(() =>
+      apiRequest({
+        operation: 'createRun',
+        input: { prompt: 'Inspect', model_id: 'm', permission_mode: 'workspace_write' },
+      }),
+    ).toThrow()
+  })
+  it('confines approval and revert requests to fixed routes and relative files', () => {
+    expect(
+      apiRequest({ operation: 'approveCommand', id: 'run-1', approvalId: 'cmd-2', allow: false }),
+    ).toEqual({
+      path: '/api/runs/run-1/approvals/cmd-2',
+      method: 'POST',
+      body: { allow: false },
+    })
+    for (const allow of ['true', 1, undefined]) {
+      expect(() =>
+        apiRequest({ operation: 'approveCommand', id: 'run-1', approvalId: 'cmd-2', allow }),
+      ).toThrow()
+    }
+    expect(() =>
+      apiRequest({
+        operation: 'approveCommand',
+        id: 'run-1',
+        approvalId: '../cancel',
+        allow: true,
+      }),
+    ).toThrow()
+    for (const path of ['../secret', '/tmp/file', 'C:\\file', '..\\file', 'file\0txt']) {
+      expect(() => apiRequest({ operation: 'revertFile', id: 'run-1', path })).toThrow()
+    }
+    expect(apiRequest({ operation: 'revertFile', id: 'run-1', path: 'src/main.rs' }).body).toEqual({
+      path: 'src/main.rs',
+    })
+  })
+  it('resumes the existing run with an optional bounded message', () => {
+    expect(apiRequest({ operation: 'resumeRun', id: 'run-1' })).toEqual({
+      path: '/api/runs/run-1/resume',
+      method: 'POST',
+      body: {},
+    })
+    expect(
+      apiRequest({ operation: 'resumeRun', id: 'run-1', message: 'Check current files first' })
+        .body,
+    ).toEqual({ message: 'Check current files first' })
+    expect(() => apiRequest({ operation: 'resumeRun', id: 'run-1', message: '' })).toThrow()
+  })
 })
 
 describe('SSE framing', () => {

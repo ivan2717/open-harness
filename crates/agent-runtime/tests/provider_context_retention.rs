@@ -30,6 +30,7 @@ fn append_step(run: &mut AgentRun, index: usize, scope: ProviderReplayScope) {
     run.record(RunEvent::ModelResponseReceived {
         response: None,
         provider_continuation: None,
+        token_usage: None,
         content: "Inspect".into(),
         provider_state: Some(state),
     })

@@ -7,6 +7,13 @@ use std::{error::Error, fmt};
 pub trait TokenCounter: Send + Sync {
     fn count_tokens(&self, request: &ModelRequest) -> usize;
 
+    /// Stable identity for this algorithm and configuration. Opt in only when
+    /// estimates can be compared across process restarts. Unidentified custom
+    /// counters still support exact-prefix calibration.
+    fn estimator_identity(&self) -> Option<String> {
+        None
+    }
+
     /// Counts the same instructions, schemas and provider context, with only the
     /// first `message_count` messages. Override this to avoid copying the prefix.
     fn count_prefix_tokens(&self, request: &ModelRequest, message_count: usize) -> usize {
@@ -23,12 +30,11 @@ pub trait TokenCounter: Send + Sync {
     }
 }
 
-/// A fallback estimate, not a substitute for the provider's tokenizer.
+/// A local heuristic calibrated by the context manager against response usage.
 ///
 /// The default estimates one token per four UTF-8 bytes, with framing allowances.
-/// It is a rough estimate that should be calibrated with provider usage or
-/// replaced by a model-specific tokenizer. `conservative` selects one token per
-/// byte instead. `new` retains the explicit character-ratio mode, without framing.
+/// It is a rough estimate, not an exact count. `conservative` selects one token
+/// per byte instead. `new` retains the explicit character-ratio mode, without framing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ApproximateTokenCounter {
     units_per_token: usize,
@@ -155,6 +161,13 @@ impl Default for ApproximateTokenCounter {
 }
 
 impl TokenCounter for ApproximateTokenCounter {
+    fn estimator_identity(&self) -> Option<String> {
+        Some(format!(
+            "approximate-v1:{}:{}",
+            self.count_bytes, self.units_per_token
+        ))
+    }
+
     fn count_tokens(&self, request: &ModelRequest) -> usize {
         self.count_request_prefix(request, request.messages.len())
     }

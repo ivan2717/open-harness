@@ -6,7 +6,18 @@ export function latestSnapshot(current: RunDetail | undefined, incoming: RunDeta
 }
 
 export function updateRunList(runs: RunSummary[] | undefined, run: RunSummary): RunSummary[] {
-  const { id, revision, title, prompt, status, model_id, created_at, updated_at } = run
+  const {
+    id,
+    revision,
+    title,
+    prompt,
+    status,
+    model_id,
+    workspace_path,
+    permission_mode,
+    created_at,
+    updated_at,
+  } = run
   const summary: RunSummary = {
     id,
     revision,
@@ -14,6 +25,8 @@ export function updateRunList(runs: RunSummary[] | undefined, run: RunSummary): 
     prompt,
     status,
     model_id,
+    workspace_path,
+    permission_mode,
     created_at,
     updated_at,
   }

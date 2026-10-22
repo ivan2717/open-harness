@@ -4,6 +4,7 @@ mod checkpoint;
 mod compactor;
 mod error;
 mod manager;
+mod measurement;
 mod native;
 mod policy;
 mod projection;
@@ -12,14 +13,18 @@ mod usage;
 
 pub use budget::{ModelContextBudget, ModelContextBudgetError};
 pub use checkpoint::{
-    ContextCheckpoint, ContextCheckpointStore, InMemoryContextCheckpointStore,
-    InMemoryContextCheckpointStoreError,
+    ContextCheckpoint, ContextCheckpointStore, ContextPruning, InMemoryContextCheckpointStore,
+    InMemoryContextCheckpointStoreError, PrunedToolOutput,
 };
 pub use compactor::{
     ContextCompactor, ContextSummary, ModelContextCompactor, ModelContextCompactorError,
 };
 pub use error::CompactingContextError;
 pub use manager::CompactingContextManager;
+pub use measurement::{
+    ContextMeasurement, ContextMeasurementSource, request_usage_baseline,
+    request_usage_baseline_with_counter,
+};
 pub use native::{
     InMemoryNativeContextCheckpointStore, InMemoryNativeContextCheckpointStoreError,
     NativeContextCheckpoint, NativeContextCheckpointStore, NativeContextCompactor,
@@ -151,7 +156,7 @@ pub struct PreparedContext {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OmittedHistory {
     /// The last event represented by the checkpoint summary (inclusive).
-    /// When there is no checkpoint, this is the last clipped event.
+    /// When there is no summary, this is the last clipped event.
     pub through_sequence: u64,
     /// The last event that the history tools may read. This can extend past
     /// the checkpoint when a recent tool payload was clipped in the tail.
@@ -169,10 +174,52 @@ pub trait ContextManager: Send + Sync {
         None
     }
 
-    /// Estimate for diagnostics. Providers can also report actual usage with
-    /// `ModelOutput`; neither value is inferred from opaque ciphertext length.
+    /// Raw local estimate, used to compare requests with the same counter.
+    /// Use `measure_request` for decisions and diagnostics with usage calibration.
     fn estimate_request_tokens(&self, _request: &ModelRequest) -> Option<usize> {
         None
+    }
+
+    /// Immutable accounting snapshot for this exact projected request. The
+    /// decision count includes uncertainty headroom only on unmeasured input.
+    fn measure_request(
+        &self,
+        _input: ContextInputRef<'_>,
+        request: &ModelRequest,
+    ) -> Option<ContextMeasurement> {
+        self.estimate_request_tokens(request)
+            .map(ContextMeasurement::estimated)
+    }
+
+    /// Binds durable usage to this manager's input estimate configuration. The
+    /// default retains exact-prefix calibration for existing custom managers.
+    fn request_usage_baseline(
+        &self,
+        metadata: Option<&ModelContextMetadata>,
+        request: &ModelRequest,
+    ) -> Option<agent_core::token_usage::RequestUsageBaseline> {
+        request_usage_baseline(metadata, request)
+    }
+
+    /// Recover a confirmed provider context overflow. Implementations must
+    /// durably reduce context before returning a candidate, preserve tool-call
+    /// pairs and user requirements, and never execute tools here. The runtime
+    /// validates progress and allows at most one retry per model step.
+    fn recover_overflow(
+        &self,
+        _input: ContextInputRef<'_>,
+        _rejected: &ModelRequest,
+    ) -> impl Future<Output = Result<Option<PreparedContext>, Self::Error>> + Send {
+        async { Ok(None) }
+    }
+
+    /// Explicit maintenance below the automatic trigger. Returns `None` when
+    /// no smaller durable projection can be produced. Never executes tools.
+    fn compact_now(
+        &self,
+        _input: ContextInputRef<'_>,
+    ) -> impl Future<Output = Result<Option<PreparedContext>, Self::Error>> + Send {
+        async { Ok(None) }
     }
 
     /// Observes a successful response after its text and tool declarations are

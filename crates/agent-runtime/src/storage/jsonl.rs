@@ -555,6 +555,7 @@ mod tests {
                     _ => RunEvent::ModelResponseReceived {
                         response: None,
                         provider_continuation: None,
+                        token_usage: None,
                         provider_state: None,
                         content: "x".repeat(64 * 1024),
                     },

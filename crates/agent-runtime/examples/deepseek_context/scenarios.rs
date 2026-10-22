@@ -5,8 +5,10 @@
 
 use agent_runtime::{ContentBlock, MessageContext, ModelRole, ProviderResponseState};
 use std::{
+    collections::hash_map::DefaultHasher,
     convert::Infallible,
     error::Error,
+    hash::Hasher,
     io,
     sync::{Arc, Mutex},
 };
@@ -14,12 +16,12 @@ use std::{
 use agent_core::agent::{Agent, AgentRun, RunEvent, RunStatus};
 use agent_runtime::{
     AgentRuntime, ApproximateTokenCounter, CompactingContextManager, ContextCheckpoint,
-    ContextCheckpointStore, ContextPolicy, EventStore, EventStoreHistoryAccess, HistoryAccess,
-    HistoryContext, HistoryLimits, InMemoryContextCheckpointStore,
-    InMemoryContextCheckpointStoreError, InMemoryEventStore, Model, ModelContextBudget,
-    ModelContextCompactor, ModelContextMetadata, ModelMessage, ModelOutput, ModelRequest,
-    ModelResponse, READ_RUN_HISTORY_TOOL, SEARCH_RUN_HISTORY_TOOL, TokenCounter, ToolCall,
-    ToolDefinition, ToolExecutor,
+    ContextCheckpointStore, ContextInputRef, ContextManager, ContextMeasurement, ContextPolicy,
+    EventStore, EventStoreHistoryAccess, HistoryAccess, HistoryContext, HistoryLimits,
+    InMemoryContextCheckpointStore, InMemoryContextCheckpointStoreError, InMemoryEventStore, Model,
+    ModelContextBudget, ModelContextCompactor, ModelContextMetadata, ModelMessage, ModelOutput,
+    ModelRequest, ModelResponse, PreparedContext, READ_RUN_HISTORY_TOOL, SEARCH_RUN_HISTORY_TOOL,
+    TokenCounter, ToolCall, ToolDefinition, ToolExecutor,
 };
 use serde_json::{Value, json};
 
@@ -73,6 +75,10 @@ impl<M> ObservedModel<M> {
 impl<M: Model> Model for ObservedModel<M> {
     type Error = M::Error;
 
+    fn is_context_overflow(&self, error: &Self::Error) -> bool {
+        self.inner.is_context_overflow(error)
+    }
+
     fn capabilities(&self) -> agent_runtime::ModelCapabilities {
         self.inner.capabilities()
     }
@@ -112,6 +118,98 @@ impl<M: Model> Model for ObservedModel<M> {
             error: result.as_ref().err().map(ToString::to_string),
         });
         result
+    }
+}
+
+#[derive(Clone)]
+struct RequestMeasurement {
+    request_fingerprint: u64,
+    measurement: Option<ContextMeasurement>,
+}
+
+struct ObservedContext<C> {
+    inner: C,
+    measurements: Arc<Mutex<Vec<RequestMeasurement>>>,
+}
+
+impl<C> ObservedContext<C> {
+    fn new(inner: C) -> Self {
+        Self {
+            inner,
+            measurements: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+}
+
+// Hash the serialized request directly, without allocating another prompt copy.
+// This is only a within-report correlation check, not a durable or secure ID.
+fn request_fingerprint(request: &ModelRequest) -> u64 {
+    struct HashWriter(DefaultHasher);
+    impl io::Write for HashWriter {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.0.write(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut writer = HashWriter(DefaultHasher::new());
+    serde_json::to_writer(&mut writer, request).expect("model requests are JSON serializable");
+    writer.0.finish()
+}
+
+impl<C: ContextManager> ContextManager for ObservedContext<C> {
+    type Error = C::Error;
+
+    fn max_tool_output_chars(&self) -> Option<usize> {
+        self.inner.max_tool_output_chars()
+    }
+
+    fn request_usage_baseline(
+        &self,
+        metadata: Option<&ModelContextMetadata>,
+        request: &ModelRequest,
+    ) -> Option<agent_runtime::RequestUsageBaseline> {
+        self.inner.request_usage_baseline(metadata, request)
+    }
+
+    fn estimate_request_tokens(&self, request: &ModelRequest) -> Option<usize> {
+        self.inner.estimate_request_tokens(request)
+    }
+
+    fn measure_request(
+        &self,
+        input: ContextInputRef<'_>,
+        request: &ModelRequest,
+    ) -> Option<ContextMeasurement> {
+        let measurement = self.inner.measure_request(input, request);
+        self.measurements.lock().unwrap().push(RequestMeasurement {
+            request_fingerprint: request_fingerprint(request),
+            measurement: measurement.clone(),
+        });
+        measurement
+    }
+
+    async fn prepare(&self, input: ContextInputRef<'_>) -> Result<PreparedContext, Self::Error> {
+        self.inner.prepare(input).await
+    }
+
+    async fn observe_response(
+        &self,
+        input: ContextInputRef<'_>,
+        output: &ModelOutput,
+    ) -> Result<(), Self::Error> {
+        self.inner.observe_response(input, output).await
+    }
+
+    async fn recover_overflow(
+        &self,
+        input: ContextInputRef<'_>,
+        rejected: &ModelRequest,
+    ) -> Result<Option<PreparedContext>, Self::Error> {
+        self.inner.recover_overflow(input, rejected).await
     }
 }
 
@@ -250,16 +348,97 @@ fn request_contains(request: &ModelRequest, needle: &str) -> bool {
         })
 }
 
+/// Both compactor request encodings are used by the live adapters and fixtures.
+/// The projected form keeps the original system prefix and appends its instruction.
+pub(super) fn is_summary_request(request: &ModelRequest) -> bool {
+    summary_request_mode(request).is_some()
+}
+
+fn summary_request_mode(request: &ModelRequest) -> Option<&'static str> {
+    const PREFIX: &str = "Summarize the supplied run events";
+    if request.instructions.starts_with(PREFIX) {
+        Some("event_batch")
+    } else if request.messages.last().is_some_and(|message| {
+        message.role == ModelRole::User
+            && message.context.is_none()
+            && message.text().starts_with(PREFIX)
+            && message
+                .text()
+                .ends_with("Produce the handoff now; do not continue the task or call tools.")
+    }) {
+        Some("projected_prefix")
+    } else {
+        None
+    }
+}
+
+// A pruning checkpoint can carry forward a previously generated summary. It
+// does not represent another summary call or an advancing summary boundary.
+fn checkpoint_stages(
+    checkpoints: &[ContextCheckpoint],
+) -> (Vec<&ContextCheckpoint>, Vec<&ContextCheckpoint>) {
+    let mut summaries: Vec<&ContextCheckpoint> = Vec::new();
+    let mut pruning = Vec::new();
+    for checkpoint in checkpoints {
+        let new_summary = !checkpoint.summary.is_empty()
+            && summaries.last().is_none_or(|previous| {
+                previous.through_sequence != checkpoint.through_sequence
+                    || previous.summary != checkpoint.summary
+            });
+        if new_summary {
+            summaries.push(checkpoint);
+        } else if checkpoint.pruning.is_some() {
+            pruning.push(checkpoint);
+        }
+    }
+    (summaries, pruning)
+}
+
 fn observation_report(observations: &[Observation]) -> Vec<Value> {
+    observation_report_with_measurements(observations, &[])
+}
+
+fn signed_error_percent(estimate: usize, actual: Option<usize>) -> Option<f64> {
+    actual
+        .filter(|actual| *actual > 0)
+        .map(|actual| (estimate as f64 - actual as f64) / actual as f64 * 100.0)
+}
+
+fn observation_report_with_measurements(
+    observations: &[Observation],
+    measurements: &[RequestMeasurement],
+) -> Vec<Value> {
     observations
         .iter()
         .enumerate()
         .map(|(index, observation)| {
+            let fingerprint = request_fingerprint(&observation.request);
+            let captured = measurements.get(index);
+            let measurement = captured
+                .filter(|captured| captured.request_fingerprint == fingerprint)
+                .and_then(|captured| captured.measurement.as_ref());
+            let raw_estimate = measurement.map_or_else(
+                || ApproximateTokenCounter::default().count_tokens(&observation.request),
+                |measurement| measurement.raw_estimated_input_tokens,
+            );
+            let usage = observation.output.as_ref().and_then(|output| output.usage);
+            let actual = usage.map(|usage| usage.input_tokens);
             json!({
                 "call": index + 1,
-                "estimated_input_tokens": ApproximateTokenCounter::default()
-                    .count_tokens(&observation.request),
-                "provider_usage": observation.output.as_ref().and_then(|output| output.usage),
+                "summary_request_mode": summary_request_mode(&observation.request),
+                "request_fingerprint": format!("{fingerprint:016x}"),
+                "measurement_matches_request": captured.map(|captured|
+                    captured.request_fingerprint == fingerprint),
+                "measurement": measurement,
+                "raw_estimated_input_tokens": raw_estimate,
+                "estimated_input_tokens": measurement.map(|measurement| measurement.estimated_input_tokens),
+                "actual_input_tokens": actual,
+                "raw_signed_error_percent": signed_error_percent(raw_estimate, actual),
+                "prediction_signed_error_percent": measurement.and_then(|measurement|
+                    signed_error_percent(measurement.estimated_input_tokens, actual)),
+                "decision_signed_error_percent": measurement.and_then(|measurement|
+                    signed_error_percent(measurement.decision_input_tokens, actual)),
+                "provider_usage": usage,
                 "summary_messages": observation.request.messages.iter().filter(|message|
                     { let candidate = message; matches!(&candidate.context, Some(MessageContext::Summary { .. })) }).count(),
                 "error": observation.error,
@@ -270,6 +449,7 @@ fn observation_report(observations: &[Observation]) -> Vec<Value> {
 
 /// Four real tool rounds force repeated summarization under an intentionally
 /// small evaluation budget. The provider's advertised window remains separate.
+#[cfg(test)]
 pub async fn run_runtime_scenario<M: Model + Clone>(model: M) -> Result<Value, ScenarioError> {
     run_runtime_with_counter(model, ApproximateTokenCounter::default(), 1024, 2048).await
 }
@@ -303,6 +483,8 @@ pub async fn run_runtime_with_counter<M: Model + Clone, N: TokenCounter + Clone>
         checkpoints.clone(),
         counter,
     );
+    let manager = ObservedContext::new(manager);
+    let measurements = manager.measurements.clone();
     let history = EventStoreHistoryAccess::with_limits(
         HistoryLimits::builder()
             .max_output_chars(PROJECTED_TOOL_CHARS)
@@ -329,8 +511,11 @@ pub async fn run_runtime_with_counter<M: Model + Clone, N: TokenCounter + Clone>
     let execution = runtime.run_until_blocked(&agent, &mut run).await;
     let runtime_error = execution.as_ref().err().map(ToString::to_string);
     let observations = main_model.observations();
+    let measurements = measurements.lock().unwrap().clone();
+    let main_calls = observation_report_with_measurements(&observations, &measurements);
     let summary_observations = summary_model.observations();
     let saved = checkpoints.saved.lock().unwrap().clone();
+    let (summary_checkpoints, pruning_checkpoints) = checkpoint_stages(&saved);
     let answer = final_answer(&run);
     let parsed = answer.and_then(|answer| serde_json::from_str::<Value>(answer).ok());
     let expected = json!({
@@ -403,7 +588,12 @@ pub async fn run_runtime_with_counter<M: Model + Clone, N: TokenCounter + Clone>
             &store,
             HistoryContext {
                 run_id: run.id().to_owned(),
-                through_sequence: checkpoint.through_sequence,
+                through_sequence: checkpoint
+                    .pruning
+                    .as_ref()
+                    .map_or(checkpoint.through_sequence, |pruning| {
+                        checkpoint.through_sequence.max(pruning.through_sequence)
+                    }),
                 checkpoint_id: checkpoint.id.clone(),
             },
             ToolCall {
@@ -451,18 +641,32 @@ pub async fn run_runtime_with_counter<M: Model + Clone, N: TokenCounter + Clone>
     });
     let mut checks = vec![
         check(
+            "every_main_call_has_matching_context_measurement",
+            measurements.len() == observations.len()
+                && main_calls.iter().all(|call| {
+                    call["measurement_matches_request"] == true && !call["measurement"].is_null()
+                }),
+        ),
+        check(
             "runtime_completed",
             execution.is_ok() && run.status() == RunStatus::Completed,
         ),
-        check("at_least_two_saved_compactions", saved.len() >= 2),
+        check(
+            "at_least_two_saved_compactions",
+            summary_checkpoints.len() >= 2,
+        ),
+        check(
+            "pressure_pruning_was_saved",
+            !pruning_checkpoints.is_empty(),
+        ),
         check(
             "at_least_two_real_summary_calls",
             summary_observations.len() >= 2,
         ),
         check(
             "checkpoint_boundaries_advance",
-            saved.len() >= 2
-                && saved
+            summary_checkpoints.len() >= 2
+                && summary_checkpoints
                     .windows(2)
                     .all(|pair| pair[1].through_sequence > pair[0].through_sequence),
         ),
@@ -489,8 +693,8 @@ pub async fn run_runtime_with_counter<M: Model + Clone, N: TokenCounter + Clone>
         ),
         check(
             "early_release_fact_survives_repeated_summaries",
-            saved.len() >= 2
-                && saved
+            summary_checkpoints.len() >= 2
+                && summary_checkpoints
                     .iter()
                     .skip(1)
                     .all(|entry| entry.summary.render().contains("ORBIT-42")),
@@ -542,8 +746,13 @@ pub async fn run_runtime_with_counter<M: Model + Clone, N: TokenCounter + Clone>
         "runtime_error": runtime_error,
         "direct_recovery_error": direct_recovery_error,
         "checks": checks,
-        "main_calls": observation_report(&observations),
+        "main_calls": main_calls,
         "summary_calls": observation_report(&summary_observations),
+        "checkpoint_count": saved.len(),
+        "summary_checkpoint_count": summary_checkpoints.len(),
+        "pruning_checkpoint_count": pruning_checkpoints.len(),
+        "summary_checkpoints": summary_checkpoints,
+        "pruning_checkpoints": pruning_checkpoints,
         "checkpoints": saved,
         "tool_calls": calls,
         "canonical_event_count": run.events().len(),
@@ -759,6 +968,7 @@ mod tests {
     struct ScriptedModel {
         metadata: ModelContextMetadata,
         next_main_call: Arc<Mutex<usize>>,
+        include_usage: bool,
     }
 
     impl ScriptedModel {
@@ -767,7 +977,22 @@ mod tests {
                 metadata: ModelContextMetadata::new("offline", "scenario-fixture", 1_000_000)
                     .unwrap(),
                 next_main_call: Arc::new(Mutex::new(0)),
+                include_usage: false,
             }
+        }
+
+        fn main_output(&self, request: &ModelRequest, response: ModelResponse) -> ModelOutput {
+            let mut output: ModelOutput = response.into();
+            if self.include_usage {
+                // A deliberately fixed estimator bias makes it possible to
+                // verify calibration plumbing without making a provider call.
+                output.usage = Some(ModelUsage {
+                    input_tokens: ApproximateTokenCounter::default().count_tokens(request) + 100,
+                    output_tokens: 25,
+                    cached_input_tokens: None,
+                });
+            }
+            output
         }
     }
 
@@ -786,10 +1011,7 @@ mod tests {
             &self,
             request: ModelRequest,
         ) -> Result<ModelOutput, Self::Error> {
-            if request
-                .instructions
-                .starts_with("Summarize the supplied run events")
-            {
+            if is_summary_request(&request) {
                 let summary = ContextSummary {
                     objective: "Audit release ORBIT-42.".into(),
                     current_state: "Evidence batches are being collected.".into(),
@@ -853,33 +1075,37 @@ mod tests {
                     )
                 }
                 7 => {
-                    return Ok(ModelResponse::final_answer(
-                        json!({
-                            "release": "ORBIT-42",
-                            "region": "eu-west-1",
-                            "ceiling_ms": 250,
-                            "mode": "dry-run",
-                            "preserve_api": true,
-                            "archive_pin": ARCHIVE_PIN,
-                            "batches": [1, 2, 3, 4],
-                            "rollback_label": "rollback/amber-17",
-                            "validation_command": "cargo test --workspace --offline"
-                        })
-                        .to_string(),
-                    )
-                    .into());
+                    return Ok(self.main_output(
+                        &request,
+                        ModelResponse::final_answer(
+                            json!({
+                                "release": "ORBIT-42",
+                                "region": "eu-west-1",
+                                "ceiling_ms": 250,
+                                "mode": "dry-run",
+                                "preserve_api": true,
+                                "archive_pin": ARCHIVE_PIN,
+                                "batches": [1, 2, 3, 4],
+                                "rollback_label": "rollback/amber-17",
+                                "validation_command": "cargo test --workspace --offline"
+                            })
+                            .to_string(),
+                        ),
+                    ));
                 }
                 _ => return Err(io::Error::other("unexpected fixture request")),
             };
-            Ok(ModelResponse::tool_calls(
-                String::new(),
-                vec![ToolCall {
-                    id: format!("fixture-{call_index}"),
-                    name: name.into(),
-                    arguments: arguments.to_string(),
-                }],
-            )
-            .into())
+            Ok(self.main_output(
+                &request,
+                ModelResponse::tool_calls(
+                    String::new(),
+                    vec![ToolCall {
+                        id: format!("fixture-{call_index}"),
+                        name: name.into(),
+                        arguments: arguments.to_string(),
+                    }],
+                ),
+            ))
         }
     }
 
@@ -889,10 +1115,68 @@ mod tests {
         assert_eq!(report["passed"], true, "{report:#}");
         let main_calls = report["main_calls"].as_array().unwrap().len();
         let summary_calls = report["summary_calls"].as_array().unwrap().len();
+        assert_eq!(
+            main_calls, 7,
+            "summarization must not consume a scripted tool round"
+        );
+        assert!(
+            report["summary_calls"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|call| call["summary_request_mode"] == "projected_prefix")
+        );
+        assert_eq!(
+            report["summary_checkpoint_count"],
+            report["summary_checkpoints"].as_array().unwrap().len()
+        );
+        assert_eq!(
+            report["pruning_checkpoint_count"],
+            report["pruning_checkpoints"].as_array().unwrap().len()
+        );
+        assert_eq!(
+            report["checkpoint_count"].as_u64().unwrap(),
+            report["summary_checkpoint_count"].as_u64().unwrap()
+                + report["pruning_checkpoint_count"].as_u64().unwrap()
+        );
         assert!(
             main_calls + summary_calls + 1 <= 12,
             "reserve one of twelve calls for the large-window case"
         );
+    }
+
+    #[tokio::test]
+    async fn runtime_report_correlates_provider_calibration_with_actual_calls() {
+        let mut model = ScriptedModel::new();
+        model.include_usage = true;
+        let report = run_runtime_scenario(model).await.unwrap();
+        assert_eq!(report["passed"], true, "{report:#}");
+        let calls = report["main_calls"].as_array().unwrap();
+        assert_eq!(calls[0]["measurement"]["source"], "estimated");
+        let calibrated: Vec<_> = calls
+            .iter()
+            .filter(|call| call["measurement"]["source"] == "provider_calibrated")
+            .collect();
+        assert!(
+            !calibrated.is_empty(),
+            "response observations must be forwarded"
+        );
+        for call in calibrated {
+            assert_eq!(call["measurement_matches_request"], true);
+            assert!(call["raw_signed_error_percent"].as_f64().unwrap() < 0.0);
+            assert!(
+                call["prediction_signed_error_percent"]
+                    .as_f64()
+                    .unwrap()
+                    .abs()
+                    < 0.001
+            );
+            let measurement = &call["measurement"];
+            assert!(
+                measurement["decision_input_tokens"].as_u64().unwrap()
+                    >= measurement["estimated_input_tokens"].as_u64().unwrap()
+            );
+        }
     }
 
     #[tokio::test]

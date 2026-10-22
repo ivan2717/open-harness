@@ -124,6 +124,9 @@ impl StreamingModel for StreamingOnly {
     fn context_metadata(&self) -> Option<&ModelContextMetadata> {
         Some(&self.metadata)
     }
+    fn is_context_overflow(&self, error: &Self::Error) -> bool {
+        error.kind() == io::ErrorKind::InvalidInput
+    }
     fn provider_context_identity(&self) -> Option<&ProviderContextIdentity> {
         Some(&self.identity)
     }
@@ -168,6 +171,23 @@ fn adapter_forwards_capabilities_identity_metadata_and_private_state_validation(
     let adapter = StreamingModelAdapter::new(StreamingOnly::new());
     assert_eq!(adapter.capabilities(), adapter.inner().capabilities());
     assert_eq!(adapter.context_metadata(), Some(&adapter.inner().metadata));
+    assert!(
+        adapter.is_context_overflow(&StreamingModelError::Transport(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "provider context overflow",
+        )))
+    );
+    assert!(
+        !adapter.is_context_overflow(&StreamingModelError::Transport(io::Error::other(
+            "network failure",
+        )))
+    );
+    assert!(!adapter.is_context_overflow(&StreamingModelError::Stream(
+        ModelStreamError::MissingFinish,
+    )));
+    assert!(!adapter.is_context_overflow(&StreamingModelError::Protocol(
+        ModelProtocolError::ConflictingFinishReason,
+    )));
     assert_eq!(adapter.provider_context_identity(), Some(&identity()));
     assert!(adapter.requires_provider_state());
     let output = output();
@@ -251,6 +271,12 @@ fn a_minimal_stream_implementation_gets_safe_optional_capability_defaults() {
     let adapter = StreamingModelAdapter::new(Failure::EmptyStream);
     assert_eq!(adapter.capabilities(), ModelCapabilities::default());
     assert_eq!(adapter.context_metadata(), None);
+    assert!(
+        !adapter.is_context_overflow(&StreamingModelError::Transport(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "unclassified error",
+        )))
+    );
     assert_eq!(adapter.provider_context_identity(), None);
     assert!(!adapter.requires_provider_state());
     let output = output();

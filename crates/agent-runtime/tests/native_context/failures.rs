@@ -69,6 +69,7 @@ async fn failed_response_cache_write_preserves_a_successful_answer_when_events_f
     run.record(RunEvent::ModelResponseReceived {
         response: None,
         provider_continuation: None,
+        token_usage: None,
         provider_state: None,
         content: "Done".to_owned(),
     })
@@ -182,6 +183,7 @@ async fn failed_candidate_keeps_actual_usage_when_the_raw_fallback_underestimate
     run.record(RunEvent::ModelResponseReceived {
         response: None,
         provider_continuation: None,
+        token_usage: None,
         provider_state: None,
         content: "Inspecting".to_owned(),
     })

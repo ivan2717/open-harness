@@ -1,0 +1,545 @@
+{
+  "input_counts": [
+    {
+      "count_request": 1,
+      "elapsed_ms": 2059,
+      "estimated_input_tokens": 7071,
+      "input_items": 1,
+      "input_tokens": 7006,
+      "messages": 1,
+      "reasoning_context": "all_turns",
+      "reasoning_effort": "high",
+      "success": true,
+      "tools": 0
+    },
+    {
+      "count_request": 2,
+      "elapsed_ms": 2729,
+      "estimated_input_tokens": 7598,
+      "input_items": 4,
+      "input_tokens": 7529,
+      "messages": 3,
+      "reasoning_context": "all_turns",
+      "reasoning_effort": "high",
+      "success": true,
+      "tools": 0
+    },
+    {
+      "count_request": 3,
+      "elapsed_ms": 2490,
+      "estimated_input_tokens": 7071,
+      "input_items": 1,
+      "input_tokens": 6653,
+      "messages": 1,
+      "reasoning_context": "all_turns",
+      "reasoning_effort": "high",
+      "success": true,
+      "tools": 0
+    },
+    {
+      "count_request": 4,
+      "elapsed_ms": 2690,
+      "estimated_input_tokens": 7605,
+      "input_items": 4,
+      "input_tokens": 7157,
+      "messages": 3,
+      "reasoning_context": "all_turns",
+      "reasoning_effort": "high",
+      "success": true,
+      "tools": 0
+    },
+    {
+      "count_request": 5,
+      "elapsed_ms": 2029,
+      "estimated_input_tokens": 7071,
+      "input_items": 1,
+      "input_tokens": 7634,
+      "messages": 1,
+      "reasoning_context": "all_turns",
+      "reasoning_effort": "high",
+      "success": true,
+      "tools": 0
+    },
+    {
+      "count_request": 6,
+      "elapsed_ms": 1829,
+      "estimated_input_tokens": 7598,
+      "input_items": 4,
+      "input_tokens": 8197,
+      "messages": 3,
+      "reasoning_context": "all_turns",
+      "reasoning_effort": "high",
+      "success": true,
+      "tools": 0
+    }
+  ],
+  "limitations": [
+    "Synthetic fixtures shared with the DeepSeek evaluation; not a model-quality benchmark.",
+    "The runtime fixture deliberately lowers local thresholds to force repeated compaction; this does not test the provider's physical window boundary.",
+    "Stateless Responses replay; no previous_response_id, provider-native compaction, streaming, or automatic transport retry.",
+    "Passing functional checks does not imply accurate estimates or sufficient decision headroom."
+  ],
+  "model": {
+    "context_window_source": "official_model_documentation_fallback",
+    "created": 1789406102,
+    "documentation": "https://developers.openai.com/api/docs/models/gpt-6-luna",
+    "id": "gpt-6-luna",
+    "input_count_method": "OpenAI Responses input_tokens endpoint on the encoded request, with approximate fallback on count failure.",
+    "max_output_tokens_source": "official_model_documentation_fallback",
+    "object": "model",
+    "owned_by": "system",
+    "reasoning_context": "all_turns",
+    "reasoning_effort": "high",
+    "replay_cost_method": "Provider output_tokens_details.reasoning_tokens is a conservative estimate of additional replay input, not an exact measurement; output_tokens is the upper-bound fallback. Ciphertext length is never tokenized.",
+    "resolved_context_window": 1050000,
+    "resolved_max_output_tokens": 128000,
+    "shutdown_date": null
+  },
+  "precision": {
+    "aggregate": {
+      "actual_input_tokens": 44176,
+      "actual_output_tokens": 87,
+      "decision_covered_requests": 6,
+      "predicted_mean_absolute_relative_error_percent": 0.0,
+      "raw_mean_absolute_relative_error_percent": 4.8448619571763425,
+      "requests": 6
+    },
+    "cold": {
+      "actual_input_tokens": 21293,
+      "actual_output_tokens": 61,
+      "decision_covered_requests": 3,
+      "predicted_mean_absolute_relative_error_percent": 0.0,
+      "raw_mean_absolute_relative_error_percent": 4.861852616981193,
+      "requests": 3
+    },
+    "durable_event_round_trip_verified": true,
+    "errors": [],
+    "maximum_corpus_bytes_per_fixture": 30000,
+    "passed": true,
+    "restored": {
+      "actual_input_tokens": 22883,
+      "actual_output_tokens": 26,
+      "decision_covered_requests": 3,
+      "predicted_mean_absolute_relative_error_percent": 0.0,
+      "raw_mean_absolute_relative_error_percent": 4.827871297371493,
+      "requests": 3
+    },
+    "rows": [
+      {
+        "actual_cached_input_tokens": 0,
+        "actual_input_tokens": 7006,
+        "actual_output_tokens": 18,
+        "corpus": "english_prose",
+        "decision_covers_actual_input": true,
+        "measurement": {
+          "decision_input_tokens": 7006,
+          "estimated_delta_tokens": 0,
+          "estimated_input_tokens": 7006,
+          "estimation_margin_tokens": 0,
+          "measured_input_tokens": 7006,
+          "raw_estimated_input_tokens": 7071,
+          "source": "provider_counted"
+        },
+        "predicted_absolute_relative_error_percent": 0.0,
+        "predicted_error_tokens": 0,
+        "predicted_relative_error_percent": 0.0,
+        "raw_absolute_relative_error_percent": 0.9277761918355695,
+        "raw_error_tokens": 65,
+        "raw_relative_error_percent": 0.9277761918355695,
+        "restored_prefix_measurement": null,
+        "stage": "cold"
+      },
+      {
+        "actual_cached_input_tokens": 7003,
+        "actual_input_tokens": 7529,
+        "actual_output_tokens": 16,
+        "corpus": "english_prose",
+        "decision_covers_actual_input": true,
+        "measurement": {
+          "decision_input_tokens": 7529,
+          "estimated_delta_tokens": 0,
+          "estimated_input_tokens": 7529,
+          "estimation_margin_tokens": 0,
+          "measured_input_tokens": 7529,
+          "raw_estimated_input_tokens": 7598,
+          "source": "provider_counted"
+        },
+        "predicted_absolute_relative_error_percent": 0.0,
+        "predicted_error_tokens": 0,
+        "predicted_relative_error_percent": 0.0,
+        "raw_absolute_relative_error_percent": 0.9164563687076637,
+        "raw_error_tokens": 69,
+        "raw_relative_error_percent": 0.9164563687076637,
+        "restored_prefix_measurement": {
+          "decision_input_tokens": 7613,
+          "estimated_delta_tokens": 527,
+          "estimated_input_tokens": 7533,
+          "estimation_margin_tokens": 80,
+          "measured_input_tokens": 7006,
+          "raw_estimated_input_tokens": 7598,
+          "source": "provider_calibrated"
+        },
+        "stage": "restored"
+      },
+      {
+        "actual_cached_input_tokens": 0,
+        "actual_input_tokens": 6653,
+        "actual_output_tokens": 25,
+        "corpus": "chinese_prose",
+        "decision_covers_actual_input": true,
+        "measurement": {
+          "decision_input_tokens": 6653,
+          "estimated_delta_tokens": 0,
+          "estimated_input_tokens": 6653,
+          "estimation_margin_tokens": 0,
+          "measured_input_tokens": 6653,
+          "raw_estimated_input_tokens": 7071,
+          "source": "provider_counted"
+        },
+        "predicted_absolute_relative_error_percent": 0.0,
+        "predicted_error_tokens": 0,
+        "predicted_relative_error_percent": 0.0,
+        "raw_absolute_relative_error_percent": 6.282879903802796,
+        "raw_error_tokens": 418,
+        "raw_relative_error_percent": 6.282879903802796,
+        "restored_prefix_measurement": null,
+        "stage": "cold"
+      },
+      {
+        "actual_cached_input_tokens": 6650,
+        "actual_input_tokens": 7157,
+        "actual_output_tokens": 5,
+        "corpus": "chinese_prose",
+        "decision_covers_actual_input": true,
+        "measurement": {
+          "decision_input_tokens": 7157,
+          "estimated_delta_tokens": 0,
+          "estimated_input_tokens": 7157,
+          "estimation_margin_tokens": 0,
+          "measured_input_tokens": 7157,
+          "raw_estimated_input_tokens": 7605,
+          "source": "provider_counted"
+        },
+        "predicted_absolute_relative_error_percent": 0.0,
+        "predicted_error_tokens": 0,
+        "predicted_relative_error_percent": 0.0,
+        "raw_absolute_relative_error_percent": 6.259605980159285,
+        "raw_error_tokens": 448,
+        "raw_relative_error_percent": 6.259605980159285,
+        "restored_prefix_measurement": {
+          "decision_input_tokens": 7268,
+          "estimated_delta_tokens": 534,
+          "estimated_input_tokens": 7187,
+          "estimation_margin_tokens": 81,
+          "measured_input_tokens": 6653,
+          "raw_estimated_input_tokens": 7605,
+          "source": "provider_calibrated"
+        },
+        "stage": "restored"
+      },
+      {
+        "actual_cached_input_tokens": 0,
+        "actual_input_tokens": 7634,
+        "actual_output_tokens": 18,
+        "corpus": "code_and_json",
+        "decision_covers_actual_input": true,
+        "measurement": {
+          "decision_input_tokens": 7634,
+          "estimated_delta_tokens": 0,
+          "estimated_input_tokens": 7634,
+          "estimation_margin_tokens": 0,
+          "measured_input_tokens": 7634,
+          "raw_estimated_input_tokens": 7071,
+          "source": "provider_counted"
+        },
+        "predicted_absolute_relative_error_percent": 0.0,
+        "predicted_error_tokens": 0,
+        "predicted_relative_error_percent": 0.0,
+        "raw_absolute_relative_error_percent": 7.374901755305213,
+        "raw_error_tokens": -563,
+        "raw_relative_error_percent": -7.374901755305213,
+        "restored_prefix_measurement": null,
+        "stage": "cold"
+      },
+      {
+        "actual_cached_input_tokens": 7631,
+        "actual_input_tokens": 8197,
+        "actual_output_tokens": 5,
+        "corpus": "code_and_json",
+        "decision_covers_actual_input": true,
+        "measurement": {
+          "decision_input_tokens": 8197,
+          "estimated_delta_tokens": 0,
+          "estimated_input_tokens": 8197,
+          "estimation_margin_tokens": 0,
+          "measured_input_tokens": 8197,
+          "raw_estimated_input_tokens": 7598,
+          "source": "provider_counted"
+        },
+        "predicted_absolute_relative_error_percent": 0.0,
+        "predicted_error_tokens": 0,
+        "predicted_relative_error_percent": 0.0,
+        "raw_absolute_relative_error_percent": 7.30755154324753,
+        "raw_error_tokens": -599,
+        "raw_relative_error_percent": -7.30755154324753,
+        "restored_prefix_measurement": {
+          "decision_input_tokens": 8241,
+          "estimated_delta_tokens": 527,
+          "estimated_input_tokens": 8161,
+          "estimation_margin_tokens": 80,
+          "measured_input_tokens": 7634,
+          "raw_estimated_input_tokens": 7598,
+          "source": "provider_calibrated"
+        },
+        "stage": "restored"
+      }
+    ],
+    "scope": "Six bounded real requests across English, Chinese, and code/JSON. Cold and JSONL-restored requests are prepared and measured by CompactingContextManager. First successful replies are mapped to InputRequired only for the probe lifecycle. Passing validates completed calls and durable calibration, not estimation accuracy or margin coverage. No compaction is induced in this scenario."
+  },
+  "protocol": "responses",
+  "reasoning_effort": "high",
+  "requested_model": "gpt-6-luna",
+  "requests": [
+    {
+      "completed": true,
+      "effective_reasoning_context": "all_turns",
+      "effective_reasoning_effort": "high",
+      "elapsed_ms": 3573,
+      "estimated_input_tokens": 7071,
+      "has_summary": false,
+      "input_items": 1,
+      "kind": "agent",
+      "max_output_tokens": 8192,
+      "messages": 1,
+      "output_items": 2,
+      "portable_estimated_input_tokens": 7071,
+      "reasoning_context": "all_turns",
+      "reasoning_effort": "high",
+      "replayed_assistant_count": 0,
+      "replayed_output_items": 0,
+      "replayed_reasoning_items": 0,
+      "replayed_reasoning_token_estimate": 0,
+      "request": 1,
+      "response_model": "gpt-6-luna",
+      "response_reasoning_items": 1,
+      "response_tool_calls": 0,
+      "returned_reasoning_tokens": 11,
+      "tools": 0,
+      "usage": {
+        "input_tokens": 7006,
+        "input_tokens_details": {
+          "cached_tokens": 0
+        },
+        "output_tokens": 18,
+        "output_tokens_details": {
+          "reasoning_tokens": 11
+        },
+        "total_tokens": 7024
+      },
+      "wire_estimated_input_tokens": 7071
+    },
+    {
+      "completed": true,
+      "effective_reasoning_context": "all_turns",
+      "effective_reasoning_effort": "high",
+      "elapsed_ms": 3058,
+      "estimated_input_tokens": 7598,
+      "has_summary": false,
+      "input_items": 4,
+      "kind": "agent",
+      "max_output_tokens": 8192,
+      "messages": 3,
+      "output_items": 2,
+      "portable_estimated_input_tokens": 7587,
+      "reasoning_context": "all_turns",
+      "reasoning_effort": "high",
+      "replayed_assistant_count": 1,
+      "replayed_output_items": 2,
+      "replayed_reasoning_items": 1,
+      "replayed_reasoning_token_estimate": 11,
+      "request": 2,
+      "response_model": "gpt-6-luna",
+      "response_reasoning_items": 1,
+      "response_tool_calls": 0,
+      "returned_reasoning_tokens": 9,
+      "tools": 0,
+      "usage": {
+        "input_tokens": 7529,
+        "input_tokens_details": {
+          "cached_tokens": 7003
+        },
+        "output_tokens": 16,
+        "output_tokens_details": {
+          "reasoning_tokens": 9
+        },
+        "total_tokens": 7545
+      },
+      "wire_estimated_input_tokens": 7598
+    },
+    {
+      "completed": true,
+      "effective_reasoning_context": "all_turns",
+      "effective_reasoning_effort": "high",
+      "elapsed_ms": 4092,
+      "estimated_input_tokens": 7071,
+      "has_summary": false,
+      "input_items": 1,
+      "kind": "agent",
+      "max_output_tokens": 8192,
+      "messages": 1,
+      "output_items": 2,
+      "portable_estimated_input_tokens": 7071,
+      "reasoning_context": "all_turns",
+      "reasoning_effort": "high",
+      "replayed_assistant_count": 0,
+      "replayed_output_items": 0,
+      "replayed_reasoning_items": 0,
+      "replayed_reasoning_token_estimate": 0,
+      "request": 3,
+      "response_model": "gpt-6-luna",
+      "response_reasoning_items": 1,
+      "response_tool_calls": 0,
+      "returned_reasoning_tokens": 18,
+      "tools": 0,
+      "usage": {
+        "input_tokens": 6653,
+        "input_tokens_details": {
+          "cached_tokens": 0
+        },
+        "output_tokens": 25,
+        "output_tokens_details": {
+          "reasoning_tokens": 18
+        },
+        "total_tokens": 6678
+      },
+      "wire_estimated_input_tokens": 7071
+    },
+    {
+      "completed": true,
+      "effective_reasoning_context": "all_turns",
+      "effective_reasoning_effort": "high",
+      "elapsed_ms": 4736,
+      "estimated_input_tokens": 7605,
+      "has_summary": false,
+      "input_items": 4,
+      "kind": "agent",
+      "max_output_tokens": 8192,
+      "messages": 3,
+      "output_items": 1,
+      "portable_estimated_input_tokens": 7587,
+      "reasoning_context": "all_turns",
+      "reasoning_effort": "high",
+      "replayed_assistant_count": 1,
+      "replayed_output_items": 2,
+      "replayed_reasoning_items": 1,
+      "replayed_reasoning_token_estimate": 18,
+      "request": 4,
+      "response_model": "gpt-6-luna",
+      "response_reasoning_items": 0,
+      "response_tool_calls": 0,
+      "returned_reasoning_tokens": 0,
+      "tools": 0,
+      "usage": {
+        "input_tokens": 7157,
+        "input_tokens_details": {
+          "cached_tokens": 6650
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 7162
+      },
+      "wire_estimated_input_tokens": 7605
+    },
+    {
+      "completed": true,
+      "effective_reasoning_context": "all_turns",
+      "effective_reasoning_effort": "high",
+      "elapsed_ms": 3018,
+      "estimated_input_tokens": 7071,
+      "has_summary": false,
+      "input_items": 1,
+      "kind": "agent",
+      "max_output_tokens": 8192,
+      "messages": 1,
+      "output_items": 2,
+      "portable_estimated_input_tokens": 7071,
+      "reasoning_context": "all_turns",
+      "reasoning_effort": "high",
+      "replayed_assistant_count": 0,
+      "replayed_output_items": 0,
+      "replayed_reasoning_items": 0,
+      "replayed_reasoning_token_estimate": 0,
+      "request": 5,
+      "response_model": "gpt-6-luna",
+      "response_reasoning_items": 1,
+      "response_tool_calls": 0,
+      "returned_reasoning_tokens": 11,
+      "tools": 0,
+      "usage": {
+        "input_tokens": 7634,
+        "input_tokens_details": {
+          "cached_tokens": 0
+        },
+        "output_tokens": 18,
+        "output_tokens_details": {
+          "reasoning_tokens": 11
+        },
+        "total_tokens": 7652
+      },
+      "wire_estimated_input_tokens": 7071
+    },
+    {
+      "completed": true,
+      "effective_reasoning_context": "all_turns",
+      "effective_reasoning_effort": "high",
+      "elapsed_ms": 3158,
+      "estimated_input_tokens": 7598,
+      "has_summary": false,
+      "input_items": 4,
+      "kind": "agent",
+      "max_output_tokens": 8192,
+      "messages": 3,
+      "output_items": 1,
+      "portable_estimated_input_tokens": 7587,
+      "reasoning_context": "all_turns",
+      "reasoning_effort": "high",
+      "replayed_assistant_count": 1,
+      "replayed_output_items": 2,
+      "replayed_reasoning_items": 1,
+      "replayed_reasoning_token_estimate": 11,
+      "request": 6,
+      "response_model": "gpt-6-luna",
+      "response_reasoning_items": 0,
+      "response_tool_calls": 0,
+      "returned_reasoning_tokens": 0,
+      "tools": 0,
+      "usage": {
+        "input_tokens": 8197,
+        "input_tokens_details": {
+          "cached_tokens": 7631
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 8202
+      },
+      "wire_estimated_input_tokens": 7598
+    }
+  ],
+  "resolved_default_policy": {
+    "input_limit": 997500,
+    "recent_tail": 24000,
+    "target": 708750,
+    "threshold": 945000,
+    "window": 1050000
+  },
+  "scenario": "precision",
+  "started_at_unix_seconds": 1792582529,
+  "thinking_verified": {
+    "criterion": "At least one provider response reports nonzero reasoning_tokens.",
+    "passed": true
+  }
+}

@@ -110,6 +110,7 @@ fn pending_tool() -> AgentRun {
     run.record(RunEvent::ModelResponseReceived {
         response: None,
         provider_continuation: None,
+        token_usage: None,
         provider_state: None,
         content: "Inspecting".to_owned(),
     })

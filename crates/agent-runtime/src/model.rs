@@ -4,6 +4,7 @@ use crate::{
 };
 pub use agent_core::model_protocol::{ModelMessage, ModelResponse};
 pub use agent_core::provider_state::{ProviderContextIdentity, ProviderContextWindow};
+pub use agent_core::token_usage::ModelUsage;
 use std::{error::Error, future::Future};
 
 use crate::{ModelContextMetadata, ToolDefinition};
@@ -20,18 +21,6 @@ pub struct ModelRequest {
     /// Adapters must preserve every item and its order, rather than extracting
     /// only a compaction blob or converting opaque state to ordinary text.
     pub provider_context: Option<ProviderContextWindow>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ModelUsage {
-    /// Complete input cost of this request, including cached input. This is
-    /// neither a session cumulative total nor the uncached billing portion.
-    pub input_tokens: usize,
-    /// Generated tokens reported for this response, including reasoning when
-    /// the provider includes it in its output usage.
-    pub output_tokens: usize,
-    /// A subset of input_tokens; cached input still occupies context capacity.
-    pub cached_input_tokens: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -63,6 +52,13 @@ impl From<ModelResponse> for ModelOutput {
 
 pub trait Model: Send + Sync {
     type Error: Error + Send + Sync + 'static;
+
+    /// True only for a provider-confirmed context-capacity rejection. Network,
+    /// rate-limit, output-limit and malformed-request errors are not overflow.
+    /// The runtime never infers this classification from an error's text.
+    fn is_context_overflow(&self, _error: &Self::Error) -> bool {
+        false
+    }
 
     /// Core decisions use capabilities, never provider wire-protocol names.
     fn capabilities(&self) -> ModelCapabilities {

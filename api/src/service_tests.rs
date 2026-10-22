@@ -16,6 +16,7 @@ async fn cancellation_reconciles_completion_or_failure_after_its_initial_read() 
         let id = format!("race-{completed}");
         let now = time::now();
         let detail = RunDetail {
+            compacting: false,
             summary: RunSummary {
                 id: id.clone(),
                 revision: 0,
@@ -23,6 +24,8 @@ async fn cancellation_reconciles_completion_or_failure_after_its_initial_read() 
                 prompt: "race".into(),
                 status: RunStatus::Running,
                 model_id: MODEL_ID.into(),
+                workspace_path: None,
+                permission_mode: Default::default(),
                 created_at: now.clone(),
                 updated_at: now,
             },
@@ -49,6 +52,7 @@ async fn cancellation_reconciles_completion_or_failure_after_its_initial_read() 
                         response: Some(ModelResponse::final_answer("done".into())),
                         provider_state: None,
                         provider_continuation: None,
+                        token_usage: None,
                     },
                 )
                 .await
@@ -97,5 +101,43 @@ async fn cancellation_reconciles_completion_or_failure_after_its_initial_read() 
         let again = cancel_restored(&entry, winner).await.unwrap();
         assert_eq!(again.summary.revision, outcome.summary.revision);
     }
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[tokio::test]
+async fn shutdown_settles_active_work_and_rejects_new_execution() {
+    let directory = std::env::temp_dir().join(format!(
+        "open-harness-shutdown-{}-{}",
+        std::process::id(),
+        NEXT_ID.fetch_add(1, Ordering::Relaxed)
+    ));
+    let state = AppState::open_with_delay(directory.clone(), None, Duration::from_millis(50))
+        .await
+        .unwrap();
+    let input = || CreateRunInput {
+        prompt: "shutdown".into(),
+        model_id: MODEL_ID.into(),
+        workspace_path: None,
+        permission_mode: Default::default(),
+    };
+    let created = state.create(input()).await.unwrap();
+    state.shutdown().await;
+    let stopped = state.get(&created.summary.id).unwrap();
+    assert_eq!(stopped.summary.status, RunStatus::Cancelled);
+    assert!(
+        !state
+            .entry(&created.summary.id)
+            .unwrap()
+            .runtime
+            .is_executing(&created.summary.id)
+    );
+    assert!(state.create(input()).await.is_err());
+    assert!(state.resume(&created.summary.id, None).await.is_err());
+    // Closing twice is harmless and does not append duplicate cancellation.
+    state.shutdown().await;
+    assert_eq!(
+        state.get(&created.summary.id).unwrap().events.len(),
+        stopped.events.len()
+    );
     fs::remove_dir_all(directory).unwrap();
 }

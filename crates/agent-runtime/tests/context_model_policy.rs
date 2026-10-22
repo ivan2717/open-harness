@@ -8,7 +8,7 @@ fn model(window: usize) -> ModelContextMetadata {
 }
 
 #[test]
-fn million_token_model_derives_a_large_trigger_without_inflating_recent_history() {
+fn million_token_model_scales_the_recent_tail_with_available_input_space() {
     let policy = ContextPolicy::default()
         .resolve(Some(&model(1_000_000)))
         .unwrap();
@@ -16,7 +16,7 @@ fn million_token_model_derives_a_large_trigger_without_inflating_recent_history(
     assert_eq!(policy.input_token_limit(), 950_000);
     assert_eq!(policy.compaction_threshold(), 900_000);
     assert_eq!(policy.compaction_target(), 675_000);
-    assert_eq!(policy.recent_tail_tokens(), 24_000);
+    assert_eq!(policy.recent_tail_tokens(), 152_000);
     assert_eq!(policy.output_token_limit(), Some(8_192));
 }
 
@@ -182,7 +182,7 @@ fn fallback_is_explicitly_conservative_and_input_only_compatibility_is_retained(
         .unwrap();
     assert_eq!(small.input_token_limit(), 100);
     assert_eq!(small.compaction_threshold(), 90);
-    assert_eq!(small.recent_tail_tokens(), 22);
+    assert_eq!(small.recent_tail_tokens(), 16);
     assert_eq!(small.output_token_limit(), None);
 }
 
@@ -199,7 +199,7 @@ fn small_windows_have_typed_errors_and_defaults_can_shrink_with_explicit_reserva
         .unwrap();
     assert_eq!(small.input_token_limit(), 3_456);
     assert_eq!(small.compaction_threshold(), 3_456);
-    assert_eq!(small.recent_tail_tokens(), 864);
+    assert_eq!(small.recent_tail_tokens(), 552);
     assert!(
         ContextPolicy::builder()
             .input_token_limit(1)
@@ -262,4 +262,34 @@ fn invalid_metadata_is_rejected_before_policy_resolution() {
         metadata.validate(),
         Err(ModelContextMetadataError::ZeroMaxOutputTokens)
     ));
+}
+
+#[test]
+fn recent_tail_ratio_uses_available_messages_and_explicit_tokens_win() {
+    let policy = ContextPolicy::builder()
+        .input_token_limit(10_000)
+        .build()
+        .unwrap();
+    assert_eq!(policy.recent_tail_tokens_for_message_budget(8_000), 1_280);
+    let ratio = ContextPolicy::builder()
+        .input_token_limit(10_000)
+        .recent_tail_percent(20)
+        .build()
+        .unwrap();
+    assert_eq!(ratio.recent_tail_tokens_for_message_budget(8_000), 1_600);
+    let fixed = ContextPolicy::builder()
+        .input_token_limit(10_000)
+        .recent_tail_percent(20)
+        .recent_tail_tokens(500)
+        .build()
+        .unwrap();
+    assert_eq!(fixed.recent_tail_tokens_for_message_budget(8_000), 500);
+    for invalid in [0, 100, 255] {
+        assert!(matches!(
+            ContextPolicy::builder()
+                .recent_tail_percent(invalid)
+                .build(),
+            Err(ContextPolicyError::InvalidRecentTailPercent(_))
+        ));
+    }
 }

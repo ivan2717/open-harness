@@ -192,7 +192,8 @@ async fn summary_model_uses_its_own_counter_input_budget_and_output_cap() {
         .await
         .unwrap();
     let requests = compactor.model().requests.lock().unwrap();
-    assert_eq!(estimate, own_counter.count_tokens(&requests[0]));
+    let raw = own_counter.count_tokens(&requests[0]);
+    assert_eq!(estimate, raw + (raw * 15).div_ceil(100));
     assert!(estimate > main_counter.count_tokens(&requests[0]));
     assert_eq!(compactor.input_token_limit(), Some(8_500));
     assert_eq!(requests[0].max_output_tokens, Some(500));
@@ -283,6 +284,7 @@ async fn the_manager_batches_for_the_summary_model_instead_of_the_larger_main_mo
         run.record(RunEvent::ModelResponseReceived {
             response: None,
             provider_continuation: None,
+            token_usage: None,
             provider_state: None,
             content: "Inspection rationale. ".repeat(30),
         })
@@ -370,6 +372,7 @@ async fn an_accepted_checkpoint_above_target_waits_for_growth_before_compacting_
             content,
             provider_state: None,
             provider_continuation: None,
+            token_usage: None,
         })
         .unwrap();
         let call_id = format!("c{}", run.current_step());

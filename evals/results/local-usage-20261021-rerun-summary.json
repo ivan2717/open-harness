@@ -1,0 +1,312 @@
+{
+  "label": "local-usage-20261021-rerun",
+  "counting_api_requests": 0,
+  "providers": {
+    "deepseek": {
+      "precision": {
+        "non-thinking": {
+          "cold": {
+            "requests": 3,
+            "raw_mape_percent": 17.180863975170276,
+            "prediction_mape_percent": 17.180863975170276,
+            "decision_covered_requests": 2,
+            "max_prediction_underestimate_percent": 17.055718475073313,
+            "max_decision_deficit_tokens": 393,
+            "max_decision_deficit_percent": 4.609970674486803
+          },
+          "restored": {
+            "requests": 3,
+            "raw_mape_percent": 17.220457748390952,
+            "prediction_mape_percent": 1.187746799640189,
+            "decision_covered_requests": 2,
+            "max_prediction_underestimate_percent": 1.0073360341618307,
+            "max_decision_deficit_tokens": 14,
+            "max_decision_deficit_percent": 0.15329026606810467
+          },
+          "all": {
+            "requests": 6,
+            "raw_mape_percent": 17.200660861780612,
+            "prediction_mape_percent": 9.184305387405232,
+            "decision_covered_requests": 4,
+            "max_prediction_underestimate_percent": 17.055718475073313,
+            "max_decision_deficit_tokens": 393,
+            "max_decision_deficit_percent": 4.609970674486803
+          }
+        },
+        "thinking": {
+          "cold": {
+            "requests": 3,
+            "raw_mape_percent": 16.932879585937656,
+            "prediction_mape_percent": 16.932879585937656,
+            "decision_covered_requests": 2,
+            "max_prediction_underestimate_percent": 17.29824561403509,
+            "max_decision_deficit_tokens": 418,
+            "max_decision_deficit_percent": 4.888888888888889
+          },
+          "restored": {
+            "requests": 3,
+            "raw_mape_percent": 16.98884457173794,
+            "prediction_mape_percent": 1.1831509277403485,
+            "decision_covered_requests": 2,
+            "max_prediction_underestimate_percent": 1.004586154182136,
+            "max_decision_deficit_tokens": 14,
+            "max_decision_deficit_percent": 0.15287180607119458
+          },
+          "all": {
+            "requests": 6,
+            "raw_mape_percent": 16.9608620788378,
+            "prediction_mape_percent": 9.058015256839003,
+            "decision_covered_requests": 4,
+            "max_prediction_underestimate_percent": 17.29824561403509,
+            "max_decision_deficit_tokens": 418,
+            "max_decision_deficit_percent": 4.888888888888889
+          }
+        }
+      },
+      "reports": [
+        "deepseek-context-precision-local-usage-20261021-rerun.json",
+        "deepseek-context-thinking-precision-local-usage-20261021-rerun.json",
+        "deepseek-context-thinking-runtime-local-usage-20261021-rerun.json"
+      ],
+      "usage": {
+        "input_tokens": 182531,
+        "output_tokens": 6303,
+        "cached_input_tokens": 99328,
+        "reasoning_output_tokens": 2677
+      },
+      "generation_requests": 23,
+      "request_errors": 0,
+      "returned_models": [
+        "deepseek-flash"
+      ],
+      "runtime": {
+        "requests": 7,
+        "raw_mape_percent": 20.03783034034796,
+        "prediction_mape_percent": 17.69439196779112,
+        "decision_covered_requests": 0,
+        "max_prediction_underestimate_percent": 30.755711775043938,
+        "max_decision_deficit_tokens": 974,
+        "max_decision_deficit_percent": 20.210896309314588,
+        "checks_passed": 25,
+        "checks_total": 25,
+        "summary_calls": 4,
+        "checkpoints": 4,
+        "rows": [
+          {
+            "call": 1,
+            "source": "estimated",
+            "raw": 394,
+            "predicted": 394,
+            "decision": 454,
+            "actual": 569
+          },
+          {
+            "call": 2,
+            "source": "estimated",
+            "raw": 7069,
+            "predicted": 7069,
+            "decision": 8130,
+            "actual": 8764
+          },
+          {
+            "call": 3,
+            "source": "estimated",
+            "raw": 7797,
+            "predicted": 7797,
+            "decision": 8967,
+            "actual": 9445
+          },
+          {
+            "call": 4,
+            "source": "estimated",
+            "raw": 7889,
+            "predicted": 7889,
+            "decision": 9073,
+            "actual": 9536
+          },
+          {
+            "call": 5,
+            "source": "estimated",
+            "raw": 7949,
+            "predicted": 7949,
+            "decision": 9142,
+            "actual": 9594
+          },
+          {
+            "call": 6,
+            "source": "provider_calibrated",
+            "raw": 8320,
+            "predicted": 9965,
+            "decision": 10021,
+            "actual": 10028
+          },
+          {
+            "call": 7,
+            "source": "estimated",
+            "raw": 8106,
+            "predicted": 8106,
+            "decision": 9322,
+            "actual": 10296
+          }
+        ]
+      }
+    },
+    "openai": {
+      "precision": {
+        "none": {
+          "cold": {
+            "requests": 3,
+            "raw_mape_percent": 4.861852616981193,
+            "prediction_mape_percent": 4.861852616981193,
+            "decision_covered_requests": 3,
+            "max_prediction_underestimate_percent": 7.374901755305213,
+            "max_decision_deficit_tokens": 0,
+            "max_decision_deficit_percent": 0.0
+          },
+          "restored": {
+            "requests": 3,
+            "raw_mape_percent": 4.848181019181914,
+            "prediction_mape_percent": 0.31454737613768274,
+            "decision_covered_requests": 3,
+            "max_prediction_underestimate_percent": 0.4154447702834799,
+            "max_decision_deficit_tokens": 0,
+            "max_decision_deficit_percent": 0.0
+          },
+          "all": {
+            "requests": 6,
+            "raw_mape_percent": 4.855016818081554,
+            "prediction_mape_percent": 2.588199996559438,
+            "decision_covered_requests": 6,
+            "max_prediction_underestimate_percent": 7.374901755305213,
+            "max_decision_deficit_tokens": 0,
+            "max_decision_deficit_percent": 0.0
+          }
+        },
+        "high": {
+          "cold": {
+            "requests": 3,
+            "raw_mape_percent": 4.861852616981193,
+            "prediction_mape_percent": 4.861852616981193,
+            "decision_covered_requests": 3,
+            "max_prediction_underestimate_percent": 7.374901755305213,
+            "max_decision_deficit_tokens": 0,
+            "max_decision_deficit_percent": 0.0
+          },
+          "restored": {
+            "requests": 3,
+            "raw_mape_percent": 4.82891642525863,
+            "prediction_mape_percent": 0.3038987526504603,
+            "decision_covered_requests": 3,
+            "max_prediction_underestimate_percent": 0.43918506770769794,
+            "max_decision_deficit_tokens": 0,
+            "max_decision_deficit_percent": 0.0
+          },
+          "all": {
+            "requests": 6,
+            "raw_mape_percent": 4.845384521119911,
+            "prediction_mape_percent": 2.5828756848158267,
+            "decision_covered_requests": 6,
+            "max_prediction_underestimate_percent": 7.374901755305213,
+            "max_decision_deficit_tokens": 0,
+            "max_decision_deficit_percent": 0.0
+          }
+        }
+      },
+      "reports": [
+        "openai-context-none-precision-local-usage-20261021-rerun.json",
+        "openai-context-high-precision-local-usage-20261021-rerun.json",
+        "openai-context-high-runtime-local-usage-20261021-rerun.json"
+      ],
+      "usage": {
+        "input_tokens": 179521,
+        "output_tokens": 3901,
+        "cached_input_tokens": 51516,
+        "reasoning_output_tokens": 1463
+      },
+      "generation_requests": 23,
+      "request_errors": 0,
+      "returned_models": [
+        "gpt-6-luna"
+      ],
+      "runtime": {
+        "requests": 7,
+        "raw_mape_percent": 16.855484021175386,
+        "prediction_mape_percent": 14.866912592603958,
+        "decision_covered_requests": 2,
+        "max_prediction_underestimate_percent": 19.10088865656038,
+        "max_decision_deficit_tokens": 666,
+        "max_decision_deficit_percent": 6.962885520125457,
+        "checks_passed": 25,
+        "checks_total": 25,
+        "summary_calls": 4,
+        "checkpoints": 4,
+        "rows": [
+          {
+            "call": 1,
+            "source": "estimated",
+            "raw": 394,
+            "predicted": 394,
+            "decision": 454,
+            "actual": 315
+          },
+          {
+            "call": 2,
+            "source": "estimated",
+            "raw": 7108,
+            "predicted": 7108,
+            "decision": 8175,
+            "actual": 8446
+          },
+          {
+            "call": 3,
+            "source": "estimated",
+            "raw": 7656,
+            "predicted": 7656,
+            "decision": 8805,
+            "actual": 8949
+          },
+          {
+            "call": 4,
+            "source": "estimated",
+            "raw": 7617,
+            "predicted": 7617,
+            "decision": 8760,
+            "actual": 8915
+          },
+          {
+            "call": 5,
+            "source": "estimated",
+            "raw": 7646,
+            "predicted": 7646,
+            "decision": 8793,
+            "actual": 8951
+          },
+          {
+            "call": 6,
+            "source": "provider_calibrated",
+            "raw": 8027,
+            "predicted": 9332,
+            "decision": 9390,
+            "actual": 9375
+          },
+          {
+            "call": 7,
+            "source": "estimated",
+            "raw": 7738,
+            "predicted": 7738,
+            "decision": 8899,
+            "actual": 9565
+          }
+        ]
+      }
+    }
+  },
+  "tested_sources_unchanged": true,
+  "generation_requests": 46,
+  "usage": {
+    "input_tokens": 362052,
+    "output_tokens": 10204,
+    "cached_input_tokens": 150844,
+    "reasoning_output_tokens": 4140
+  }
+}

@@ -1,0 +1,26 @@
+[
+  {
+    "provider": "deepseek",
+    "model": "deepseek-flash",
+    "catalog_fields": {
+      "id": "deepseek-flash",
+      "context_window": 1048576,
+      "max_output_tokens": 393216,
+      "owned_by": "deepseek"
+    },
+    "context_window": 1048576,
+    "window_source": "catalog",
+    "checked_at_utc": "2026-10-21T16:11:29Z"
+  },
+  {
+    "provider": "openai",
+    "model": "gpt-6-luna",
+    "catalog_fields": {
+      "id": "gpt-6-luna",
+      "owned_by": "system"
+    },
+    "context_window": 1050000,
+    "window_source": "https://developers.openai.com/api/docs/models/gpt-6-luna",
+    "checked_at_utc": "2026-10-21T16:11:33Z"
+  }
+]

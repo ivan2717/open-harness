@@ -5,7 +5,9 @@
 //! compatibility rules and transport clients belong above these codecs.
 
 mod replay;
+mod usage;
 mod wire;
 
 pub use replay::{validate_legacy_response, validate_replay_state};
+pub use usage::UsageDecodeError;
 pub use wire::WireProtocol;

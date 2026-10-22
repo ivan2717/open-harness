@@ -73,6 +73,7 @@ fn run_with_structured_output(instruction: &str) -> AgentRun {
     run.record(RunEvent::ModelResponseReceived {
         response: None,
         provider_continuation: None,
+        token_usage: None,
         provider_state: None,
         content: "Read the archive".repeat(120),
     })
@@ -128,6 +129,7 @@ async fn compaction_uses_the_adapters_input_cost_instead_of_assuming_a_model_pay
     run.record(RunEvent::ModelResponseReceived {
         response: None,
         provider_continuation: None,
+        token_usage: None,
         provider_state: None,
         content: "x".repeat(2_000),
     })
@@ -154,7 +156,7 @@ async fn compaction_uses_the_adapters_input_cost_instead_of_assuming_a_model_pay
 }
 
 #[tokio::test]
-async fn custom_tool_protocol_is_projected_and_exposes_omitted_details_below_the_size_limit() {
+async fn custom_tool_protocol_preserves_full_output_without_pressure() {
     let run = run_with_structured_output("Read");
     let input = input(&run);
     let prepared = manager(10_000)
@@ -177,13 +179,9 @@ async fn custom_tool_protocol_is_projected_and_exposes_omitted_details_below_the
         })
         .unwrap();
     let decoded: serde_json::Value = serde_json::from_str(output).unwrap();
-    assert_eq!(decoded["text"], "秘密档");
-    assert_eq!(decoded["next_offset"], 3);
-    assert_eq!(prepared.request.tools[0].name, "archive_page");
-    assert_eq!(
-        prepared.omitted_history.unwrap().readable_through_sequence,
-        run.events().last().unwrap().sequence
-    );
+    assert_eq!(decoded["text"], "秘密档案");
+    assert!(prepared.request.tools.is_empty());
+    assert!(prepared.omitted_history.is_none());
 }
 
 #[tokio::test]
@@ -229,12 +227,22 @@ impl ToolOutputProjector for InvalidProjector {
 #[tokio::test]
 async fn projector_budget_violations_become_bounded_errors_and_recoverable_omissions() {
     let run = run_with_structured_output("Read");
-    let input = input(&run);
+    let mut input = input(&run);
+    if let RunEvent::ToolCallSucceeded { output, .. } = &mut input.events.last_mut().unwrap().event
+    {
+        *output = "original evidence ".repeat(200);
+    }
     for response in [Ok("界".repeat(129)), Err("界".repeat(129))] {
         let projector = InvalidProjector { response };
-        let prepared = manager(10_000)
-            .prepare(input.as_ref().with_tool_output_projector(&projector))
+        let manager = manager(10_000);
+        let rejected = manager.prepare(input.as_ref()).await.unwrap();
+        let prepared = manager
+            .recover_overflow(
+                input.as_ref().with_tool_output_projector(&projector),
+                &rejected.request,
+            )
             .await
+            .unwrap()
             .unwrap();
         let message = prepared
             .request

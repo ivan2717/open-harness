@@ -1,0 +1,176 @@
+{
+  "context_window": 1050000,
+  "default_runtime_policy_for_comparison": {
+    "compaction_target": 708750,
+    "compaction_threshold": 945000,
+    "estimation_margin_percent": 15,
+    "input_limit": 997500
+  },
+  "fixture_version": "ascii-fixed-records-v1",
+  "imported_calibration_source": "evals/results/openai-context-boundary-20261022.json",
+  "limits": {
+    "max_model_invocations": 5,
+    "no_tokenizer_or_token_count_endpoint": true,
+    "request_timeout_seconds": 600,
+    "transport_retry_note": "HttpModel may retry connection establishment or explicit 429/5xx before streaming, at most twice; no retry after output starts"
+  },
+  "model": "gpt-6-luna",
+  "note": "Calibration is imported from the earlier real response, not a new API request. This report records bounded followup probes after diagnosing boundary failures.",
+  "output_reserve": 8192,
+  "protocol": "responses",
+  "provider": "openai",
+  "reasoning": "high",
+  "scope": "direct provider physical boundary; bypasses runtime context management",
+  "stages": [
+    {
+      "actual_input_fraction_of_window": 0.03130857142857143,
+      "actual_plus_reserved_output": 41066,
+      "answer": "{\"start\":\"MINT-R4\",\"middle\":\"COBALT-P8\",\"end\":\"LARCH-V2\"}",
+      "calibration_basis": null,
+      "canonical_json_bytes": 131613,
+      "cold_runtime_would_cross_hard_input_limit": false,
+      "decision_error_percent": 11.474113281012354,
+      "elapsed_ms": 5001,
+      "finish_reason": "stop",
+      "has_provider_replay_state": true,
+      "imported_observation": true,
+      "local_measurement": {
+        "decision_input_tokens": 36646,
+        "estimated_delta_tokens": 31866,
+        "estimated_input_tokens": 31866,
+        "estimation_margin_tokens": 4780,
+        "measured_input_tokens": null,
+        "raw_estimated_input_tokens": 31866,
+        "source": "estimated"
+      },
+      "needles_correct": true,
+      "note": "The runtime protects the latest user message; this whole-fixture user message is deliberately sent directly.",
+      "preparation_ms": 4,
+      "raw_estimation_error_percent": -3.066252965869687,
+      "reasoning_blocks": 0,
+      "request_text_bytes": 127368,
+      "rows": 4096,
+      "stage": "calibration",
+      "status": "completed",
+      "target_input_tokens": null,
+      "usage": {
+        "cached_input_tokens": 0,
+        "input_tokens": 32874,
+        "output_tokens": 42
+      }
+    },
+    {
+      "actual_input_fraction_of_window": 0.7476819047619048,
+      "actual_plus_reserved_output": 793258,
+      "answer": "{\"start\":\"MINT-R4\",\"middle\":\"COBALT-P8\",\"end\":\"LARCH-V2\"}",
+      "calibration_basis": {
+        "actual_input_tokens": 32874,
+        "method": "row count scaled from real generation usage; target size is not a measured count",
+        "rows": 4096,
+        "stage": "calibration"
+      },
+      "canonical_json_bytes": 3140381,
+      "cold_runtime_would_cross_hard_input_limit": false,
+      "decision_error_percent": 11.409104457459618,
+      "elapsed_ms": 53975,
+      "finish_reason": "stop",
+      "has_provider_replay_state": true,
+      "local_measurement": {
+        "decision_input_tokens": 874635,
+        "estimated_delta_tokens": 760552,
+        "estimated_input_tokens": 760552,
+        "estimation_margin_tokens": 114083,
+        "measured_input_tokens": null,
+        "raw_estimated_input_tokens": 760552,
+        "source": "estimated"
+      },
+      "needles_correct": true,
+      "note": "The runtime protects the latest user message; this whole-fixture user message is deliberately sent directly.",
+      "preparation_ms": 96,
+      "raw_estimation_error_percent": -3.122540015743902,
+      "reasoning_blocks": 0,
+      "request_text_bytes": 3042112,
+      "rows": 98120,
+      "stage": "near75",
+      "status": "completed",
+      "target_input_tokens": 787500,
+      "usage": {
+        "cached_input_tokens": 0,
+        "input_tokens": 785066,
+        "output_tokens": 59
+      }
+    },
+    {
+      "actual_input_fraction_of_window": 0.8499828571428572,
+      "actual_plus_reserved_output": 900674,
+      "answer": "{\"start\":\"MINT-R4\",\"middle\":\"COBALT-P8\",\"end\":\"LARCH-V2\"}",
+      "calibration_basis": {
+        "actual_input_tokens": 785066,
+        "method": "row count scaled from real generation usage; target size is not a measured count",
+        "rows": 98120,
+        "stage": "near75"
+      },
+      "canonical_json_bytes": 3570045,
+      "cold_runtime_would_cross_hard_input_limit": false,
+      "decision_error_percent": 11.40885754558636,
+      "elapsed_ms": 32240,
+      "finish_reason": "stop",
+      "has_provider_replay_state": true,
+      "local_measurement": {
+        "decision_input_tokens": 994304,
+        "estimated_delta_tokens": 864612,
+        "estimated_input_tokens": 864612,
+        "estimation_margin_tokens": 129692,
+        "measured_input_tokens": null,
+        "raw_estimated_input_tokens": 864612,
+        "source": "estimated"
+      },
+      "needles_correct": true,
+      "note": "The runtime protects the latest user message; this whole-fixture user message is deliberately sent directly.",
+      "preparation_ms": 93,
+      "raw_estimation_error_percent": -3.1227520555036414,
+      "reasoning_blocks": 0,
+      "request_text_bytes": 3458349,
+      "rows": 111547,
+      "stage": "near85",
+      "status": "completed",
+      "target_input_tokens": 892500,
+      "usage": {
+        "cached_input_tokens": 0,
+        "input_tokens": 892482,
+        "output_tokens": 58
+      }
+    },
+    {
+      "calibration_basis": {
+        "actual_input_tokens": 892482,
+        "method": "row count scaled from real generation usage; target size is not a measured count",
+        "rows": 111547,
+        "stage": "near85"
+      },
+      "canonical_json_bytes": 3696093,
+      "cold_runtime_would_cross_hard_input_limit": true,
+      "context_overflow": true,
+      "elapsed_ms": 8164,
+      "error": "model provider rejected the response (ContextOverflow)",
+      "error_class": "Rejected { kind: ContextOverflow }",
+      "local_measurement": {
+        "decision_input_tokens": 1029410,
+        "estimated_delta_tokens": 895139,
+        "estimated_input_tokens": 895139,
+        "estimation_margin_tokens": 134271,
+        "measured_input_tokens": null,
+        "raw_estimated_input_tokens": 895139,
+        "source": "estimated"
+      },
+      "note": "The runtime protects the latest user message; this whole-fixture user message is deliberately sent directly.",
+      "preparation_ms": 94,
+      "request_text_bytes": 3580458,
+      "rows": 115486,
+      "stage": "near88",
+      "status": "error",
+      "target_input_tokens": 924000
+    }
+  ],
+  "transport": "agent_providers::HttpModel"
+}

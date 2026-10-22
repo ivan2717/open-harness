@@ -79,6 +79,8 @@ async fn create(state: &AppState, prompt: &str) -> RunDetail {
         .create(CreateRunInput {
             prompt: prompt.into(),
             model_id: "local-demo".into(),
+            workspace_path: None,
+            permission_mode: Default::default(),
         })
         .await
         .unwrap()

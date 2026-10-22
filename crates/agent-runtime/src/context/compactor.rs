@@ -1,10 +1,14 @@
 use super::{
-    ApproximateTokenCounter, ContextPolicy, ContextPolicyError, ModelContextBudget, TokenCounter,
+    ApproximateTokenCounter, ContextMeasurement, ContextPolicy, ContextPolicyError,
+    ModelContextBudget, TokenCounter,
 };
-use crate::{Model, ModelFinishReason, ModelMessage, ModelRequest, ModelStreamAssembler};
+use crate::{
+    ContentBlock, Model, ModelContextMetadata, ModelFinishReason, ModelMessage, ModelRequest,
+    ModelRole, ModelStreamAssembler,
+};
 use agent_core::agent::RunEventEnvelope;
 use serde::{Deserialize, Serialize};
-use std::{error::Error, fmt, future::Future};
+use std::{collections::HashSet, error::Error, fmt, future::Future};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -96,7 +100,8 @@ pub trait ContextCompactor: Send + Sync {
     }
 
     /// Estimates the token-budgeted input used by this adapter. Use the same
-    /// encoding and instructions as `compact`. Adapters with no token-budgeted
+    /// encoding and instructions as `compact`, including any estimation margin.
+    /// This is a local, synchronous estimate. Adapters with no token-budgeted
     /// input, such as local extraction, may return zero.
     fn estimate_input_tokens(
         &self,
@@ -104,6 +109,28 @@ pub trait ContextCompactor: Send + Sync {
         events: &[RunEventEnvelope],
         token_counter: &dyn TokenCounter,
     ) -> Result<usize, Self::Error>;
+
+    /// Optional cache-friendly route for a complete, balanced projected prefix.
+    /// Returning `None` selects the portable event-batch path. Implementations
+    /// must include their own summary instruction in this estimate.
+    fn estimate_projected_input_tokens(
+        &self,
+        _main_metadata: Option<&ModelContextMetadata>,
+        _request: &ModelRequest,
+    ) -> Result<Option<usize>, Self::Error> {
+        Ok(None)
+    }
+
+    /// Summarize exactly the supplied projection, preserving its fixed header
+    /// and message prefix. Custom compactors keep their existing batch behavior
+    /// unless they explicitly opt into this route.
+    fn compact_projected(
+        &self,
+        _main_metadata: Option<ModelContextMetadata>,
+        _request: ModelRequest,
+    ) -> impl Future<Output = Result<Option<ContextSummary>, Self::Error>> + Send {
+        async { Ok(None) }
+    }
 
     fn compact(
         &self,
@@ -184,44 +211,51 @@ impl<M: Model, N> ModelContextCompactor<M, N> {
     }
 }
 
-impl<M, N> ContextCompactor for ModelContextCompactor<M, N>
-where
-    M: Model,
-    N: TokenCounter,
-{
-    type Error = ModelContextCompactorError<M::Error>;
-
-    fn input_token_limit(&self) -> Option<usize> {
-        self.resolved_budget()
-            .ok()
-            .map(ModelContextBudget::input_token_limit)
+impl<M: Model, N: TokenCounter> ModelContextCompactor<M, N> {
+    fn input_tokens(&self, request: &ModelRequest) -> usize {
+        ContextMeasurement::for_request(request, &self.token_counter).decision_input_tokens
     }
 
-    fn estimate_input_tokens(
+    fn projected_request(
         &self,
-        previous_summary: Option<&ContextSummary>,
-        events: &[RunEventEnvelope],
-        _token_counter: &dyn TokenCounter,
-    ) -> Result<usize, Self::Error> {
+        main_metadata: Option<&ModelContextMetadata>,
+        request: &ModelRequest,
+    ) -> Result<Option<ModelRequest>, ModelContextCompactorError<M::Error>> {
+        let Some(main_key) = main_metadata.and_then(super::measurement::model_key) else {
+            return Ok(None);
+        };
+        if crate::model_context::model_accounting_metadata(&self.model)
+            .as_ref()
+            .and_then(super::measurement::model_key)
+            .as_ref()
+            != Some(&main_key)
+            || request.provider_context.is_some()
+            || !balanced_messages(request)
+        {
+            return Ok(None);
+        }
         let budget = self
             .resolved_budget()
             .map_err(ModelContextCompactorError::Policy)?;
-        let request = compaction_request(previous_summary, events, budget)
-            .map_err(ModelContextCompactorError::Json)?;
-        Ok(self.token_counter.count_tokens(&request))
+        let mut request = request.clone();
+        request.messages.push(ModelMessage::user(format!(
+            "{COMPACTION_INSTRUCTIONS}\nSummarize the conversation above, including any previous summary. Produce the handoff now; do not continue the task or call tools."
+        )));
+        request.max_output_tokens = budget.output_token_limit();
+        // Validate opaque payloads with their owning adapter, preserving prefix
+        // bindings. Unsupported replay uses portable sanitized event batches.
+        if self.model.validate_request(&request).is_err() {
+            return Ok(None);
+        }
+        Ok(Some(request))
     }
 
-    async fn compact(
+    async fn execute_request(
         &self,
-        previous_summary: Option<ContextSummary>,
-        events: Vec<RunEventEnvelope>,
-    ) -> Result<ContextSummary, Self::Error> {
-        let budget = self
-            .resolved_budget()
-            .map_err(ModelContextCompactorError::Policy)?;
-        let request = compaction_request(previous_summary.as_ref(), &events, budget)
-            .map_err(ModelContextCompactorError::Json)?;
-        let input_tokens = self.token_counter.count_tokens(&request);
+        request: ModelRequest,
+        budget: ModelContextBudget,
+    ) -> Result<ContextSummary, ModelContextCompactorError<M::Error>> {
+        let input_tokens = self.input_tokens(&request);
         if input_tokens > budget.input_token_limit() {
             return Err(ModelContextCompactorError::InputTokenLimitExceeded {
                 estimated_tokens: input_tokens,
@@ -275,6 +309,72 @@ where
             }
         }
         serde_json::from_str(&answer).map_err(ModelContextCompactorError::Json)
+    }
+}
+
+impl<M, N> ContextCompactor for ModelContextCompactor<M, N>
+where
+    M: Model,
+    N: TokenCounter,
+{
+    type Error = ModelContextCompactorError<M::Error>;
+
+    fn input_token_limit(&self) -> Option<usize> {
+        self.resolved_budget()
+            .ok()
+            .map(ModelContextBudget::input_token_limit)
+    }
+
+    fn estimate_input_tokens(
+        &self,
+        previous_summary: Option<&ContextSummary>,
+        events: &[RunEventEnvelope],
+        _token_counter: &dyn TokenCounter,
+    ) -> Result<usize, Self::Error> {
+        let budget = self
+            .resolved_budget()
+            .map_err(ModelContextCompactorError::Policy)?;
+        let request = compaction_request(previous_summary, events, budget)
+            .map_err(ModelContextCompactorError::Json)?;
+        Ok(self.input_tokens(&request))
+    }
+
+    fn estimate_projected_input_tokens(
+        &self,
+        main_metadata: Option<&ModelContextMetadata>,
+        request: &ModelRequest,
+    ) -> Result<Option<usize>, Self::Error> {
+        Ok(self
+            .projected_request(main_metadata, request)?
+            .as_ref()
+            .map(|request| self.input_tokens(request)))
+    }
+
+    async fn compact_projected(
+        &self,
+        main_metadata: Option<ModelContextMetadata>,
+        request: ModelRequest,
+    ) -> Result<Option<ContextSummary>, Self::Error> {
+        let Some(request) = self.projected_request(main_metadata.as_ref(), &request)? else {
+            return Ok(None);
+        };
+        let budget = self
+            .resolved_budget()
+            .map_err(ModelContextCompactorError::Policy)?;
+        self.execute_request(request, budget).await.map(Some)
+    }
+
+    async fn compact(
+        &self,
+        previous_summary: Option<ContextSummary>,
+        events: Vec<RunEventEnvelope>,
+    ) -> Result<ContextSummary, Self::Error> {
+        let budget = self
+            .resolved_budget()
+            .map_err(ModelContextCompactorError::Policy)?;
+        let request = compaction_request(previous_summary.as_ref(), &events, budget)
+            .map_err(ModelContextCompactorError::Json)?;
+        self.execute_request(request, budget).await
     }
 }
 
@@ -349,6 +449,30 @@ where
             | Self::OutputTokenLimitExceeded { .. } => None,
         }
     }
+}
+
+// A summary instruction must never interrupt an unresolved tool-call group.
+// The generic replay validator checks provider state, while this checks the
+// portable call/result protocol at the chosen prefix boundary.
+fn balanced_messages(request: &ModelRequest) -> bool {
+    let mut pending = HashSet::new();
+    let mut seen = HashSet::new();
+    for message in &request.messages {
+        if message.validate().is_err() || (message.role != ModelRole::Tool && !pending.is_empty()) {
+            return false;
+        }
+        for block in &message.content {
+            let valid = match block {
+                ContentBlock::ToolCall { id, .. } => seen.insert(id) && pending.insert(id),
+                ContentBlock::ToolResult { call_id, .. } => pending.remove(call_id),
+                _ => true,
+            };
+            if !valid {
+                return false;
+            }
+        }
+    }
+    pending.is_empty()
 }
 
 #[derive(Serialize)]

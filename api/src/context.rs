@@ -7,8 +7,9 @@ use crate::{
 use agent_core::agent::{RunEvent, RunEventEnvelope};
 use agent_runtime::{
     ApproximateTokenCounter, CompactingContextManager, ContextCheckpoint, ContextCheckpointStore,
-    ContextCompactor, ContextInputRef, ContextManager, ContextPolicy, ContextSummary, ModelRequest,
-    PreparedContext, TokenCounter,
+    ContextCompactor, ContextInputRef, ContextManager, ContextMeasurement,
+    ContextMeasurementSource, ContextPolicy, ContextSummary, ModelContextMetadata, ModelOutput,
+    ModelRequest, PreparedContext, RequestUsageBaseline, TokenCounter,
 };
 use std::{
     convert::Infallible,
@@ -41,6 +42,8 @@ pub fn initial_context() -> ContextSnapshot {
         reserved_output_tokens: policy.model_budget().output_token_reserve(),
         compaction_count: 0,
         measurement: "estimated".into(),
+        accounting: None,
+        observed_usage: None,
         checkpoints: Vec::new(),
     }
 }
@@ -112,11 +115,20 @@ fn reconcile_checkpoints(
 ) -> io::Result<()> {
     snapshot.update(|detail| {
         let context = detail.context.get_or_insert_with(initial_context);
-        let mut restored = checkpoints
-            .iter()
-            .filter(|checkpoint| checkpoint.run_id == detail.summary.id)
-            .collect::<Vec<_>>();
-        restored.sort_by_key(|checkpoint| checkpoint.through_sequence);
+        let mut restored = Vec::new();
+        for checkpoint in checkpoints.iter().filter(|checkpoint| {
+            checkpoint.run_id == detail.summary.id && !checkpoint.summary.is_empty()
+        }) {
+            // Pruning can retain an existing summary while saving a newer tool
+            // projection. Count each summary boundary once in the inspector.
+            if restored.iter().any(|existing: &&ContextCheckpoint| {
+                existing.through_sequence == checkpoint.through_sequence
+                    && existing.summary == checkpoint.summary
+            }) {
+                continue;
+            }
+            restored.push(checkpoint);
+        }
         context.checkpoints = restored
             .into_iter()
             .map(|checkpoint| {
@@ -148,13 +160,19 @@ impl ContextCheckpointStore for DiskCheckpoints {
                 .checkpoints
                 .lock()
                 .map_err(|_| io::Error::other("checkpoint lock poisoned"))?;
-            if !checkpoints
+            if let Some(existing) = checkpoints
                 .iter()
-                .any(|existing| existing.id == checkpoint.id)
+                .find(|existing| existing.id == checkpoint.id)
             {
-                checkpoints.push(checkpoint.clone());
+                if existing != &checkpoint {
+                    return Err(io::Error::other("conflicting context checkpoint id"));
+                }
+            } else {
+                let mut candidate = checkpoints.clone();
+                candidate.push(checkpoint);
+                write_json(&self.path, &candidate)?;
+                *checkpoints = candidate;
             }
-            write_json(&self.path, &*checkpoints)?;
             reconcile_checkpoints(&self.snapshot, &checkpoints, &time::now())?;
         }
         Ok(())
@@ -165,8 +183,8 @@ impl ContextCheckpointStore for DiskCheckpoints {
             .lock()
             .map_err(|_| io::Error::other("checkpoint lock poisoned"))?
             .iter()
-            .filter(|checkpoint| checkpoint.run_id == run_id)
-            .max_by_key(|checkpoint| checkpoint.through_sequence)
+            .rev()
+            .find(|checkpoint| checkpoint.run_id == run_id)
             .cloned())
     }
     async fn clear(&self, run_id: String) -> Result<(), Self::Error> {
@@ -174,30 +192,80 @@ impl ContextCheckpointStore for DiskCheckpoints {
             .checkpoints
             .lock()
             .map_err(|_| io::Error::other("checkpoint lock poisoned"))?;
-        checkpoints.retain(|checkpoint| checkpoint.run_id != run_id);
-        write_json(&self.path, &*checkpoints)?;
+        let candidate = checkpoints
+            .iter()
+            .filter(|checkpoint| checkpoint.run_id != run_id)
+            .cloned()
+            .collect::<Vec<_>>();
+        write_json(&self.path, &candidate)?;
+        *checkpoints = candidate;
         reconcile_checkpoints(&self.snapshot, &checkpoints, &time::now())
     }
 }
 
-pub struct ObservedContext {
-    inner: CompactingContextManager<DemoCompactor, DiskCheckpoints, ApproximateTokenCounter>,
+pub struct ObservedContext<C = DemoCompactor> {
+    inner: CompactingContextManager<C, DiskCheckpoints, ApproximateTokenCounter>,
     snapshot: Snapshot,
 }
 impl ObservedContext {
+    #[cfg(test)]
     pub fn new(path: PathBuf, snapshot: Snapshot) -> io::Result<Self> {
+        Self::with_compactor(path, snapshot, policy(), DemoCompactor)
+    }
+}
+impl<C: ContextCompactor> ObservedContext<C> {
+    pub fn with_compactor(
+        path: PathBuf,
+        snapshot: Snapshot,
+        policy: ContextPolicy,
+        compactor: C,
+    ) -> io::Result<Self> {
         Ok(Self {
             inner: CompactingContextManager::new(
-                policy(),
-                DemoCompactor,
+                policy,
+                compactor,
                 DiskCheckpoints::new(path, snapshot.clone())?,
                 ApproximateTokenCounter::default(),
             ),
             snapshot,
         })
     }
+
+    fn record_measurement(
+        &self,
+        input: ContextInputRef<'_>,
+        request: &ModelRequest,
+    ) -> io::Result<()> {
+        let Some(measurement) = self.inner.measure_request(input, request) else {
+            return Ok(());
+        };
+        let policy = self
+            .inner
+            .policy()
+            .resolve(input.model_metadata)
+            .map_err(io::Error::other)?;
+        self.snapshot.update(|detail| {
+            let context = detail.context.get_or_insert_with(initial_context);
+            context.window_tokens = policy.model_budget().context_window();
+            context.input_budget = policy.input_token_limit();
+            context.trigger_tokens = policy.compaction_threshold();
+            context.target_tokens = policy.compaction_target();
+            context.reserved_output_tokens = policy.model_budget().output_token_reserve();
+            context.estimated_input_tokens = measurement.estimated_input_tokens;
+            context.measurement = match measurement.source {
+                ContextMeasurementSource::Estimated => "estimated",
+                ContextMeasurementSource::ProviderCalibrated => "provider_calibrated",
+                ContextMeasurementSource::ProviderNative => "provider_native",
+                // Compatibility with measurements saved by the retired full-count path.
+                ContextMeasurementSource::ProviderCounted => "provider_counted",
+                ContextMeasurementSource::TokenizerEstimated => "tokenizer_estimated",
+            }
+            .into();
+            context.accounting = Some(measurement);
+        })
+    }
 }
-impl ContextManager for ObservedContext {
+impl<C: ContextCompactor> ContextManager for ObservedContext<C> {
     type Error = io::Error;
     fn max_tool_output_chars(&self) -> Option<usize> {
         self.inner.max_tool_output_chars()
@@ -205,15 +273,229 @@ impl ContextManager for ObservedContext {
     fn estimate_request_tokens(&self, request: &ModelRequest) -> Option<usize> {
         self.inner.estimate_request_tokens(request)
     }
+    fn measure_request(
+        &self,
+        input: ContextInputRef<'_>,
+        request: &ModelRequest,
+    ) -> Option<ContextMeasurement> {
+        self.inner.measure_request(input, request)
+    }
+    fn request_usage_baseline(
+        &self,
+        metadata: Option<&ModelContextMetadata>,
+        request: &ModelRequest,
+    ) -> Option<RequestUsageBaseline> {
+        self.inner.request_usage_baseline(metadata, request)
+    }
+    async fn compact_now(
+        &self,
+        input: ContextInputRef<'_>,
+    ) -> Result<Option<PreparedContext>, Self::Error> {
+        let prepared = self
+            .inner
+            .compact_now(input)
+            .await
+            .map_err(io::Error::other)?;
+        if let Some(prepared) = &prepared {
+            self.record_measurement(input, &prepared.request)?;
+        }
+        Ok(prepared)
+    }
+    async fn observe_response(
+        &self,
+        input: ContextInputRef<'_>,
+        output: &ModelOutput,
+    ) -> Result<(), Self::Error> {
+        self.inner
+            .observe_response(input, output)
+            .await
+            .map_err(io::Error::other)
+    }
+    async fn recover_overflow(
+        &self,
+        input: ContextInputRef<'_>,
+        rejected: &ModelRequest,
+    ) -> Result<Option<PreparedContext>, Self::Error> {
+        let prepared = self
+            .inner
+            .recover_overflow(input, rejected)
+            .await
+            .map_err(io::Error::other)?;
+        if let Some(prepared) = &prepared {
+            self.record_measurement(input, &prepared.request)?;
+        }
+        Ok(prepared)
+    }
     async fn prepare(&self, input: ContextInputRef<'_>) -> Result<PreparedContext, Self::Error> {
         let prepared = self.inner.prepare(input).await.map_err(io::Error::other)?;
-        let tokens = self.inner.token_counter().count_tokens(&prepared.request);
-        self.snapshot.update(|detail| {
-            detail
-                .context
-                .get_or_insert_with(initial_context)
-                .estimated_input_tokens = tokens;
-        })?;
+        self.record_measurement(input, &prepared.request)?;
         Ok(prepared)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::contracts::{RunDetail, RunStatus, RunSummary};
+    use agent_runtime::{ContextInput, ModelContextMetadata, ModelResponse, ModelUsage};
+
+    #[tokio::test]
+    async fn observed_context_forwards_usage_and_publishes_the_decision_measurement() {
+        let directory =
+            std::env::temp_dir().join(format!("open-harness-context-meter-{}", std::process::id()));
+        fs::create_dir_all(&directory).unwrap();
+        let detail = RunDetail {
+            compacting: false,
+            summary: RunSummary {
+                id: "meter".into(),
+                revision: 0,
+                title: "meter".into(),
+                prompt: "test".into(),
+                status: RunStatus::Running,
+                model_id: "local-demo".into(),
+                workspace_path: None,
+                permission_mode: Default::default(),
+                created_at: String::new(),
+                updated_at: String::new(),
+            },
+            messages: Vec::new(),
+            events: Vec::new(),
+            context: Some(initial_context()),
+            error: None,
+        };
+        let snapshot = Snapshot::new(detail, directory.join("snapshot.json")).unwrap();
+        let manager =
+            ObservedContext::new(directory.join("checkpoints.json"), snapshot.clone()).unwrap();
+        let input = ContextInput::new(
+            "meter",
+            "system",
+            vec![RunEventEnvelope {
+                sequence: 0,
+                step: 0,
+                occurred_at: std::time::SystemTime::UNIX_EPOCH,
+                event: RunEvent::RunStarted {
+                    instruction: "test".into(),
+                },
+            }],
+            Vec::new(),
+        )
+        .with_model_metadata(ModelContextMetadata::new("test", "model", WINDOW_TOKENS).unwrap());
+        let prepared = manager.prepare(input.as_ref()).await.unwrap();
+        let output = ModelOutput {
+            usage: Some(ModelUsage {
+                input_tokens: 1000,
+                output_tokens: 200,
+                cached_input_tokens: Some(500),
+            }),
+            ..ModelResponse::final_answer("done".into()).into()
+        };
+        manager
+            .observe_response(input.as_ref(), &output)
+            .await
+            .unwrap();
+        let measured = manager
+            .measure_request(input.as_ref(), &prepared.request)
+            .unwrap();
+        assert_eq!(measured.measured_input_tokens, Some(1000));
+        assert_eq!(measured.decision_input_tokens, 1000);
+        manager.prepare(input.as_ref()).await.unwrap();
+        let context = snapshot.get().context.unwrap();
+        assert_eq!(context.measurement, "provider_calibrated");
+        assert_eq!(context.estimated_input_tokens, 1000);
+        assert_eq!(context.accounting, Some(measured));
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[tokio::test]
+    async fn disk_pruning_is_restored_in_write_order_without_counting_as_new_summaries() {
+        let directory = std::env::temp_dir().join(format!(
+            "open-harness-pruning-checkpoints-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        let snapshot = Snapshot::new(
+            RunDetail {
+                compacting: false,
+                summary: RunSummary {
+                    id: "disk".into(),
+                    revision: 0,
+                    title: "disk".into(),
+                    prompt: "test".into(),
+                    status: RunStatus::WaitingForInput,
+                    model_id: "local-demo".into(),
+                    workspace_path: None,
+                    permission_mode: Default::default(),
+                    created_at: String::new(),
+                    updated_at: String::new(),
+                },
+                messages: Vec::new(),
+                events: Vec::new(),
+                context: Some(initial_context()),
+                error: None,
+            },
+            directory.join("snapshot.json"),
+        )
+        .unwrap();
+        let path = directory.join("checkpoints.json");
+        let store = DiskCheckpoints::new(path.clone(), snapshot.clone()).unwrap();
+        let pruning = agent_runtime::ContextPruning {
+            through_sequence: 10,
+            source_fingerprint: "events".into(),
+            replacements: vec![agent_runtime::PrunedToolOutput {
+                sequence: 8,
+                content: "bounded".into(),
+                is_error: false,
+            }],
+        };
+        let pruned = ContextCheckpoint {
+            run_id: "disk".into(),
+            id: "pruning".into(),
+            through_sequence: 10,
+            source_fingerprint: "events".into(),
+            before_tokens: 1_000,
+            after_tokens: 700,
+            summary: ContextSummary::default(),
+            pruning: Some(pruning.clone()),
+        };
+        store.save(pruned).await.unwrap();
+        assert_eq!(snapshot.get().context.unwrap().compaction_count, 0);
+        let summarized = ContextCheckpoint {
+            run_id: "disk".into(),
+            id: "summary".into(),
+            through_sequence: 3,
+            source_fingerprint: "summary-events".into(),
+            before_tokens: 700,
+            after_tokens: 400,
+            summary: ContextSummary {
+                objective: "Continue".into(),
+                ..Default::default()
+            },
+            pruning: Some(pruning),
+        };
+        store.save(summarized.clone()).await.unwrap();
+        let restored = DiskCheckpoints::new(path.clone(), snapshot.clone()).unwrap();
+        assert_eq!(
+            restored.latest("disk".into()).await.unwrap(),
+            Some(summarized.clone())
+        );
+        assert_eq!(snapshot.get().context.unwrap().compaction_count, 1);
+        let revised = ContextCheckpoint {
+            id: "summary-plus-pruning".into(),
+            after_tokens: 300,
+            ..summarized.clone()
+        };
+        restored.save(revised.clone()).await.unwrap();
+        assert_eq!(snapshot.get().context.unwrap().compaction_count, 1);
+        assert_eq!(restored.latest("disk".into()).await.unwrap(), Some(revised));
+        assert!(
+            restored
+                .save(ContextCheckpoint {
+                    after_tokens: 999,
+                    ..summarized
+                })
+                .await
+                .is_err()
+        );
+        fs::remove_dir_all(directory).unwrap();
     }
 }

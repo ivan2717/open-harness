@@ -5,6 +5,8 @@ mod accounting;
 mod failure;
 #[path = "deepseek_context/model.rs"]
 mod model;
+#[path = "deepseek_context/precision.rs"]
+mod precision;
 #[path = "deepseek_context/scenarios.rs"]
 mod scenarios;
 
@@ -18,9 +20,9 @@ async fn main() -> Result<(), EvalError> {
     let scenario = std::env::args().nth(1).unwrap_or_else(|| "all".into());
     if !matches!(
         scenario.as_str(),
-        "all" | "large" | "runtime" | "failure" | "probe" | "accounting"
+        "all" | "large" | "runtime" | "failure" | "probe" | "accounting" | "precision"
     ) {
-        return Err("usage: deepseek_context [all|large|runtime|failure|probe|accounting] [non-thinking|thinking|thinking-drop]".into());
+        return Err("usage: deepseek_context [all|large|runtime|failure|probe|accounting|precision] [non-thinking|thinking|thinking-drop]".into());
     }
     let mode = std::env::args()
         .nth(2)
@@ -90,7 +92,8 @@ async fn main() -> Result<(), EvalError> {
             scenarios::run_runtime_with_counter(model.clone(), model.token_counter(), 8192, 8192)
                 .await
         } else {
-            scenarios::run_runtime_scenario(model.clone()).await
+            scenarios::run_runtime_with_counter(model.clone(), model.token_counter(), 1024, 2048)
+                .await
         };
         let result = capture(result);
         if mode == "thinking-drop" {
@@ -111,6 +114,14 @@ async fn main() -> Result<(), EvalError> {
     }
     if thinking && mode != "thinking-drop" && (scenario == "all" || scenario == "accounting") {
         report["accounting"] = capture(accounting::run(model.clone()).await);
+    }
+    // Explicit-only to keep the existing all-scenarios request budget bounded.
+    if scenario == "precision" {
+        let precision_model = model
+            .clone()
+            .with_output_cap(if thinking { 8192 } else { 256 });
+        report["precision"] =
+            capture(precision::run(precision_model.clone(), precision_model.token_counter()).await);
     }
     report["requests"] = json!(model.observations());
     if thinking {
@@ -144,6 +155,7 @@ async fn main() -> Result<(), EvalError> {
         "runtime",
         "failure",
         "accounting",
+        "precision",
         "negative_control",
         "thinking_verified",
     ];

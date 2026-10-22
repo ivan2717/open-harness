@@ -36,6 +36,10 @@ pub struct RunSummary {
     pub prompt: String,
     pub status: RunStatus,
     pub model_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_path: Option<String>,
+    #[serde(default)]
+    pub permission_mode: agent_local::PermissionMode,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -88,6 +92,13 @@ pub struct CompactionRecord {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ObservedTokenUsage {
+    pub input_tokens: usize,
+    pub output_tokens: usize,
+    pub responses: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContextSnapshot {
     pub window_tokens: usize,
     pub input_budget: usize,
@@ -97,11 +108,20 @@ pub struct ContextSnapshot {
     pub reserved_output_tokens: usize,
     pub compaction_count: usize,
     pub measurement: String,
+    /// The same request measurement used by context budget decisions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accounting: Option<agent_runtime::ContextMeasurement>,
+    /// Sum of recorded successful response samples, not context occupancy.
+    /// Missing samples and failed attempts cannot be inferred from local logs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observed_usage: Option<ObservedTokenUsage>,
     pub checkpoints: Vec<CompactionRecord>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunDetail {
+    #[serde(default)]
+    pub compacting: bool,
     #[serde(flatten)]
     pub summary: RunSummary,
     pub messages: Vec<ChatMessage>,
@@ -116,10 +136,46 @@ pub struct RunDetail {
 pub struct CreateRunInput {
     pub prompt: String,
     pub model_id: String,
+    #[serde(default)]
+    pub workspace_path: Option<String>,
+    #[serde(default)]
+    pub permission_mode: agent_local::PermissionMode,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResumeRunInput {
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ApprovalInput {
+    pub allow: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RevertInput {
+    pub path: String,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SubmitInput {
     pub message: String,
+}
+
+/// Credentials are accepted only on configuration and never included in responses.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConfigureModel {
+    pub protocol: agent_providers::ProviderProtocol,
+    pub base_url: String,
+    pub api_key: String,
+    pub model: String,
+    pub context_window: usize,
+    pub max_output_tokens: usize,
+    pub reasoning_mode: String,
+    pub reasoning_effort: String,
 }

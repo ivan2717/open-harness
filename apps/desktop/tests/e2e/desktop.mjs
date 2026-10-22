@@ -24,9 +24,7 @@ async function launch() {
   const page = await application.firstWindow()
   page.on('pageerror', (error) => errors.push(error.message))
   await expect(page.getByRole('button', { name: '开始运行', exact: true })).toBeVisible()
-  await expect
-    .poll(() => page.evaluate(async () => (await window.harness.config()).default_model))
-    .toBe('local-demo')
+  await page.evaluate(() => window.harness.config())
   assert.deepEqual(
     await page.evaluate(() => ({
       node: typeof globalThis.process,
@@ -41,6 +39,18 @@ try {
   let page = await launch()
   await expect(page.getByRole('heading', { name: '开始一个新任务' })).toBeVisible()
   await expect(page.locator('.inspector')).toHaveCount(0)
+  await expect(page.getByRole('link', { name: '添加模型', exact: true })).toBeVisible()
+  await expect(page.getByLabel('选择模型')).toHaveCount(0)
+  await expect(page.getByText(/Local demo/)).toHaveCount(0)
+  await expect(page.getByRole('button', { name: '试试上下文演示' })).toHaveCount(0)
+  await expect(page.getByText('仅对话', { exact: true })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: '更多操作', exact: true })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: '选择项目', exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: '项目权限', exact: true })).toHaveCount(0)
+  await expect(page.getByRole('link', { name: /^工作区设置/ })).toHaveCount(1)
+  await expect(
+    page.locator('.composer-stack').getByRole('link', { name: '工作区设置' }),
+  ).toHaveCount(0)
   await page.screenshot({ path: resolve(artifacts, 'desktop-start.png') })
   await application.evaluate(({ BrowserWindow }) =>
     BrowserWindow.getAllWindows()[0].setSize(1000, 680),
@@ -57,14 +67,29 @@ try {
     BrowserWindow.getAllWindows()[0].setSize(1440, 940),
   )
   await expect.poll(() => page.evaluate(() => window.innerWidth)).toBe(1440)
-  await page.getByRole('button', { name: '试试上下文演示' }).click()
-  await expect(page.getByRole('textbox', { name: '任务描述', exact: true })).toBeFocused()
-  await expect(page.getByRole('textbox', { name: '任务描述', exact: true })).toHaveValue(
-    /上下文诊断演示/,
-  )
-  const prompt = '观察一次完整的上下文压缩，保留原始工具事件，并展示压缩前后的预算。'
-  await page.getByRole('textbox', { name: '任务描述', exact: true }).fill(prompt)
-  await page.getByRole('button', { name: '开始运行', exact: true }).click()
+  const draft = 'Keep this real task draft while checking the developer demo.'
+  const description = page.getByRole('textbox', { name: '任务描述', exact: true })
+  const shortHeight = await description.evaluate((element) => element.clientHeight)
+  await description.fill(Array.from({ length: 20 }, (_, index) => `Task line ${index}`).join('\n'))
+  await expect
+    .poll(() => description.evaluate((element) => element.clientHeight))
+    .toBeGreaterThan(shortHeight)
+  assert.ok((await description.evaluate((element) => element.clientHeight)) <= 220)
+  assert.equal(await description.evaluate((element) => getComputedStyle(element).resize), 'none')
+  await description.fill(draft)
+  await expect.poll(() => description.evaluate((element) => element.clientHeight)).toBe(shortHeight)
+  await expect(page.getByRole('textbox', { name: '任务描述', exact: true })).toBeEditable()
+  await expect(page.getByRole('button', { name: '开始运行', exact: true })).toBeDisabled()
+  await page.getByRole('textbox', { name: '任务描述', exact: true }).press('Enter')
+  await expect(page.getByRole('heading', { name: '开始一个新任务' })).toBeVisible()
+  await page.getByRole('link', { name: '添加模型', exact: true }).click()
+  await expect(page.getByRole('heading', { name: '默认模型', exact: true })).toHaveCount(0)
+  await expect(page.locator('.model-advanced > summary')).toBeVisible()
+  await expect(page.getByLabel('上下文窗口（tokens）')).toBeHidden()
+  await expect(page.getByLabel('单次输出上限（tokens）')).toBeHidden()
+  await expect(page.getByRole('button', { name: '运行上下文演示', exact: true })).toBeHidden()
+  await page.getByText('开发调试', { exact: true }).click()
+  await page.getByRole('button', { name: '运行上下文演示', exact: true }).click()
   await expect.poll(() => page.evaluate(() => window.location.hash)).toMatch(/\/runs\//)
   const runId = await page.evaluate(() => window.location.hash.split('/runs/')[1])
   await expect(page.getByRole('button', { name: '停止运行', exact: true })).toBeVisible()
@@ -74,6 +99,8 @@ try {
     })
     .toBe('completed')
   const complete = await page.evaluate((id) => window.harness.getRun(id), runId)
+  assert.equal(complete.model_id, 'local-demo')
+  const prompt = complete.prompt
   assert.ok(
     complete.context.compaction_count > 0,
     'the real context manager must create a checkpoint',
@@ -91,7 +118,7 @@ try {
       (message) => message.role === 'assistant' && message.status === 'complete',
     ),
   )
-  await page.getByRole('button', { name: '打开运行详情' }).click()
+  await page.getByRole('button', { name: '打开运行详情', exact: true }).click()
   await expect(page.getByText('上下文压缩 1', { exact: true })).toBeVisible()
   await page.getByText('上下文压缩 1', { exact: true }).click()
   await page.screenshot({ path: resolve(artifacts, 'desktop-context.png') })
@@ -100,24 +127,30 @@ try {
 
   await page.getByRole('link', { name: /新建会话/ }).click()
   await expect(page.locator('.inspector')).toHaveCount(0)
-  await page
-    .getByRole('textbox', { name: '任务描述', exact: true })
-    .fill('验证用户取消能停止执行。')
-  await page.getByRole('button', { name: '开始运行', exact: true }).click()
+  await expect(page.getByRole('textbox', { name: '任务描述', exact: true })).toHaveValue(draft)
+  await expect(page.getByRole('link', { name: '添加模型', exact: true })).toBeVisible()
+  const cancelled = await page.evaluate(() =>
+    window.harness.createRun({ prompt: '验证用户取消能停止执行。', model_id: 'local-demo' }),
+  )
+  await page.evaluate((id) => {
+    window.location.hash = `/runs/${id}`
+  }, cancelled.id)
   await expect(page.getByRole('button', { name: '停止运行', exact: true })).toBeVisible()
-  const cancelledId = await page.evaluate(() => window.location.hash.split('/runs/')[1])
+  const cancelledId = cancelled.id
   await page.getByRole('button', { name: '停止运行', exact: true }).click()
   await expect
     .poll(() => page.evaluate(async (id) => (await window.harness.getRun(id)).status, cancelledId))
     .toBe('cancelled')
 
   await page.getByRole('link', { name: /新建会话/ }).click()
-  await page
-    .getByRole('textbox', { name: '任务描述', exact: true })
-    .fill('/ask 验证补充输入后继续运行。')
-  await page.getByRole('button', { name: '开始运行', exact: true }).click()
+  const resumed = await page.evaluate(() =>
+    window.harness.createRun({ prompt: '/ask 验证补充输入后继续运行。', model_id: 'local-demo' }),
+  )
+  await page.evaluate((id) => {
+    window.location.hash = `/runs/${id}`
+  }, resumed.id)
   await expect(page.getByRole('textbox', { name: '补充信息', exact: true })).toBeVisible()
-  const resumedId = await page.evaluate(() => window.location.hash.split('/runs/')[1])
+  const resumedId = resumed.id
   await page.getByRole('textbox', { name: '补充信息', exact: true }).fill('继续执行本地诊断。')
   await page.getByRole('button', { name: '提交补充信息', exact: true }).click()
   await expect
@@ -139,7 +172,7 @@ try {
   )
   await page.getByRole('link', { name: new RegExp(prompt.slice(0, 8)) }).click()
   await expect.poll(() => page.evaluate(() => window.location.hash)).toContain(runId)
-  await page.getByRole('link', { name: /工作区设置/ }).click()
+  await page.getByRole('link', { name: /^工作区设置/ }).click()
   await expect.poll(() => page.evaluate(() => window.location.hash)).toContain('/settings')
   await page.screenshot({ path: resolve(artifacts, 'desktop-settings.png') })
   assert.deepEqual(errors, [], 'renderer must not report uncaught exceptions')

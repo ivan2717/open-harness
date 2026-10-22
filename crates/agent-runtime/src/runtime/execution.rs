@@ -26,11 +26,37 @@ impl ExecutionRegistry {
         run_id: &str,
         agent_id: &str,
     ) -> Result<ExecutionGuard, Arc<RunControl>> {
+        self.claim_kind(run_id, agent_id, false)
+    }
+
+    pub(super) fn claim_maintenance(
+        &self,
+        run_id: &str,
+        agent_id: &str,
+    ) -> Result<ExecutionGuard, Arc<RunControl>> {
+        self.claim_kind(run_id, agent_id, true)
+    }
+
+    pub(super) fn maintenance(&self, run_id: &str) -> Option<Arc<RunControl>> {
+        self.runs
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .get(run_id)
+            .filter(|control| control.maintenance)
+            .cloned()
+    }
+
+    fn claim_kind(
+        &self,
+        run_id: &str,
+        agent_id: &str,
+        maintenance: bool,
+    ) -> Result<ExecutionGuard, Arc<RunControl>> {
         let mut runs = self.runs.lock().unwrap_or_else(|error| error.into_inner());
         if let Some(control) = runs.get(run_id) {
             return Err(Arc::clone(control));
         }
-        let control = Arc::new(RunControl::new(agent_id));
+        let control = Arc::new(RunControl::new(agent_id, maintenance));
         runs.insert(run_id.to_owned(), Arc::clone(&control));
         Ok(ExecutionGuard {
             run_id: run_id.to_owned(),
@@ -43,14 +69,16 @@ impl ExecutionRegistry {
 #[derive(Debug)]
 pub(super) struct RunControl {
     agent_id: String,
+    maintenance: bool,
     cancelled: watch::Sender<bool>,
     finished: watch::Sender<bool>,
 }
 
 impl RunControl {
-    fn new(agent_id: &str) -> Self {
+    fn new(agent_id: &str, maintenance: bool) -> Self {
         Self {
             agent_id: agent_id.to_owned(),
+            maintenance,
             cancelled: watch::channel(false).0,
             finished: watch::channel(false).0,
         }

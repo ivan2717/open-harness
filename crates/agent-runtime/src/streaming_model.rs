@@ -41,6 +41,13 @@ pub trait StreamingModel: Send + Sync {
         None
     }
 
+    /// Classifies a provider-confirmed context overflow. Transport failures,
+    /// output limits, and errors after partial output are not overflow recovery
+    /// signals; the runtime separately checks whether anything was emitted.
+    fn is_context_overflow(&self, _error: &Self::Error) -> bool {
+        false
+    }
+
     fn provider_context_identity(&self) -> Option<&ProviderContextIdentity> {
         None
     }
@@ -86,6 +93,13 @@ impl<T: StreamingModel> Model for StreamingModelAdapter<T> {
 
     fn context_metadata(&self) -> Option<&ModelContextMetadata> {
         self.inner.context_metadata()
+    }
+
+    fn is_context_overflow(&self, error: &Self::Error) -> bool {
+        match error {
+            StreamingModelError::Transport(error) => self.inner.is_context_overflow(error),
+            StreamingModelError::Stream(_) | StreamingModelError::Protocol(_) => false,
+        }
     }
 
     fn provider_context_identity(&self) -> Option<&ProviderContextIdentity> {

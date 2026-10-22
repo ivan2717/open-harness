@@ -24,6 +24,7 @@ pub async fn run(model: DeepSeekModel) -> Result<Value, Box<dyn std::error::Erro
         run.record(RunEvent::ModelResponseReceived {
             response: None,
             provider_continuation: None,
+            token_usage: None,
             provider_state: None,
             content: String::new(),
         })?;

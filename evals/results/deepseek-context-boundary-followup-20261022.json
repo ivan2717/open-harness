@@ -1,0 +1,94 @@
+{
+  "context_window": 1048576,
+  "default_runtime_policy_for_comparison": {
+    "compaction_target": 707789,
+    "compaction_threshold": 943718,
+    "estimation_margin_percent": 15,
+    "input_limit": 996147
+  },
+  "fixture_version": "ascii-fixed-records-v1",
+  "imported_calibration_source": "evals/results/deepseek-context-boundary-20261022.json",
+  "limits": {
+    "max_model_invocations": 5,
+    "no_tokenizer_or_token_count_endpoint": true,
+    "request_timeout_seconds": 600,
+    "transport_retry_note": "HttpModel may retry connection establishment or explicit 429/5xx before streaming, at most twice; no retry after output starts"
+  },
+  "model": "deepseek-flash",
+  "note": "Calibration is imported from the earlier real response, not a new API request. This report records bounded followup probes after diagnosing boundary failures.",
+  "output_reserve": 8192,
+  "protocol": "chat_completions",
+  "provider": "deepseek",
+  "reasoning": "high",
+  "scope": "direct provider physical boundary; bypasses runtime context management",
+  "stages": [
+    {
+      "actual_input_fraction_of_window": 0.031380653381347656,
+      "actual_plus_reserved_output": 41097,
+      "answer": "{\"start\":\"MINT-R4\",\"middle\":\"COBALT-P8\",\"end\":\"LARCH-V2\"}",
+      "calibration_basis": null,
+      "canonical_json_bytes": 131613,
+      "cold_runtime_would_cross_hard_input_limit": false,
+      "decision_error_percent": 11.36909284303298,
+      "elapsed_ms": 1418,
+      "finish_reason": "stop",
+      "has_provider_replay_state": true,
+      "imported_observation": true,
+      "local_measurement": {
+        "decision_input_tokens": 36646,
+        "estimated_delta_tokens": 31866,
+        "estimated_input_tokens": 31866,
+        "estimation_margin_tokens": 4780,
+        "measured_input_tokens": null,
+        "raw_estimated_input_tokens": 31866,
+        "source": "estimated"
+      },
+      "needles_correct": true,
+      "note": "The runtime protects the latest user message; this whole-fixture user message is deliberately sent directly.",
+      "preparation_ms": 4,
+      "raw_estimation_error_percent": -3.157574836650967,
+      "reasoning_blocks": 1,
+      "request_text_bytes": 127368,
+      "rows": 4096,
+      "stage": "calibration",
+      "status": "completed",
+      "target_input_tokens": null,
+      "usage": {
+        "cached_input_tokens": 0,
+        "input_tokens": 32905,
+        "output_tokens": 73
+      }
+    },
+    {
+      "calibration_basis": {
+        "actual_input_tokens": 32905,
+        "method": "row count scaled from real generation usage; target size is not a measured count",
+        "rows": 4096,
+        "stage": "calibration"
+      },
+      "canonical_json_bytes": 4260893,
+      "cold_runtime_would_cross_hard_input_limit": true,
+      "context_overflow": true,
+      "elapsed_ms": 2978,
+      "error": "model provider HTTP 400 (ContextOverflow)",
+      "error_class": "Http { status: 400, kind: ContextOverflow }",
+      "local_measurement": {
+        "decision_input_tokens": 1186715,
+        "estimated_delta_tokens": 1031926,
+        "estimated_input_tokens": 1031926,
+        "estimation_margin_tokens": 154789,
+        "measured_input_tokens": null,
+        "raw_estimated_input_tokens": 1031926,
+        "source": "estimated"
+      },
+      "note": "The runtime protects the latest user message; this whole-fixture user message is deliberately sent directly.",
+      "preparation_ms": 117,
+      "request_text_bytes": 4127608,
+      "rows": 133136,
+      "stage": "over102",
+      "status": "error",
+      "target_input_tokens": 1069547
+    }
+  ],
+  "transport": "agent_providers::HttpModel"
+}

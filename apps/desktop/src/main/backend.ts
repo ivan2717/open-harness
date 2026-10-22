@@ -195,8 +195,10 @@ export class Backend {
     const child = this.child
     if (!child || child.exitCode !== null || child.signalCode !== null) return
     await new Promise<void>((resolve) => {
-      const hardKill = setTimeout(() => child.kill('SIGKILL'), 2_000)
-      const deadline = setTimeout(finish, 4_000)
+      // Let the runtime cancel owned tools, terminate their process groups and
+      // persist the final run state before using the last-resort hard stop.
+      const hardKill = setTimeout(() => child.kill('SIGKILL'), 10_000)
+      const deadline = setTimeout(finish, 12_000)
       function finish(): void {
         clearTimeout(hardKill)
         clearTimeout(deadline)

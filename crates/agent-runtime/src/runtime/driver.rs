@@ -4,8 +4,9 @@ use agent_core::agent::{Agent, AgentRun, RunEvent, RunStatus};
 
 use crate::{
     ContextInputRef, ContextManager, EventStore, HistoryAccess, HistoryContext, Model,
-    ModelFinishReason, ModelOutput, ModelStreamAssembler, ModelStreamEvent, ModelStreamSink,
-    ReplayRequirement, ToolCall, ToolExecutor,
+    ModelCapabilities, ModelContextMetadata, ModelFinishReason, ModelOutput, ModelRequest,
+    ModelStreamAssembler, ModelStreamEvent, ModelStreamSink, ReplayRequirement, ToolCall,
+    ToolExecutor,
 };
 
 use super::{AgentRuntime, AgentRuntimeError, execution::RunControl};
@@ -58,12 +59,25 @@ where
             .validate()
             .map_err(AgentRuntimeError::ModelCapabilities)?;
 
+        let accounting_metadata = self.accounting_metadata();
+        let turn_start_step = run
+            .events()
+            .iter()
+            .rev()
+            .find_map(|event| {
+                (matches!(event.event, RunEvent::RunResumed { .. })
+                    || (self.continue_after_response
+                        && matches!(event.event, RunEvent::InputReceived { .. })))
+                .then_some(event.step)
+            })
+            .unwrap_or(0);
+
         while run.is_running() {
             if control.is_cancelled() {
                 return self.finish_cancellation(run).await;
             }
             if let Some(max_steps) = self.max_steps
-                && run.current_step() >= max_steps
+                && run.current_step().saturating_sub(turn_start_step) >= max_steps
             {
                 self.record_persisted(
                     run,
@@ -85,14 +99,14 @@ where
                         tools: self.tools.definitions(),
                         deferred_tools: self.history_access.definitions(),
                         tool_output_projector: Some(&self.history_access),
-                        model_metadata: self.model.context_metadata(),
+                        model_metadata: accounting_metadata.as_ref(),
                     })
                 })
                 .await;
             let Some(preparation) = preparation else {
                 return self.finish_cancellation(run).await;
             };
-            let prepared = match preparation {
+            let mut prepared = match preparation {
                 Ok(prepared) => prepared,
                 Err(source) => {
                     self.record_persisted(
@@ -106,27 +120,10 @@ where
                     return Err(AgentRuntimeError::Context(Box::new(source)));
                 }
             };
-            let history_context = prepared.omitted_history.map(|omitted| HistoryContext {
-                run_id: run.id().to_owned(),
-                through_sequence: omitted.readable_through_sequence,
-                checkpoint_id: omitted.checkpoint_id,
-            });
-            if let Some(window) = &prepared.request.provider_context
-                && (!capabilities.context.accepts_native_context
-                    || self.model.provider_context_identity() != Some(&window.identity))
-            {
-                self.record_persisted(
-                    run,
-                    RunEvent::RunFailed {
-                        message: "model does not accept the prepared provider context identity"
-                            .to_owned(),
-                    },
-                )
-                .await?;
-                return Err(AgentRuntimeError::ProviderContextMismatch);
-            }
-            for message in &prepared.request.messages {
-                if let Err(source) = message.validate() {
+            let prepared_event_count = run.events().len();
+            let mut recovered_overflow = false;
+            let (assembler, measurement, request_fixed, request_prefix, usage_baseline) = loop {
+                if let Err(source) = self.validate_model_request(&prepared.request, &capabilities) {
                     self.record_persisted(
                         run,
                         RunEvent::RunFailed {
@@ -134,14 +131,99 @@ where
                         },
                     )
                     .await?;
-                    return Err(AgentRuntimeError::ModelProtocol(source));
+                    return Err(source);
                 }
-            }
-            if let Err(source) = prepared.request.validate_provider_state_with(
-                self.model.provider_context_identity(),
-                capabilities.context.replay_requirement == ReplayRequirement::Required,
-                |state, content| self.model.validate_replay_state(state, content),
-            ) {
+                let request_fixed = prepared
+                    .request
+                    .replay_fixed_fingerprint()
+                    .map_err(AgentRuntimeError::ProviderReplay)?;
+                let request_prefix = prepared
+                    .request
+                    .replay_prefix_fingerprint(prepared.request.messages.len())
+                    .map_err(AgentRuntimeError::ProviderReplay)?;
+                let usage_baseline = self
+                    .context_manager
+                    .request_usage_baseline(accounting_metadata.as_ref(), &prepared.request);
+                let measurement = self.context_manager.measure_request(
+                    self.context_input(agent, run, accounting_metadata.as_ref()),
+                    &prepared.request,
+                );
+                if !recovered_overflow {
+                    self.begin_step_persisted(run).await?;
+                }
+
+                let mut assembler = ModelStreamAssembler::new();
+                let (response, emitted) = {
+                    let mut forwarding = ForwardStream {
+                        assembler: &mut assembler,
+                        sink,
+                        emitted: false,
+                    };
+                    let response = control
+                        .until_cancelled(|| {
+                            self.model.stream(prepared.request.clone(), &mut forwarding)
+                        })
+                        .await;
+                    (response, forwarding.emitted)
+                };
+                let Some(response) = response else {
+                    return self.finish_cancellation(run).await;
+                };
+                let Err(source) = response else {
+                    break (
+                        assembler,
+                        measurement,
+                        request_fixed,
+                        request_prefix,
+                        usage_baseline,
+                    );
+                };
+
+                // Only an explicit provider overflow before any observable stream
+                // event may retry. Recovery stays inside this model step, and no
+                // tool effect is authorized until the final response is durable.
+                if !recovered_overflow && !emitted && self.model.is_context_overflow(&source) {
+                    let recovery = control
+                        .until_cancelled(|| {
+                            let mut input =
+                                self.context_input(agent, run, accounting_metadata.as_ref());
+                            // The in-flight request marker is not settled
+                            // history and must never enter a checkpoint.
+                            input.events = &input.events[..prepared_event_count];
+                            self.context_manager
+                                .recover_overflow(input, &prepared.request)
+                        })
+                        .await;
+                    let Some(recovery) = recovery else {
+                        return self.finish_cancellation(run).await;
+                    };
+                    let candidate = match recovery {
+                        Ok(candidate) => candidate,
+                        Err(error) => {
+                            let error = AgentRuntimeError::ContextRecovery {
+                                overflow: source,
+                                recovery: Box::new(error),
+                            };
+                            self.record_persisted(
+                                run,
+                                RunEvent::RunFailed {
+                                    message: error.to_string(),
+                                },
+                            )
+                            .await?;
+                            return Err(error);
+                        }
+                    };
+                    if let Some(candidate) = candidate
+                        && candidate.request != prepared.request
+                        && self.request_is_smaller(&candidate.request, &prepared.request)
+                    {
+                        prepared = candidate;
+                        recovered_overflow = true;
+                        continue;
+                    }
+                }
+
                 self.record_persisted(
                     run,
                     RunEvent::RunFailed {
@@ -149,48 +231,14 @@ where
                     },
                 )
                 .await?;
-                return Err(AgentRuntimeError::ProviderReplay(source));
-            }
-            let request_fixed = prepared
-                .request
-                .replay_fixed_fingerprint()
-                .map_err(AgentRuntimeError::ProviderReplay)?;
+                return Err(AgentRuntimeError::Model(source));
+            };
+            let history_context = prepared.omitted_history.map(|omitted| HistoryContext {
+                run_id: run.id().to_owned(),
+                through_sequence: omitted.readable_through_sequence,
+                checkpoint_id: omitted.checkpoint_id,
+            });
             let prefix_bound = prepared.request.has_prefix_bound_state();
-            let request_prefix = prepared
-                .request
-                .replay_prefix_fingerprint(prepared.request.messages.len())
-                .map_err(AgentRuntimeError::ProviderReplay)?;
-            let estimated_input_tokens = self
-                .context_manager
-                .estimate_request_tokens(&prepared.request);
-
-            self.begin_step_persisted(run).await?;
-
-            let mut assembler = ModelStreamAssembler::new();
-            let mut forwarding = ForwardStream {
-                assembler: &mut assembler,
-                sink,
-            };
-            let response = control
-                .until_cancelled(|| self.model.stream(prepared.request, &mut forwarding))
-                .await;
-            let Some(response) = response else {
-                return self.finish_cancellation(run).await;
-            };
-            match response {
-                Ok(()) => {}
-                Err(source) => {
-                    self.record_persisted(
-                        run,
-                        RunEvent::RunFailed {
-                            message: source.to_string(),
-                        },
-                    )
-                    .await?;
-
-                    return Err(AgentRuntimeError::Model(source));
-                }
-            };
 
             let mut response = match assembler.finish() {
                 Ok(output) => output,
@@ -268,7 +316,15 @@ where
             }
             tracing::debug!(
                 run_id = run.id(),
-                estimated_input_tokens,
+                estimated_input_tokens = measurement
+                    .as_ref()
+                    .map(|value| value.estimated_input_tokens),
+                decision_input_tokens = measurement
+                    .as_ref()
+                    .map(|value| value.decision_input_tokens),
+                estimation_margin_tokens = measurement
+                    .as_ref()
+                    .map(|value| value.estimation_margin_tokens),
                 actual_input_tokens = response.usage.map(|usage| usage.input_tokens),
                 output_tokens = response.usage.map(|usage| usage.output_tokens),
                 cached_input_tokens = response.usage.and_then(|usage| usage.cached_input_tokens),
@@ -279,6 +335,18 @@ where
                 run,
                 RunEvent::ModelResponseReceived {
                     content: text.clone(),
+                    token_usage: response.usage.map(|usage| {
+                        Box::new(agent_core::token_usage::ModelUsageRecord {
+                            usage,
+                            baseline: if response.context_compacted
+                                || response.provider_context.is_some()
+                            {
+                                None
+                            } else {
+                                usage_baseline
+                            },
+                        })
+                    }),
                     response: Some(response.response.clone()),
                     provider_state: response.provider_state.clone(),
                     provider_continuation: response.provider_context.clone().map(|window| {
@@ -309,7 +377,9 @@ where
                     {
                         return Ok(run.status());
                     }
-                    let event = if response.response.finish_reason == ModelFinishReason::Stop {
+                    let event = if response.response.finish_reason == ModelFinishReason::Stop
+                        && !self.continue_after_response
+                    {
                         RunEvent::RunCompleted { answer: text }
                     } else {
                         RunEvent::InputRequested { prompt: text }
@@ -332,6 +402,65 @@ where
         Ok(run.status())
     }
 
+    pub(super) fn accounting_metadata(&self) -> Option<ModelContextMetadata> {
+        crate::model_context::model_accounting_metadata(&self.model)
+    }
+
+    pub(super) fn context_input<'a>(
+        &'a self,
+        agent: &'a Agent,
+        run: &'a AgentRun,
+        metadata: Option<&'a ModelContextMetadata>,
+    ) -> ContextInputRef<'a> {
+        ContextInputRef {
+            run_id: run.id(),
+            instructions: &agent.instructions,
+            events: run.events(),
+            tools: self.tools.definitions(),
+            deferred_tools: self.history_access.definitions(),
+            tool_output_projector: Some(&self.history_access),
+            model_metadata: metadata,
+        }
+    }
+
+    fn validate_model_request(
+        &self,
+        request: &ModelRequest,
+        capabilities: &ModelCapabilities,
+    ) -> Result<(), AgentRuntimeError<M::Error>> {
+        if let Some(window) = &request.provider_context
+            && (!capabilities.context.accepts_native_context
+                || self.model.provider_context_identity() != Some(&window.identity))
+        {
+            return Err(AgentRuntimeError::ProviderContextMismatch);
+        }
+        for message in &request.messages {
+            message
+                .validate()
+                .map_err(AgentRuntimeError::ModelProtocol)?;
+        }
+        request
+            .validate_provider_state_with(
+                self.model.provider_context_identity(),
+                capabilities.context.replay_requirement == ReplayRequirement::Required,
+                |state, content| self.model.validate_replay_state(state, content),
+            )
+            .map_err(AgentRuntimeError::ProviderReplay)
+    }
+
+    fn request_is_smaller(&self, candidate: &ModelRequest, rejected: &ModelRequest) -> bool {
+        // Use the same uncalibrated counter on both requests. A rewritten prefix
+        // invalidates the usage anchor, so comparing a calibrated before-value
+        // against a raw after-value would not establish an actual reduction.
+        match (
+            self.context_manager.estimate_request_tokens(candidate),
+            self.context_manager.estimate_request_tokens(rejected),
+        ) {
+            (Some(after), Some(before)) => after < before,
+            _ => false,
+        }
+    }
+
     async fn observe_model_output(
         &self,
         agent: &Agent,
@@ -339,6 +468,7 @@ where
         control: &RunControl,
         output: &ModelOutput,
     ) -> Result<bool, AgentRuntimeError<M::Error>> {
+        let accounting_metadata = self.accounting_metadata();
         let result = control
             .until_cancelled(|| {
                 self.context_manager.observe_response(
@@ -349,7 +479,7 @@ where
                         tools: self.tools.definitions(),
                         deferred_tools: self.history_access.definitions(),
                         tool_output_projector: Some(&self.history_access),
-                        model_metadata: self.model.context_metadata(),
+                        model_metadata: accounting_metadata.as_ref(),
                     },
                     output,
                 )
@@ -539,9 +669,11 @@ impl ModelStreamSink for DiscardStream {
 struct ForwardStream<'a> {
     assembler: &'a mut ModelStreamAssembler,
     sink: &'a mut dyn ModelStreamSink,
+    emitted: bool,
 }
 impl ModelStreamSink for ForwardStream<'_> {
     fn emit(&mut self, event: ModelStreamEvent) {
+        self.emitted = true;
         self.assembler.emit(event.clone());
         self.sink.emit(event);
     }

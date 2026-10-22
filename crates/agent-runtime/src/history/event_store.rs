@@ -266,6 +266,10 @@ fn event_matches_query(event: &RunEvent, folded_query: &str) -> bool {
         RunEvent::ModelResponseReceived { content, .. } | RunEvent::InputReceived { content } => {
             matches(content)
         }
+        RunEvent::RunResumed {
+            content,
+            interrupted_calls,
+        } => matches(content) || interrupted_calls.iter().any(|call| matches(&call.call_id)),
         RunEvent::ToolCallRequested {
             call_id,
             tool_name,

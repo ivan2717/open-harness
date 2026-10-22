@@ -1,0 +1,261 @@
+{
+  "calls": [
+    {
+      "call": 1,
+      "elapsed_ms": 1333,
+      "finish_reason": "stop",
+      "message_count": 1,
+      "provider_state_retained": true,
+      "provider_usage": {
+        "cached_input_tokens": 0,
+        "input_tokens": 105,
+        "output_tokens": 117
+      },
+      "raw_estimated_input_tokens": 113,
+      "raw_signed_error_percent": 7.619047619047614,
+      "request_fingerprint": "7ec2d21b4ffd2ea6",
+      "stage": "summary_seed_1",
+      "status": "succeeded",
+      "summary_mode": null
+    },
+    {
+      "call": 2,
+      "elapsed_ms": 620,
+      "finish_reason": "stop",
+      "message_count": 1,
+      "provider_state_retained": true,
+      "provider_usage": {
+        "cached_input_tokens": 0,
+        "input_tokens": 105,
+        "output_tokens": 35
+      },
+      "raw_estimated_input_tokens": 113,
+      "raw_signed_error_percent": 7.619047619047614,
+      "request_fingerprint": "7c7952713d707dd8",
+      "stage": "summary_seed_2",
+      "status": "succeeded",
+      "summary_mode": null
+    },
+    {
+      "call": 3,
+      "elapsed_ms": 16388,
+      "finish_reason": "stop",
+      "message_count": 1,
+      "provider_state_retained": true,
+      "provider_usage": {
+        "cached_input_tokens": 0,
+        "input_tokens": 578389,
+        "output_tokens": 1330
+      },
+      "raw_estimated_input_tokens": 514155,
+      "raw_signed_error_percent": -11.105674554668221,
+      "request_fingerprint": "acfbc6aa9be7ed23",
+      "stage": "automatic_summary_and_answer",
+      "status": "succeeded",
+      "summary_mode": "event_batch"
+    },
+    {
+      "call": 4,
+      "elapsed_ms": 12826,
+      "finish_reason": "stop",
+      "message_count": 1,
+      "provider_state_retained": true,
+      "provider_usage": {
+        "cached_input_tokens": 0,
+        "input_tokens": 578660,
+        "output_tokens": 783
+      },
+      "raw_estimated_input_tokens": 514445,
+      "raw_signed_error_percent": -11.097190059793316,
+      "request_fingerprint": "2477a058ef9a5be8",
+      "stage": "automatic_summary_and_answer",
+      "status": "succeeded",
+      "summary_mode": "event_batch"
+    },
+    {
+      "call": 5,
+      "elapsed_ms": 947,
+      "finish_reason": "stop",
+      "message_count": 3,
+      "provider_state_retained": true,
+      "provider_usage": {
+        "cached_input_tokens": 0,
+        "input_tokens": 524,
+        "output_tokens": 62
+      },
+      "raw_estimated_input_tokens": 572,
+      "raw_signed_error_percent": 9.160305343511443,
+      "request_fingerprint": "2483b894966f166a",
+      "stage": "automatic_summary_and_answer",
+      "status": "succeeded",
+      "summary_mode": null
+    },
+    {
+      "call": 6,
+      "elapsed_ms": 725,
+      "finish_reason": "stop",
+      "message_count": 5,
+      "provider_state_retained": true,
+      "provider_usage": {
+        "cached_input_tokens": 384,
+        "input_tokens": 569,
+        "output_tokens": 35
+      },
+      "raw_estimated_input_tokens": 662,
+      "raw_signed_error_percent": 16.344463971880497,
+      "request_fingerprint": "6d5c0c108757f1f0",
+      "stage": "restored_followup",
+      "status": "succeeded",
+      "summary_mode": null
+    }
+  ],
+  "checkpoints": [
+    {
+      "after_tokens": 658,
+      "before_tokens": 1145114,
+      "has_summary": true,
+      "id": "context:summary-boundary:4:b7f58b71b5590f3d171655a1ecd9aae4",
+      "pruned_results": 0,
+      "run_id": "summary-boundary",
+      "summary": {
+        "completed_work": [
+          "Identified NEEDLE_START = MINT-R4 near row00001284.",
+          "Identified NEEDLE_MIDDLE = COBALT-P8 near row00064215.",
+          "Identified NEEDLE_END = LARCH-V2 near row00127147."
+        ],
+        "constraints": [
+          "Return only one JSON object with keys start, middle, and end.",
+          "Use exact NEEDLE values.",
+          "Ignore filler records such as 'amber cedar slate'.",
+          "Do not include Markdown fences or commentary."
+        ],
+        "current_plan": [
+          "Return the exact marker values in a single JSON object with keys start, middle, and end."
+        ],
+        "current_state": "All three marker values have been found in the supplied synthetic records. The records explicitly request the three marker values as the requested JSON now.",
+        "decisions": [
+          "Treat 'amber cedar slate' rows as filler and ignore them.",
+          "Use the exact marker strings from the records."
+        ],
+        "failed_attempts": [
+          "A previous model_response_received content of 'ACK' did not satisfy the required JSON output and did not provide the needed marker values."
+        ],
+        "important_artifacts": [
+          "NEEDLE_START = MINT-R4",
+          "NEEDLE_MIDDLE = COBALT-P8",
+          "NEEDLE_END = LARCH-V2",
+          "Expected final shape: {\"start\":\"MINT-R4\",\"middle\":\"COBALT-P8\",\"end\":\"LARCH-V2\"}"
+        ],
+        "next_action": "Return {\"start\":\"MINT-R4\",\"middle\":\"COBALT-P8\",\"end\":\"LARCH-V2\"}.",
+        "objective": "Extract NEEDLE_START, NEEDLE_MIDDLE, and NEEDLE_END from the supplied synthetic records and return only a JSON object with keys start, middle, and end.",
+        "unresolved_questions": []
+      },
+      "through_sequence": 4
+    }
+  ],
+  "complete": true,
+  "measurements": [
+    {
+      "measurement": {
+        "decision_input_tokens": 658,
+        "estimated_delta_tokens": 572,
+        "estimated_input_tokens": 572,
+        "estimation_margin_tokens": 86,
+        "measured_input_tokens": null,
+        "raw_estimated_input_tokens": 572,
+        "source": "estimated"
+      },
+      "request_fingerprint": "2483b894966f166a",
+      "run_id": "summary-boundary"
+    },
+    {
+      "measurement": {
+        "decision_input_tokens": 628,
+        "estimated_delta_tokens": 90,
+        "estimated_input_tokens": 614,
+        "estimation_margin_tokens": 14,
+        "measured_input_tokens": 524,
+        "raw_estimated_input_tokens": 662,
+        "source": "provider_calibrated"
+      },
+      "request_fingerprint": "6d5c0c108757f1f0",
+      "run_id": "summary-boundary"
+    }
+  ],
+  "metadata": {
+    "compaction_target": 707789,
+    "compaction_threshold": 943718,
+    "context_window": 1048576,
+    "default_policy": true,
+    "estimation_margin_percent": 15,
+    "fixture_version": "ascii-fixed-records-v1",
+    "input_limit": 996147,
+    "max_model_calls": 10,
+    "mode": "summary",
+    "model": "deepseek-flash",
+    "output_reserve": 8192,
+    "protocol": "chat_completions",
+    "provenance": "Two synthetic historical user turns use two actual tiny seed assistant responses and their exact replay envelopes. Seed inputs differ from fixture inputs; seed usage is not attached to synthetic history. No provider usage is fabricated. Pre-compaction size is local/extrapolated; summary and main call usage is actual.",
+    "provider": "deepseek",
+    "reasoning": "high",
+    "rows": 128431
+  },
+  "passed": true,
+  "scenarios": [
+    {
+      "answer": "{\"start\":\"MINT-R4\",\"middle\":\"COBALT-P8\",\"end\":\"LARCH-V2\"}",
+      "before_measurement": {
+        "decision_input_tokens": 1145114,
+        "estimated_delta_tokens": 995751,
+        "estimated_input_tokens": 995751,
+        "estimation_margin_tokens": 149363,
+        "measured_input_tokens": null,
+        "raw_estimated_input_tokens": 995751,
+        "source": "estimated"
+      },
+      "elapsed_until_answer_ms": 30801,
+      "followup_answer": "{\"start\":\"MINT-R4\",\"middle\":\"COBALT-P8\",\"end\":\"LARCH-V2\"}",
+      "followup_error": null,
+      "followup_marker_retention": true,
+      "followup_measurement": {
+        "measurement": {
+          "decision_input_tokens": 628,
+          "estimated_delta_tokens": 90,
+          "estimated_input_tokens": 614,
+          "estimation_margin_tokens": 14,
+          "measured_input_tokens": 524,
+          "raw_estimated_input_tokens": 662,
+          "source": "provider_calibrated"
+        },
+        "request_fingerprint": "6d5c0c108757f1f0",
+        "run_id": "summary-boundary"
+      },
+      "followup_usage_calibrated_after_restore": true,
+      "marker_retention": true,
+      "original_log_unchanged": true,
+      "passed": true,
+      "provider_calls": 6,
+      "runtime_error": null,
+      "scenario": "summary",
+      "summary_checkpoints": 1
+    }
+  ],
+  "summary_fixture": {
+    "actual_precompaction_usage": null,
+    "before_measurement": {
+      "decision_input_tokens": 1145114,
+      "estimated_delta_tokens": 995751,
+      "estimated_input_tokens": 995751,
+      "estimation_margin_tokens": 149363,
+      "measured_input_tokens": null,
+      "raw_estimated_input_tokens": 995751,
+      "source": "estimated"
+    },
+    "bytes": 3981635,
+    "historical_turns": 2,
+    "original_events": 9,
+    "original_fingerprint": "c795911061734424",
+    "rows": 128431,
+    "synthetic_seed_usage_records": 0
+  }
+}

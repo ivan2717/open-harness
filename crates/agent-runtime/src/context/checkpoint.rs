@@ -13,6 +13,8 @@ use std::{
 pub struct ContextCheckpoint {
     pub run_id: String,
     pub id: String,
+    /// Last summarized event when `summary` is nonempty. For pruning-only
+    /// records this binds the source prefix and does not suppress any events.
     pub through_sequence: u64,
     /// Deterministic integrity fingerprint of the exact event prefix.
     pub source_fingerprint: String,
@@ -22,6 +24,30 @@ pub struct ContextCheckpoint {
     /// Estimated tokens in the resulting compacted request.
     pub after_tokens: usize,
     pub summary: ContextSummary,
+    /// Exact derived replacements, saved independently of model summarization.
+    /// Absent in older checkpoint records. Canonical events are never changed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pruning: Option<ContextPruning>,
+}
+
+impl ContextCheckpoint {
+    pub fn summary_through_sequence(&self) -> Option<u64> {
+        (!self.summary.is_empty()).then_some(self.through_sequence)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextPruning {
+    pub through_sequence: u64,
+    pub source_fingerprint: String,
+    pub replacements: Vec<PrunedToolOutput>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PrunedToolOutput {
+    pub sequence: u64,
+    pub content: String,
+    pub is_error: bool,
 }
 
 pub trait ContextCheckpointStore: Send + Sync {
@@ -32,6 +58,8 @@ pub trait ContextCheckpointStore: Send + Sync {
         checkpoint: ContextCheckpoint,
     ) -> impl Future<Output = Result<(), Self::Error>> + Send;
 
+    /// Return the latest saved projection. A pruning-only record may cover
+    /// a later event than a subsequently saved summary boundary.
     fn latest(
         &self,
         run_id: String,
@@ -67,10 +95,10 @@ impl ContextCheckpointStore for InMemoryContextCheckpointStore {
                 .map_err(|_| InMemoryContextCheckpointStoreError::LockPoisoned)?;
             let run_checkpoints = checkpoints.entry(checkpoint.run_id.clone()).or_default();
 
-            if let Some(existing) = run_checkpoints.iter().find(|existing| {
-                existing.id == checkpoint.id
-                    || existing.through_sequence == checkpoint.through_sequence
-            }) {
+            if let Some(existing) = run_checkpoints
+                .iter()
+                .find(|existing| existing.id == checkpoint.id)
+            {
                 if existing == &checkpoint {
                     return Ok(());
                 }
@@ -95,12 +123,9 @@ impl ContextCheckpointStore for InMemoryContextCheckpointStore {
             let checkpoints = inner
                 .read()
                 .map_err(|_| InMemoryContextCheckpointStoreError::LockPoisoned)?;
-            Ok(checkpoints.get(&run_id).and_then(|run_checkpoints| {
-                run_checkpoints
-                    .iter()
-                    .max_by_key(|checkpoint| checkpoint.through_sequence)
-                    .cloned()
-            }))
+            Ok(checkpoints
+                .get(&run_id)
+                .and_then(|run_checkpoints| run_checkpoints.last().cloned()))
         }
     }
 
@@ -173,7 +198,7 @@ pub(super) fn validate_checkpoint<CompactorError, CheckpointStoreError>(
             actual_run_id: checkpoint.run_id.clone(),
         });
     }
-    if checkpoint.summary.is_empty() {
+    if checkpoint.summary.is_empty() && checkpoint.pruning.is_none() {
         return Err(CompactingContextError::EmptyCheckpointSummary {
             checkpoint_id: checkpoint.id.clone(),
         });
@@ -199,7 +224,8 @@ pub(super) fn validate_checkpoint<CompactorError, CheckpointStoreError>(
         });
     }
 
-    if let Some(next) = events.get(index + 1)
+    if !checkpoint.summary.is_empty()
+        && let Some(next) = events.get(index + 1)
         && next.step == events[index].step
     {
         return Err(CompactingContextError::CheckpointSplitsStep {
@@ -207,6 +233,39 @@ pub(super) fn validate_checkpoint<CompactorError, CheckpointStoreError>(
             through_sequence: checkpoint.through_sequence,
             step: next.step,
         });
+    }
+
+    if let Some(pruning) = &checkpoint.pruning {
+        let Some(pruned_index) = events
+            .iter()
+            .position(|event| event.sequence == pruning.through_sequence)
+        else {
+            return Err(CompactingContextError::CheckpointSequenceMissing {
+                checkpoint_id: checkpoint.id.clone(),
+                through_sequence: pruning.through_sequence,
+            });
+        };
+        let actual_fingerprint = event_prefix_fingerprint(&events[..=pruned_index])
+            .map_err(CompactingContextError::Fingerprint)?;
+        if pruning.source_fingerprint != actual_fingerprint
+            || pruning.replacements.is_empty()
+            || pruning.replacements.iter().any(|replacement| {
+                !events[..=pruned_index].iter().any(|event| {
+                    event.sequence == replacement.sequence
+                        && matches!(
+                            event.event,
+                            agent_core::agent::RunEvent::ToolCallSucceeded { .. }
+                                | agent_core::agent::RunEvent::ToolCallFailed { .. }
+                        )
+                })
+            })
+        {
+            return Err(CompactingContextError::CheckpointHistoryMismatch {
+                checkpoint_id: checkpoint.id.clone(),
+                expected_fingerprint: pruning.source_fingerprint.clone(),
+                actual_fingerprint,
+            });
+        }
     }
 
     Ok(())

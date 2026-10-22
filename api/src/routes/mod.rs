@@ -1,6 +1,9 @@
 use crate::{
     AppState,
-    contracts::{AppConfig, CreateRunInput, RunDetail, RunSummary, SubmitInput},
+    contracts::{
+        AppConfig, ApprovalInput, ConfigureModel, CreateRunInput, ModelInfo, ResumeRunInput,
+        RevertInput, RunDetail, RunSummary, SubmitInput,
+    },
     service::ServiceError,
 };
 use axum::{
@@ -21,10 +24,17 @@ pub(crate) fn router(state: AppState) -> Router {
     Router::new()
         .merge(health_router::health_router())
         .route("/config", get(config))
+        .route("/models", post(configure_model))
         .route("/runs", get(list).post(create))
         .route("/runs/{id}", get(detail))
         .route("/runs/{id}/cancel", post(cancel))
         .route("/runs/{id}/input", post(input))
+        .route("/runs/{id}/resume", post(resume))
+        .route("/runs/{id}/workspace", get(workspace))
+        .route("/runs/{id}/approvals/{approval}", post(approve))
+        .route("/runs/{id}/revert", post(revert))
+        .route("/runs/{id}/compact", post(compact))
+        .route("/runs/{id}/compact/cancel", post(cancel_compaction))
         .route("/runs/{id}/events", get(events))
         .layer(middleware::from_fn_with_state(state.clone(), authorize))
         .with_state(state)
@@ -54,6 +64,24 @@ async fn authorize(State(state): State<AppState>, request: Request, next: Next) 
 }
 async fn config(State(state): State<AppState>) -> Json<AppConfig> {
     Json(state.config())
+}
+async fn configure_model(
+    State(state): State<AppState>,
+    Json(input): Json<ConfigureModel>,
+) -> Result<Json<ModelInfo>, ServiceError> {
+    state.configure_model(input).await.map(Json)
+}
+async fn compact(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<RunDetail>, ServiceError> {
+    state.compact(&id).await.map(Json)
+}
+async fn cancel_compaction(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<RunDetail>, ServiceError> {
+    state.cancel_compaction(&id).await.map(Json)
 }
 async fn list(State(state): State<AppState>) -> Json<Vec<RunSummary>> {
     Json(state.list())
@@ -85,6 +113,36 @@ async fn input(
     Json(input): Json<SubmitInput>,
 ) -> Result<Json<RunDetail>, ServiceError> {
     state.input(&id, input.message).await.map(Json)
+}
+async fn resume(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(input): Json<ResumeRunInput>,
+) -> Result<Json<RunDetail>, ServiceError> {
+    state.resume(&id, input.message).await.map(Json)
+}
+async fn workspace(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<agent_local::WorkspaceReview>, ServiceError> {
+    state.workspace_review(&id).await.map(Json)
+}
+async fn approve(
+    State(state): State<AppState>,
+    Path((id, approval)): Path<(String, String)>,
+    Json(input): Json<ApprovalInput>,
+) -> Result<Json<agent_local::WorkspaceReview>, ServiceError> {
+    state
+        .approve_command(&id, &approval, input.allow)
+        .await
+        .map(Json)
+}
+async fn revert(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(input): Json<RevertInput>,
+) -> Result<Json<agent_local::WorkspaceReview>, ServiceError> {
+    state.revert_file(&id, &input.path).await.map(Json)
 }
 async fn events(
     State(state): State<AppState>,

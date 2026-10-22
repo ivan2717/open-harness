@@ -12,3 +12,4 @@ tokio = { workspace = true, features = ["macros", "rt", "sync"] }
 
 [dev-dependencies]
 agent-adapters.workspace = true
+tokio = { workspace = true, features = ["process", "io-util", "time"] }

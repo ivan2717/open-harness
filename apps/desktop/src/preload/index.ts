@@ -1,5 +1,12 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
-import type { AppConfig, DesktopBridge, RunDetail, RunSummary } from '../shared/contracts'
+import type {
+  AppConfig,
+  ConfigureModelResult,
+  DesktopBridge,
+  RunDetail,
+  RunSummary,
+  WorkspaceReview,
+} from '../shared/contracts'
 import { channels, type BridgeRequest } from '../main/protocol'
 
 const invoke = <T>(request: BridgeRequest): Promise<T> =>
@@ -11,7 +18,16 @@ const bridge: DesktopBridge = {
   listRuns: () => invoke<RunSummary[]>({ operation: 'listRuns' }),
   getRun: (id) => invoke<RunDetail>({ operation: 'getRun', id }),
   createRun: (input) => invoke<RunDetail>({ operation: 'createRun', input }),
+  chooseWorkspace: () => ipcRenderer.invoke(channels.chooseWorkspace) as Promise<string | null>,
+  getWorkspace: (id) => invoke<WorkspaceReview>({ operation: 'getWorkspace', id }),
+  approveCommand: (id, approvalId, allow) =>
+    invoke<WorkspaceReview>({ operation: 'approveCommand', id, approvalId, allow }),
+  revertFile: (id, path) => invoke<WorkspaceReview>({ operation: 'revertFile', id, path }),
+  resumeRun: (id, message) => invoke<RunDetail>({ operation: 'resumeRun', id, message }),
   cancelRun: (id) => invoke<RunDetail>({ operation: 'cancelRun', id }),
+  compactRun: (id) => invoke<RunDetail>({ operation: 'compactRun', id }),
+  cancelCompaction: (id) => invoke<RunDetail>({ operation: 'cancelCompaction', id }),
+  configureModel: (input) => invoke<ConfigureModelResult>({ operation: 'configureModel', input }),
   submitInput: (id, message) => invoke<RunDetail>({ operation: 'submitInput', id, message }),
   watchRun: (id, listener, onError) => {
     const token = `${Date.now()}-${nextSubscription++}-${Math.random().toString(36).slice(2)}`

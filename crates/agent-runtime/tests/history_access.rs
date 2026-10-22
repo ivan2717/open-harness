@@ -138,6 +138,7 @@ async fn history_search_matches_original_text_without_json_escaping() {
     run.record(RunEvent::ModelResponseReceived {
         response: None,
         provider_continuation: None,
+        token_usage: None,
         provider_state: None,
         content: "Inspect the archived files.".to_owned(),
     })
@@ -248,6 +249,7 @@ async fn oversized_history_events_can_be_reassembled_from_bounded_chunks() {
     run.record(RunEvent::ModelResponseReceived {
         response: None,
         provider_continuation: None,
+        token_usage: None,
         provider_state: None,
         content: "Read the large result.".to_owned(),
     })
@@ -268,6 +270,7 @@ async fn oversized_history_events_can_be_reassembled_from_bounded_chunks() {
     run.record(RunEvent::ModelResponseReceived {
         response: None,
         provider_continuation: None,
+        token_usage: None,
         provider_state: None,
         content: "the checkpoint advanced after the first history chunk".to_owned(),
     })
@@ -420,6 +423,7 @@ async fn a_narrow_history_read_looks_up_requests_to_filter_history_results() {
     run.record(RunEvent::ModelResponseReceived {
         response: None,
         provider_continuation: None,
+        token_usage: None,
         provider_state: None,
         content: "Read current and archived evidence.".to_owned(),
     })
@@ -496,6 +500,7 @@ fn historical_run() -> AgentRun {
     run.record(RunEvent::ModelResponseReceived {
         response: None,
         provider_continuation: None,
+        token_usage: None,
         provider_state: None,
         content: "I will inspect the archived state.".to_owned(),
     })
@@ -515,6 +520,7 @@ fn historical_run() -> AgentRun {
     run.record(RunEvent::ModelResponseReceived {
         response: None,
         provider_continuation: None,
+        token_usage: None,
         provider_state: None,
         content: "newest-secret must remain past the checkpoint".to_owned(),
     })

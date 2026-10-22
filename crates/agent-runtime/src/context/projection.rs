@@ -1,4 +1,7 @@
-use super::{ContextCheckpoint, ContextInputRef, OmittedHistory, PreparedContext, TokenCounter};
+use super::{
+    ContextCheckpoint, ContextInputRef, ContextPruning, OmittedHistory, PreparedContext,
+    PrunedToolOutput, TokenCounter,
+};
 use crate::{ContentBlock, ModelMessage, ModelRequest, ModelRole, ToolOutputProjector};
 use agent_core::agent::{RunEvent, RunEventEnvelope};
 use std::collections::HashMap;
@@ -9,15 +12,13 @@ pub(super) fn build_compacted_request(
     tail: &[RunEventEnvelope],
     projection: &ToolOutputProjection<'_>,
     include_deferred_tools: bool,
+    preserve_all_users: bool,
 ) -> ModelRequest {
     let mut messages = Vec::new();
-    if let Some(checkpoint) = checkpoint {
-        // User-authored requirements are canonical. Reinsert the covered inputs
-        // verbatim, in order; inputs in the active tail are projected only once.
+    if let Some(checkpoint) = checkpoint.filter(|checkpoint| !checkpoint.summary.is_empty()) {
         messages.extend(user_messages(
-            input
-                .events
-                .iter()
+            protected_user_events(input, preserve_all_users)
+                .into_iter()
                 .filter(|event| event.sequence <= checkpoint.through_sequence),
         ));
         messages.push(ModelMessage::summary(
@@ -48,17 +49,38 @@ fn user_messages<'a>(
         .into_iter()
         .filter_map(|envelope| match &envelope.event {
             RunEvent::RunStarted { instruction } => Some(ModelMessage::user(instruction.clone())),
-            RunEvent::InputReceived { content } => Some(ModelMessage::user(content.clone())),
+            RunEvent::InputReceived { content } | RunEvent::RunResumed { content, .. } => {
+                Some(ModelMessage::user(content.clone()))
+            }
             _ => None,
         })
 }
 
-/// The irreducible user requirements, fixed instructions, and business tools.
+fn protected_user_events(input: ContextInputRef<'_>, preserve_all: bool) -> Vec<&RunEventEnvelope> {
+    let mut users = input.events.iter().filter(|event| {
+        matches!(
+            event.event,
+            RunEvent::RunStarted { .. }
+                | RunEvent::InputReceived { .. }
+                | RunEvent::RunResumed { .. }
+        )
+    });
+    if preserve_all {
+        users.collect()
+    } else {
+        users.next_back().into_iter().collect()
+    }
+}
+
+/// The latest user input (or all inputs when opted in), fixed instructions, and tools.
 /// A summary is never allowed to make these inputs disappear to satisfy a limit.
-pub(super) fn protected_request(input: ContextInputRef<'_>) -> ModelRequest {
+pub(super) fn protected_request(
+    input: ContextInputRef<'_>,
+    preserve_all_users: bool,
+) -> ModelRequest {
     ModelRequest {
         instructions: input.instructions.to_owned(),
-        messages: user_messages(input.events).collect(),
+        messages: user_messages(protected_user_events(input, preserve_all_users)).collect(),
         tools: input.tools.to_vec(),
         max_output_tokens: None,
         provider_context: None,
@@ -70,15 +92,17 @@ pub(super) fn protected_request(input: ContextInputRef<'_>) -> ModelRequest {
 pub(super) fn protected_user_context(
     input: ContextInputRef<'_>,
     through_sequence: u64,
+    preserve_all_users: bool,
 ) -> Option<ModelMessage> {
-    let inputs = input
-        .events
-        .iter()
+    let inputs = protected_user_events(input, preserve_all_users)
+        .into_iter()
         .filter(|event| event.sequence <= through_sequence)
         .filter_map(|envelope| {
             let content = match &envelope.event {
                 RunEvent::RunStarted { instruction } => instruction,
-                RunEvent::InputReceived { content } => content,
+                RunEvent::InputReceived { content } | RunEvent::RunResumed { content, .. } => {
+                    content
+                }
                 _ => return None,
             };
             Some(serde_json::json!({"sequence": envelope.sequence, "content": content}))
@@ -95,11 +119,8 @@ pub(super) fn protected_user_context(
     )))
 }
 
-pub(super) fn uncompacted_context(
-    input: ContextInputRef<'_>,
-    max_tool_output_chars: usize,
-) -> PreparedContext {
-    let projection = ToolOutputProjection::new(input, max_tool_output_chars);
+pub(super) fn uncompacted_context(input: ContextInputRef<'_>) -> PreparedContext {
+    let projection = ToolOutputProjection::restored(input, None);
     let omitted_history = projected_omission(input.run_id, None, input.events, &projection);
     let request = build_compacted_request(
         input,
@@ -107,6 +128,7 @@ pub(super) fn uncompacted_context(
         input.events,
         &projection,
         omitted_history.is_some(),
+        false,
     );
     PreparedContext {
         request,
@@ -140,7 +162,7 @@ pub(super) fn projected_omission(
         .rev()
         .find(|event| projection.omits_details(event))
         .map(|event| event.sequence);
-    let checkpoint_through = checkpoint.map(|checkpoint| checkpoint.through_sequence);
+    let checkpoint_through = checkpoint.and_then(ContextCheckpoint::summary_through_sequence);
     let readable_through_sequence = match (checkpoint_through, clipped_through) {
         (Some(checkpoint), Some(clipped)) => checkpoint.max(clipped),
         (Some(checkpoint), None) => checkpoint,
@@ -245,6 +267,8 @@ pub(super) fn select_compaction_boundary<N: TokenCounter>(
 
 pub(super) struct ToolOutputProjection<'a> {
     max_chars: usize,
+    prune_new: bool,
+    replacements: HashMap<u64, PrunedToolOutput>,
     tool_calls: HashMap<&'a str, &'a str>,
     projector: Option<&'a dyn ToolOutputProjector>,
 }
@@ -263,8 +287,59 @@ impl<'a> ToolOutputProjection<'a> {
             .collect();
         Self {
             max_chars,
+            prune_new: true,
+            replacements: HashMap::new(),
             tool_calls,
             projector: input.tool_output_projector,
+        }
+    }
+
+    pub(super) fn restored(input: ContextInputRef<'a>, pruning: Option<&ContextPruning>) -> Self {
+        let mut projection = Self::new(input, usize::MAX);
+        projection.prune_new = false;
+        projection.replacements = pruning
+            .into_iter()
+            .flat_map(|pruning| &pruning.replacements)
+            .map(|replacement| (replacement.sequence, replacement.clone()))
+            .collect();
+        projection
+    }
+
+    pub(super) fn enable_pruning(&mut self, max_chars: usize) {
+        self.max_chars = max_chars;
+        self.prune_new = true;
+    }
+
+    pub(super) fn replacements(&self, events: &[RunEventEnvelope]) -> Vec<PrunedToolOutput> {
+        events
+            .iter()
+            .filter(|event| self.omits_details(event))
+            .filter_map(|event| {
+                let (content, is_error) = self.output(event)?;
+                Some(PrunedToolOutput {
+                    sequence: event.sequence,
+                    content,
+                    is_error,
+                })
+            })
+            .collect()
+    }
+
+    fn output(&self, event: &RunEventEnvelope) -> Option<(String, bool)> {
+        if let Some(replacement) = self.replacements.get(&event.sequence) {
+            return Some((replacement.content.clone(), replacement.is_error));
+        }
+        match &event.event {
+            RunEvent::ToolCallSucceeded { call_id, output } => {
+                Some(match self.bound_output(call_id, output) {
+                    Ok(output) => (output, false),
+                    Err(error) => (error, true),
+                })
+            }
+            RunEvent::ToolCallFailed { message, .. } => {
+                Some((clip_middle(message, self.max_chars), true))
+            }
+            _ => None,
         }
     }
 
@@ -278,6 +353,21 @@ impl<'a> ToolOutputProjection<'a> {
                 }
                 RunEvent::InputReceived { content } => {
                     messages.push(ModelMessage::user(content.clone()))
+                }
+                RunEvent::RunResumed {
+                    content,
+                    interrupted_calls,
+                } => {
+                    // Native windows may already contain the assistant calls;
+                    // their missing results must still appear in this tail.
+                    for call in interrupted_calls {
+                        messages.push(ModelMessage::tool_result(
+                            call.call_id.clone(),
+                            call.outcome.explanation().into(),
+                            true,
+                        ));
+                    }
+                    messages.push(ModelMessage::user(content.clone()));
                 }
                 RunEvent::ModelResponseReceived {
                     content,
@@ -323,21 +413,18 @@ impl<'a> ToolOutputProjection<'a> {
                         assistant_step = Some(envelope.step);
                     }
                 }
-                RunEvent::ToolCallSucceeded { call_id, output } => {
-                    let (content, is_error) = match self.bound_output(call_id, output) {
-                        Ok(output) => (output, false),
-                        Err(error) => (error, true),
-                    };
+                RunEvent::ToolCallSucceeded { call_id, .. } => {
+                    let (content, is_error) = self.output(envelope).expect("tool result");
                     messages.push(ModelMessage::tool_result(
                         call_id.clone(),
                         content,
                         is_error,
                     ));
                 }
-                RunEvent::ToolCallFailed { call_id, message } => {
+                RunEvent::ToolCallFailed { call_id, .. } => {
                     messages.push(ModelMessage::tool_result(
                         call_id.clone(),
-                        clip_middle(message, self.max_chars),
+                        self.output(envelope).expect("tool failure").0,
                         true,
                     ))
                 }
@@ -352,6 +439,12 @@ impl<'a> ToolOutputProjection<'a> {
     }
 
     fn omits_details(&self, event: &RunEventEnvelope) -> bool {
+        if self.replacements.contains_key(&event.sequence) {
+            return true;
+        }
+        if !self.prune_new {
+            return false;
+        }
         match &event.event {
             RunEvent::ToolCallSucceeded { call_id, output } => {
                 if output.chars().count() > self.max_chars {
@@ -375,6 +468,9 @@ impl<'a> ToolOutputProjection<'a> {
     }
 
     fn bound_output(&self, call_id: &str, output: &str) -> Result<String, String> {
+        if !self.prune_new {
+            return Ok(output.to_owned());
+        }
         if let Some(projector) = self.projector
             && let Some(tool_name) = self.tool_calls.get(call_id)
             && let Some(projected) = projector.project_output(tool_name, output, self.max_chars)
@@ -392,24 +488,26 @@ impl<'a> ToolOutputProjection<'a> {
     }
 
     pub(super) fn clipped_event(&self, event: &RunEventEnvelope) -> RunEventEnvelope {
+        let output = self.output(event);
         let mut event = event.clone();
         event.event = event.event.without_provider_state();
-        match &mut event.event {
-            RunEvent::ToolCallSucceeded { call_id, output } => {
-                match self.bound_output(call_id, output) {
-                    Ok(bounded) => *output = bounded,
-                    Err(message) => {
-                        event.event = RunEvent::ToolCallFailed {
-                            call_id: call_id.clone(),
-                            message,
-                        }
-                    }
+        if let Some((content, is_error)) = output {
+            let call_id = match &event.event {
+                RunEvent::ToolCallSucceeded { call_id, .. }
+                | RunEvent::ToolCallFailed { call_id, .. } => call_id.clone(),
+                _ => unreachable!(),
+            };
+            event.event = if is_error {
+                RunEvent::ToolCallFailed {
+                    call_id,
+                    message: content,
                 }
-            }
-            RunEvent::ToolCallFailed { message, .. } => {
-                *message = clip_middle(message, self.max_chars)
-            }
-            _ => {}
+            } else {
+                RunEvent::ToolCallSucceeded {
+                    call_id,
+                    output: content,
+                }
+            };
         }
         event
     }

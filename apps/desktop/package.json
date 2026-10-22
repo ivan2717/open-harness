@@ -19,7 +19,9 @@
     "package:dir": "node scripts/backend.mjs release && npm run build && electron-builder --dir",
     "test:e2e": "npm run build && node scripts/backend.mjs debug && node tests/e2e/desktop.mjs",
     "format": "prettier --write .",
-    "format:check": "prettier --check ."
+    "format:check": "prettier --check .",
+    "test:e2e:models": "npm run build && node scripts/backend.mjs debug && node tests/e2e/models.mjs",
+    "test:e2e:workspace": "npm run build && node scripts/backend.mjs debug && node tests/e2e/workspace.mjs"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.90.0",

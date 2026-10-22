@@ -41,6 +41,7 @@ pub(super) fn event_type(event: &RunEvent) -> &'static str {
         RunEvent::ToolCallFailed { .. } => "tool_call_failed",
         RunEvent::InputRequested { .. } => "input_requested",
         RunEvent::InputReceived { .. } => "input_received",
+        RunEvent::RunResumed { .. } => "run_resumed",
         RunEvent::RunCompleted { .. } => "run_completed",
         RunEvent::RunFailed { .. } => "run_failed",
         RunEvent::RunCancelled => "run_cancelled",

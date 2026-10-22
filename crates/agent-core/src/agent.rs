@@ -209,6 +209,57 @@ impl AgentRun {
         self.tool_call_ids.contains(call_id)
     }
 
+    /// Calls without a durable result at the interrupted boundary. Canonical
+    /// responses may contain calls whose declaration was never committed, so
+    /// the pending-call set alone is insufficient for protocol-safe recovery.
+    pub fn interrupted_tool_calls(&self) -> Vec<InterruptedToolCall> {
+        let events: Vec<_> = self
+            .events
+            .iter()
+            .rev()
+            .take_while(|entry| {
+                entry.step == self.current_step
+                    && !matches!(entry.event, RunEvent::RunResumed { .. })
+            })
+            .collect();
+        let mut calls = Vec::new();
+        let mut declared = HashSet::new();
+        let mut resolved = HashSet::new();
+        for entry in events.into_iter().rev() {
+            match &entry.event {
+                RunEvent::ModelResponseReceived {
+                    response: Some(response),
+                    ..
+                } => {
+                    calls.extend(response.calls().into_iter().map(|call| call.id));
+                }
+                RunEvent::ToolCallRequested { call_id, .. } => {
+                    declared.insert(call_id.as_str());
+                    if !calls.contains(call_id) {
+                        calls.push(call_id.clone());
+                    }
+                }
+                RunEvent::ToolCallSucceeded { call_id, .. }
+                | RunEvent::ToolCallFailed { call_id, .. } => {
+                    resolved.insert(call_id.as_str());
+                }
+                _ => {}
+            }
+        }
+        calls
+            .into_iter()
+            .filter(|id| !resolved.contains(id.as_str()))
+            .map(|call_id| InterruptedToolCall {
+                outcome: if declared.contains(call_id.as_str()) {
+                    InterruptedToolOutcome::Unknown
+                } else {
+                    InterruptedToolOutcome::NotStarted
+                },
+                call_id,
+            })
+            .collect()
+    }
+
     /// Whether execution is at a boundary that can safely start a new model step.
     pub fn can_begin_step(&self) -> bool {
         self.validate_begin_step().is_ok()
@@ -290,6 +341,16 @@ impl AgentRun {
     }
 
     fn validate_event(&self, event: &RunEvent) -> Result<(RunStatus, StepPhase), AgentRunError> {
+        if let RunEvent::RunResumed {
+            content,
+            interrupted_calls,
+        } = event
+        {
+            if content.trim().is_empty() || *interrupted_calls != self.interrupted_tool_calls() {
+                return Err(AgentRunError::InvalidResume);
+            }
+            return Ok((RunStatus::Running, StepPhase::Ready));
+        }
         if matches!(
             event,
             RunEvent::RunStarted { .. } | RunEvent::ModelRequestStarted
@@ -438,8 +499,10 @@ impl AgentRun {
                 return Err(AgentRunError::CanonicalToolCallMismatch);
             }
             RunEvent::InputRequested { prompt }
-                if response.finish_reason != ModelFinishReason::InputRequired
-                    || response.text() != *prompt =>
+                if !matches!(
+                    response.finish_reason,
+                    ModelFinishReason::InputRequired | ModelFinishReason::Stop
+                ) || response.text() != *prompt =>
             {
                 return Err(AgentRunError::InvalidCanonicalResponse);
             }
@@ -487,6 +550,14 @@ impl AgentRun {
             | RunEvent::ToolCallFailed { call_id, .. } => {
                 self.pending_tool_calls.remove(call_id);
             }
+            RunEvent::RunResumed {
+                interrupted_calls, ..
+            } => {
+                self.pending_tool_calls.clear();
+                for call in interrupted_calls {
+                    self.tool_call_ids.insert(call.call_id.clone());
+                }
+            }
             _ => {}
         }
         self.current_step = envelope.step;
@@ -522,6 +593,10 @@ pub enum RunEvent {
         provider_state: Option<crate::provider_state::ProviderResponseState>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         provider_continuation: Option<Box<crate::provider_state::ProviderContinuation>>,
+        /// Successful request usage and its verifiable calibration identity.
+        /// Legacy logs omit this field and remain readable.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        token_usage: Option<Box<crate::token_usage::ModelUsageRecord>>,
     },
     ToolCallRequested {
         call_id: String,
@@ -542,6 +617,13 @@ pub enum RunEvent {
     InputReceived {
         content: String,
     },
+    /// Explicit user continuation. Unresolved calls are settled atomically as
+    /// interrupted, never replayed. This also abandons an unfinished model
+    /// request and permits a fresh step after a terminal or interrupted run.
+    RunResumed {
+        content: String,
+        interrupted_calls: Vec<InterruptedToolCall>,
+    },
     RunCompleted {
         answer: String,
     },
@@ -559,6 +641,7 @@ impl RunEvent {
             response,
             provider_state,
             provider_continuation,
+            token_usage,
             ..
         } = &mut event
         {
@@ -568,6 +651,7 @@ impl RunEvent {
             *response = None;
             *provider_state = None;
             *provider_continuation = None;
+            *token_usage = None;
         }
         event
     }
@@ -582,6 +666,7 @@ impl RunEvent {
             Self::ToolCallFailed { .. } => "ToolCallFailed",
             Self::InputRequested { .. } => "InputRequested",
             Self::InputReceived { .. } => "InputReceived",
+            Self::RunResumed { .. } => "RunResumed",
             Self::RunCompleted { .. } => "RunCompleted",
             Self::RunFailed { .. } => "RunFailed",
             Self::RunCancelled => "RunCancelled",
@@ -592,6 +677,7 @@ impl RunEvent {
         match self {
             Self::RunStarted { .. }
             | Self::ModelRequestStarted
+            | Self::RunResumed { .. }
             | Self::RunFailed { .. }
             | Self::RunCancelled => false,
 
@@ -602,6 +688,34 @@ impl RunEvent {
             | Self::InputRequested { .. }
             | Self::InputReceived { .. }
             | Self::RunCompleted { .. } => true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InterruptedToolCall {
+    pub call_id: String,
+    pub outcome: InterruptedToolOutcome,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InterruptedToolOutcome {
+    /// No execution declaration was committed, so the runtime never invoked it.
+    NotStarted,
+    /// Effects may exist despite the absence of a durable tool result.
+    Unknown,
+}
+
+impl InterruptedToolOutcome {
+    pub fn explanation(self) -> &'static str {
+        match self {
+            Self::NotStarted => {
+                "This tool call was not started because execution was interrupted. It was not retried during recovery."
+            }
+            Self::Unknown => {
+                "Execution was interrupted before a durable result was recorded. This operation may have partially or fully taken effect. It was not retried. Inspect the current files or process state before deciding whether another operation is necessary."
+            }
         }
     }
 }
@@ -707,6 +821,7 @@ impl Error for AgentRunHistoryError {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentRunError {
+    InvalidResume,
     InvalidCanonicalResponse,
     CanonicalToolCallMismatch,
     RunNotRunning {
@@ -742,6 +857,7 @@ pub enum AgentRunError {
 impl fmt::Display for AgentRunError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::InvalidResume => formatter.write_str("resume requires nonempty input and the exact unresolved tool outcomes from the current run"),
             Self::InvalidCanonicalResponse => formatter.write_str(
                 "canonical response disagrees with its visible text or completion event",
             ),

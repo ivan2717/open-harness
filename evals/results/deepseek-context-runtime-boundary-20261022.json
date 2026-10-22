@@ -1,0 +1,200 @@
+{
+  "calls": [
+    {
+      "call": 1,
+      "elapsed_ms": 1329,
+      "finish_reason": "stop",
+      "message_count": 1,
+      "provider_state_retained": true,
+      "provider_usage": {
+        "cached_input_tokens": 0,
+        "input_tokens": 105,
+        "output_tokens": 84
+      },
+      "raw_estimated_input_tokens": 113,
+      "raw_signed_error_percent": 7.619047619047614,
+      "request_fingerprint": "7ec2d21b4ffd2ea6",
+      "stage": "summary_seed_1",
+      "status": "succeeded",
+      "summary_mode": null
+    },
+    {
+      "call": 2,
+      "elapsed_ms": 595,
+      "finish_reason": "stop",
+      "message_count": 1,
+      "provider_state_retained": true,
+      "provider_usage": {
+        "cached_input_tokens": 0,
+        "input_tokens": 105,
+        "output_tokens": 52
+      },
+      "raw_estimated_input_tokens": 113,
+      "raw_signed_error_percent": 7.619047619047614,
+      "request_fingerprint": "7c7952713d707dd8",
+      "stage": "summary_seed_2",
+      "status": "succeeded",
+      "summary_mode": null
+    },
+    {
+      "call": 3,
+      "elapsed_ms": 896,
+      "finish_reason": "tool_calls",
+      "message_count": 1,
+      "provider_state_retained": true,
+      "provider_usage": {
+        "cached_input_tokens": 0,
+        "input_tokens": 348,
+        "output_tokens": 26
+      },
+      "raw_estimated_input_tokens": 148,
+      "raw_signed_error_percent": -57.47126436781609,
+      "request_fingerprint": "24090e50894c5be9",
+      "stage": "pressure_tool_pruning",
+      "status": "succeeded",
+      "summary_mode": null
+    },
+    {
+      "call": 4,
+      "elapsed_ms": 871,
+      "finish_reason": "stop",
+      "message_count": 3,
+      "provider_state_retained": true,
+      "provider_usage": {
+        "cached_input_tokens": 256,
+        "input_tokens": 8654,
+        "output_tokens": 112
+      },
+      "raw_estimated_input_tokens": 8188,
+      "raw_signed_error_percent": -5.384793159232726,
+      "request_fingerprint": "74163a90751feaa3",
+      "stage": "pressure_tool_pruning",
+      "status": "succeeded",
+      "summary_mode": null
+    }
+  ],
+  "checkpoints": [
+    {
+      "after_tokens": 9594,
+      "before_tokens": 1145129,
+      "has_summary": false,
+      "id": "context-pruned:pruning-boundary:4:2ac2b1b9bc0f1e40f11095cdd4a8ca1e",
+      "pruned_results": 1,
+      "run_id": "pruning-boundary",
+      "summary": {
+        "completed_work": [],
+        "constraints": [],
+        "current_plan": [],
+        "current_state": "",
+        "decisions": [],
+        "failed_attempts": [],
+        "important_artifacts": [],
+        "next_action": "",
+        "objective": "",
+        "unresolved_questions": []
+      },
+      "through_sequence": 4
+    }
+  ],
+  "complete": true,
+  "measurements": [
+    {
+      "measurement": {
+        "decision_input_tokens": 171,
+        "estimated_delta_tokens": 148,
+        "estimated_input_tokens": 148,
+        "estimation_margin_tokens": 23,
+        "measured_input_tokens": null,
+        "raw_estimated_input_tokens": 148,
+        "source": "estimated"
+      },
+      "request_fingerprint": "24090e50894c5be9",
+      "run_id": "pruning-boundary"
+    },
+    {
+      "measurement": {
+        "decision_input_tokens": 9594,
+        "estimated_delta_tokens": 8040,
+        "estimated_input_tokens": 8388,
+        "estimation_margin_tokens": 1206,
+        "measured_input_tokens": 348,
+        "raw_estimated_input_tokens": 8188,
+        "source": "provider_calibrated"
+      },
+      "request_fingerprint": "74163a90751feaa3",
+      "run_id": "pruning-boundary"
+    }
+  ],
+  "metadata": {
+    "compaction_target": 707789,
+    "compaction_threshold": 943718,
+    "context_window": 1048576,
+    "default_policy": true,
+    "estimation_margin_percent": 15,
+    "fixture_version": "ascii-fixed-records-v1",
+    "input_limit": 996147,
+    "max_model_calls": 10,
+    "mode": "all",
+    "model": "deepseek-flash",
+    "output_reserve": 8192,
+    "protocol": "chat_completions",
+    "provenance": "Two synthetic historical user turns use two actual tiny seed assistant responses and their exact replay envelopes. Seed inputs differ from fixture inputs; seed usage is not attached to synthetic history. No provider usage is fabricated. Pre-compaction size is local/extrapolated; summary and main call usage is actual.",
+    "provider": "deepseek",
+    "reasoning": "high",
+    "rows": 128431
+  },
+  "passed": false,
+  "scenarios": [
+    {
+      "elapsed_ms": 2,
+      "error": "context management failed: protected user requirements, instructions, and tools need an estimated 1679704 tokens, exceeding the input limit of 996147; they cannot be discarded by compaction",
+      "expected": "oversized latest user input is rejected locally without a provider call",
+      "input_bytes": 5842044,
+      "passed": true,
+      "provider_calls": 0,
+      "scenario": "protected"
+    },
+    {
+      "error": "canonical response disagrees with its visible text or completion event",
+      "passed": false,
+      "scenario": "summary"
+    },
+    {
+      "answer": "{\"start\":\"MARBLE-6\",\"end\":\"SPRUCE-9\"}",
+      "checkpoints": [
+        {
+          "after_tokens": 9594,
+          "before_tokens": 1145129,
+          "has_summary": false,
+          "id": "context-pruned:pruning-boundary:4:2ac2b1b9bc0f1e40f11095cdd4a8ca1e",
+          "pruned_results": 1,
+          "run_id": "pruning-boundary",
+          "summary": {
+            "completed_work": [],
+            "constraints": [],
+            "current_plan": [],
+            "current_state": "",
+            "decisions": [],
+            "failed_attempts": [],
+            "important_artifacts": [],
+            "next_action": "",
+            "objective": "",
+            "unresolved_questions": []
+          },
+          "through_sequence": 4
+        }
+      ],
+      "elapsed_ms": 2195,
+      "head_tail_markers_retained": true,
+      "limitation": "Head/tail markers tested; interior content verified intact in canonical log, not re-queried through history tools.",
+      "no_model_summary_needed": true,
+      "original_tool_output_bytes": 3981686,
+      "original_tool_result_unchanged": true,
+      "passed": true,
+      "provider_calls": 2,
+      "pruning_checkpoint_created": true,
+      "runtime_error": null,
+      "scenario": "prune"
+    }
+  ]
+}

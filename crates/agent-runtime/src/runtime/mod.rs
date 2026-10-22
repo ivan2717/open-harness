@@ -1,5 +1,6 @@
 mod driver;
 mod execution;
+mod maintenance;
 
 use std::{error::Error, fmt};
 
@@ -25,6 +26,7 @@ pub struct AgentRuntime<M, T, C, S = InMemoryEventStore, H = NoHistoryAccess> {
     history_access: H,
     subscriptions: RunEventSubscriptions,
     max_steps: Option<u32>,
+    continue_after_response: bool,
     executions: ExecutionRegistry,
 }
 
@@ -56,6 +58,7 @@ impl<M, T, C, S> AgentRuntime<M, T, C, S, NoHistoryAccess> {
             history_access: NoHistoryAccess,
             subscriptions: RunEventSubscriptions::default(),
             max_steps,
+            continue_after_response: false,
             executions: ExecutionRegistry::default(),
         }
     }
@@ -71,12 +74,37 @@ impl<M, T, C, S, H> AgentRuntime<M, T, C, S, H> {
             history_access,
             subscriptions: self.subscriptions,
             max_steps: self.max_steps,
+            continue_after_response: self.continue_after_response,
             executions: self.executions,
         }
     }
 
     pub fn model(&self) -> &M {
         &self.model
+    }
+
+    /// Keep conversational runs open for the next user turn after a normal
+    /// model stop. The original model finish reason remains in the event log.
+    /// In this mode `max_steps` applies to each user turn, including restored
+    /// turns, rather than the lifetime of the conversation.
+    pub fn with_continue_after_response(mut self, enabled: bool) -> Self {
+        self.continue_after_response = enabled;
+        self
+    }
+
+    pub fn is_compacting(&self, run_id: &str) -> bool {
+        self.executions.maintenance(run_id).is_some()
+    }
+
+    /// Cancel only context maintenance, leaving the conversation's durable
+    /// status intact. Any checkpoint already committed remains valid.
+    pub async fn cancel_compaction(&self, run_id: &str) -> bool {
+        let Some(control) = self.executions.maintenance(run_id) else {
+            return false;
+        };
+        control.request_cancellation();
+        control.finished().await;
+        true
     }
 
     pub fn tools(&self) -> &T {
@@ -227,6 +255,32 @@ where
             },
         )
         .await
+    }
+
+    /// Continue a stopped or interrupted run without repeating external work.
+    ///
+    /// Recovery is one durable event: all unresolved calls are labelled as
+    /// unstarted or outcome-unknown before a new model turn is permitted. The
+    /// caller must explicitly request continuation and must not have active
+    /// execution or maintenance for this run. Historical envelopes and opaque
+    /// provider response state are never rewritten.
+    pub async fn resume_run(
+        &self,
+        run: &mut AgentRun,
+        content: impl Into<String>,
+    ) -> Result<(), AgentRuntimeError<M::Error>> {
+        let _execution = self
+            .executions
+            .claim(run.id(), run.agent_id())
+            .map_err(|_| AgentRuntimeError::RunAlreadyExecuting {
+                run_id: run.id().to_owned(),
+            })?;
+        self.synchronize_run(run).await?;
+        let event = RunEvent::RunResumed {
+            content: content.into(),
+            interrupted_calls: run.interrupted_tool_calls(),
+        };
+        self.record_persisted(run, event).await
     }
 
     /// Stops this runtime's active execution before acknowledging cancellation.
@@ -393,6 +447,14 @@ pub enum AgentRuntimeError<ModelError> {
     ModelCapabilities(crate::ModelCapabilitiesError),
     OutputTruncated,
     Context(Box<dyn Error + Send + Sync>),
+    ContextRecovery {
+        overflow: ModelError,
+        recovery: Box<dyn Error + Send + Sync>,
+    },
+    CompactionCancelled,
+    RunNotIdle {
+        run_id: String,
+    },
     ProviderContextMismatch,
     ProviderReplay(crate::ProviderReplayError),
     AgentRun(AgentRunError),
@@ -449,6 +511,15 @@ where
                 formatter.write_str("model output was truncated before completion")
             }
             Self::Context(error) => write!(formatter, "context management failed: {error}"),
+            Self::ContextRecovery { overflow, recovery } => write!(
+                formatter,
+                "model context overflow: {overflow}; context recovery failed: {recovery}"
+            ),
+            Self::CompactionCancelled => formatter.write_str("context compaction cancelled"),
+            Self::RunNotIdle { run_id } => write!(
+                formatter,
+                "run {run_id} must be idle before manual compaction"
+            ),
             Self::ProviderReplay(error) => write!(formatter, "provider replay failed: {error}"),
             Self::ProviderContextMismatch => formatter
                 .write_str("model does not support the prepared provider/model/context format"),
@@ -460,7 +531,7 @@ where
                 last_sequence,
             } => write!(
                 formatter,
-                "run {run_id} was interrupted after event {last_sequence}; explicitly cancel it before starting a new run"
+                "run {run_id} was interrupted after event {last_sequence}; explicitly resume or cancel it before executing further work"
             ),
             Self::RunOutOfDate {
                 run_id,
@@ -500,10 +571,13 @@ where
             Self::ModelCapabilities(error) => Some(error),
             Self::ProviderReplay(error) => Some(error),
             Self::Context(error) => Some(error.as_ref()),
+            Self::ContextRecovery { recovery, .. } => Some(recovery.as_ref()),
             Self::AgentRun(error) => Some(error),
             Self::History(error) => Some(error),
             Self::EventStore(error) => Some(error),
             Self::RunAlreadyExecuting { .. }
+            | Self::CompactionCancelled
+            | Self::RunNotIdle { .. }
             | Self::OutputTruncated
             | Self::ProviderContextMismatch
             | Self::AgentMismatch { .. }
