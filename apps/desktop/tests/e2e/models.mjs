@@ -56,7 +56,15 @@ const server = createServer(async (request, response) => {
   const text = isSummary
     ? summary
     : `PROJECT-CEDAR remains active. ${'This is a diagnostic observation. '.repeat(80)}`
-  const usage = { input_tokens: 1200, output_tokens: 720 }
+  // Keep synthetic usage proportional to the actual fixture payload, including
+  // tool schemas and growing history. A fixed count would claim the same input
+  // size for every turn and give the context manager a contradictory calibration
+  // baseline once the tool catalog changes. This is a fixture heuristic, not a
+  // production tokenizer or a provider-accuracy assertion.
+  const usage = {
+    input_tokens: Math.ceil(Buffer.byteLength(JSON.stringify(body), 'utf8') / 4),
+    output_tokens: Math.ceil(Buffer.byteLength(text, 'utf8') / 4),
+  }
   response.writeHead(200, { 'Content-Type': 'text/event-stream' })
   const send = (data) => response.write(`data: ${JSON.stringify(data)}\n\n`)
   if (request.url.endsWith('/chat/completions')) {
@@ -94,7 +102,7 @@ const server = createServer(async (request, response) => {
         id: 'msg',
         role: 'assistant',
         content: [],
-        usage: { input_tokens: 1200, output_tokens: 0 },
+        usage: { input_tokens: usage.input_tokens, output_tokens: 0 },
       },
     })
     send({ type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } })
@@ -103,7 +111,7 @@ const server = createServer(async (request, response) => {
     send({
       type: 'message_delta',
       delta: { stop_reason: 'end_turn' },
-      usage: { output_tokens: 720 },
+      usage: { output_tokens: usage.output_tokens },
     })
     send({ type: 'message_stop' })
   } else assert.fail(`Unexpected provider route ${request.url}`)
@@ -380,8 +388,17 @@ try {
       await page.getByRole('tab', { name: '上下文', exact: true }).click()
       await page.getByRole('button', { name: '压缩上下文', exact: true }).click()
       await expect.poll(() => calls.filter((call) => call.summary).length).toBeGreaterThan(0)
+      await expect(
+        page.locator('.run-link.is-active').getByRole('img', { name: '运行中' }),
+      ).toBeVisible()
+      await expect(
+        page.locator('.workspace-heading').getByRole('img', { name: '运行中' }),
+      ).toBeVisible()
       await page.getByRole('button', { name: '取消压缩', exact: true }).click()
       await expect(page.getByRole('button', { name: '压缩上下文', exact: true })).toBeEnabled()
+      await expect(
+        page.locator('.run-link.is-active').getByRole('img', { name: '空闲' }),
+      ).toBeVisible()
       await page.screenshot({ path: join(artifacts, 'desktop-context-controls.png') })
       await page.getByRole('tab', { name: /时间线/ }).click()
       await expect(page.getByRole('button', { name: '压缩上下文', exact: true })).toHaveCount(0)

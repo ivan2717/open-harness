@@ -345,8 +345,8 @@ mod tests {
             std::env::temp_dir().join(format!("open-harness-context-meter-{}", std::process::id()));
         fs::create_dir_all(&directory).unwrap();
         let detail = RunDetail {
-            compacting: false,
             summary: RunSummary {
+                compacting: false,
                 id: "meter".into(),
                 revision: 0,
                 title: "meter".into(),
@@ -375,6 +375,7 @@ mod tests {
                 occurred_at: std::time::SystemTime::UNIX_EPOCH,
                 event: RunEvent::RunStarted {
                     instruction: "test".into(),
+                    files: Vec::new(),
                 },
             }],
             Vec::new(),
@@ -415,8 +416,8 @@ mod tests {
         fs::create_dir_all(&directory).unwrap();
         let snapshot = Snapshot::new(
             RunDetail {
-                compacting: false,
                 summary: RunSummary {
+                    compacting: false,
                     id: "disk".into(),
                     revision: 0,
                     title: "disk".into(),

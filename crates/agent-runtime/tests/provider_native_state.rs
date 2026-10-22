@@ -52,7 +52,7 @@ struct InitialContext;
 impl ContextManager for InitialContext {
     type Error = Infallible;
     async fn prepare(&self, input: ContextInputRef<'_>) -> Result<PreparedContext, Self::Error> {
-        let RunEvent::RunStarted { instruction } = &input.events[0].event else {
+        let RunEvent::RunStarted { instruction, .. } = &input.events[0].event else {
             unreachable!()
         };
         Ok(PreparedContext {

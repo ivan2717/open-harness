@@ -1,0 +1,16 @@
+[package]
+name = "agent-skills"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+agent-runtime = { path = "../agent-runtime" }
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml = "0.9.34"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.189"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }

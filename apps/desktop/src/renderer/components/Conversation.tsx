@@ -10,9 +10,11 @@ import {
   UserRound,
 } from 'lucide-react'
 import type { ChatMessage, RunDetail } from '../../shared/contracts'
-import { statusLabels, toolOutcome } from '../lib/format'
+import { toolOutcome } from '../lib/format'
+import { FileReferences } from './FileReferences'
+import { MessageMarkdown } from './MessageMarkdown'
 
-function Message({ message }: { message: ChatMessage }) {
+function Message({ message, runId }: { message: ChatMessage; runId: string }) {
   if (
     message.role === 'assistant' &&
     message.status === 'complete' &&
@@ -62,6 +64,9 @@ function Message({ message }: { message: ChatMessage }) {
             </span>
           )}
         </div>
+        {message.files && (
+          <FileReferences files={message.files} runId={runId} messageId={message.id} />
+        )}
         {message.reasoning && (
           <details className="reasoning-block">
             <summary>
@@ -73,8 +78,17 @@ function Message({ message }: { message: ChatMessage }) {
           </details>
         )}
         {message.text ? (
-          <div className="message-text">
-            {message.text}
+          <div className={message.role === 'assistant' ? 'message-rich-text' : 'message-text'}>
+            {message.role === 'assistant' ? (
+              <MessageMarkdown
+                text={message.text}
+                runId={runId}
+                messageId={message.id}
+                settled={message.status === 'complete'}
+              />
+            ) : (
+              message.text
+            )}
             {message.status === 'streaming' && (
               <span className="stream-cursor" aria-hidden="true" />
             )}
@@ -104,6 +118,16 @@ export function Conversation({ run }: { run: RunDetail }) {
     if (keepAtBottom.current && scroll.current)
       scroll.current.scrollTop = scroll.current.scrollHeight
   }, [run.id, run.revision])
+  useEffect(() => {
+    const element = scroll.current
+    const content = element?.firstElementChild
+    if (!element || !content) return
+    const observer = new ResizeObserver(() => {
+      if (keepAtBottom.current) element.scrollTop = element.scrollHeight
+    })
+    observer.observe(content)
+    return () => observer.disconnect()
+  }, [run.id])
 
   return (
     <div className="conversation-container">
@@ -128,7 +152,7 @@ export function Conversation({ run }: { run: RunDetail }) {
             <span />
           </div>
           {run.messages.map((message) => (
-            <Message key={message.id} message={message} />
+            <Message key={message.id} message={message} runId={run.id} />
           ))}
           {run.status === 'running' &&
             !run.messages.some((message) => message.status === 'streaming') && (
@@ -137,15 +161,6 @@ export function Conversation({ run }: { run: RunDetail }) {
                 <span>Harness 正在执行下一步…</span>
               </div>
             )}
-          {run.status !== 'running' && run.status !== 'waiting_for_input' && (
-            <div className={`run-result run-result-${run.status}`}>
-              {run.status === 'completed' ? <Check size={13} /> : <CircleAlert size={13} />}
-              <span>{statusLabels[run.status]}</span>
-              {run.status === 'interrupted' && (
-                <span>执行已中断，历史已保存。可继续任务或补充说明。</span>
-              )}
-            </div>
-          )}
         </div>
       </div>
       {showScroll && (

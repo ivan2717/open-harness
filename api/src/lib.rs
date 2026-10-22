@@ -2,6 +2,8 @@ mod context;
 pub mod contracts;
 mod demo;
 mod event_store;
+pub mod extensions;
+mod input;
 mod model;
 mod projection;
 mod routes;

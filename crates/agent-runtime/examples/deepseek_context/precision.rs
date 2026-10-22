@@ -248,6 +248,7 @@ async fn run_fixture<M: Model, N: TokenCounter + Clone>(
     }
     let mut restored = AgentRun::restore(stored.run_id, stored.agent_id, stored.events)?;
     restored.record(RunEvent::InputReceived {
+        files: Vec::new(),
         content: fixture.extension,
     })?;
     restored.begin_step()?;

@@ -152,6 +152,7 @@ async fn assert_forced_compaction(calibrated: bool) {
     })
     .unwrap();
     run.record(RunEvent::InputReceived {
+        files: Vec::new(),
         content: correction.into(),
     })
     .unwrap();

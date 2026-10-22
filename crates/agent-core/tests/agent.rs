@@ -111,6 +111,7 @@ fn waiting_for_input_can_resume() {
     assert_eq!(run.status(), RunStatus::WaitingForInput);
 
     run.record(RunEvent::InputReceived {
+        files: Vec::new(),
         content: "open-harness".to_owned(),
     })
     .unwrap();
@@ -166,6 +167,7 @@ fn input_received_requires_a_started_step() {
 
     let error = run
         .record(RunEvent::InputReceived {
+            files: Vec::new(),
             content: "open-harness".to_owned(),
         })
         .unwrap_err();
@@ -216,6 +218,7 @@ fn an_event_history_restores_the_run_projection() {
         .unwrap();
     original
         .record(RunEvent::InputReceived {
+            files: Vec::new(),
             content: "open-harness".to_owned(),
         })
         .unwrap();
@@ -372,6 +375,7 @@ fn input_cannot_interrupt_pending_tool_calls() {
     assert_rejected_without_changes(
         &mut run,
         RunEvent::InputReceived {
+            files: Vec::new(),
             content: "choice".to_owned(),
         },
     );

@@ -5,12 +5,14 @@ import {
   session,
   safeStorage,
   dialog,
+  shell,
+  clipboard,
   type IpcMainEvent,
   type IpcMainInvokeEvent,
 } from 'electron'
 import { isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { realpath } from 'node:fs/promises'
+import { realpath, mkdir } from 'node:fs/promises'
 import { Backend } from './backend'
 import {
   apiRequest,
@@ -23,6 +25,11 @@ import { SubscriptionRegistry } from './subscriptions'
 import { ModelVault } from './model-vault'
 import { fetchModelCapacity } from './model-metadata'
 import { resolveModelLimits } from '../shared/model-limits'
+import { importClipboardFiles, importFilePaths } from './file-references'
+import {
+  installMessageResourceBridge,
+  registerMessageResourceScheme,
+} from './message-resource-bridge'
 import type { AppConfig, ConfigureModelInput, ModelInfo } from '../shared/contracts'
 
 const dataDirectory = process.env.OPENHARNESS_DESKTOP_DATA_DIR
@@ -43,6 +50,8 @@ let modelsReady: Promise<void> = Promise.resolve()
 let modelConfigError: string | undefined
 // A renderer can only start work in directories selected through the native dialog.
 const selectedWorkspaces = new Set<string>()
+
+registerMessageResourceScheme()
 
 function trustedUrl(url: string): boolean {
   try {
@@ -67,6 +76,36 @@ function assertSender(event: IpcMainInvokeEvent | IpcMainEvent): void {
 }
 
 function installBridge(): void {
+  ipcMain.handle(channels.openSkillsDirectory, async (event) => {
+    assertSender(event)
+    const directory = join(app.getPath('userData'), 'runtime', 'skills')
+    await mkdir(directory, { recursive: true })
+    const error = await shell.openPath(directory)
+    if (error) throw new Error(error)
+  })
+  ipcMain.handle(channels.copyText, (event, text: unknown) => {
+    assertSender(event)
+    if (typeof text !== 'string' || Buffer.byteLength(text, 'utf8') > 2 * 1024 * 1024)
+      throw new Error('复制内容过大，请分段选择复制。')
+    clipboard.writeText(text)
+  })
+  ipcMain.handle(channels.chooseFiles, async (event) => {
+    assertSender(event)
+    const result = await dialog.showOpenDialog(window!, {
+      title: '添加文件引用',
+      buttonLabel: '添加引用',
+      properties: ['openFile', 'multiSelections'],
+    })
+    return importFilePaths(result.canceled ? [] : result.filePaths)
+  })
+  ipcMain.handle(channels.importFiles, async (event, paths: unknown) => {
+    assertSender(event)
+    return importFilePaths(paths)
+  })
+  ipcMain.handle(channels.pasteFiles, async (event) => {
+    assertSender(event)
+    return importClipboardFiles(() => clipboard.read())
+  })
   ipcMain.handle(channels.chooseWorkspace, async (event) => {
     assertSender(event)
     const result = await dialog.showOpenDialog(window!, {
@@ -202,6 +241,12 @@ if (!app.requestSingleInstanceLock()) {
       ? join(process.resourcesPath, 'bin', binaryName)
       : join(targetDirectory, 'debug', binaryName)
     backend = new Backend(binary, join(app.getPath('userData'), 'runtime'))
+    installMessageResourceBridge({
+      directory: app.getPath('userData'),
+      backend,
+      window: () => window!,
+      assertSender,
+    })
     modelVault = new ModelVault(join(app.getPath('userData'), 'models.encrypted'), {
       isEncryptionAvailable: () =>
         safeStorage.isEncryptionAvailable() &&

@@ -14,7 +14,7 @@ use agent_core::agent::{
 use crate::{
     AppendOutcome, ContextManager, EventStore, EventStoreError, HistoryAccess, InMemoryEventStore,
     Model, NoHistoryAccess, RunEventNotification, RunEventReceiver, RunEventSubscriptions,
-    ToolExecutor,
+    TextFileReference, ToolExecutor,
 };
 
 #[derive(Debug)]
@@ -162,7 +162,18 @@ where
         run_id: impl Into<String>,
         instruction: impl Into<String>,
     ) -> Result<AgentRun, AgentRuntimeError<M::Error>> {
-        let run = agent.start_run(run_id, instruction);
+        self.start_run_with_files(agent, run_id, instruction, Vec::new())
+            .await
+    }
+
+    pub async fn start_run_with_files(
+        &self,
+        agent: &Agent,
+        run_id: impl Into<String>,
+        instruction: impl Into<String>,
+        files: Vec<TextFileReference>,
+    ) -> Result<AgentRun, AgentRuntimeError<M::Error>> {
+        let run = agent.start_run_with_files(run_id, instruction, files);
         let event = run
             .events()
             .first()
@@ -248,10 +259,20 @@ where
         run: &mut AgentRun,
         content: impl Into<String>,
     ) -> Result<(), AgentRuntimeError<M::Error>> {
+        self.submit_input_with_files(run, content, Vec::new()).await
+    }
+
+    pub async fn submit_input_with_files(
+        &self,
+        run: &mut AgentRun,
+        content: impl Into<String>,
+        files: Vec<TextFileReference>,
+    ) -> Result<(), AgentRuntimeError<M::Error>> {
         self.record_event(
             run,
             RunEvent::InputReceived {
                 content: content.into(),
+                files,
             },
         )
         .await
@@ -269,6 +290,15 @@ where
         run: &mut AgentRun,
         content: impl Into<String>,
     ) -> Result<(), AgentRuntimeError<M::Error>> {
+        self.resume_run_with_files(run, content, Vec::new()).await
+    }
+
+    pub async fn resume_run_with_files(
+        &self,
+        run: &mut AgentRun,
+        content: impl Into<String>,
+        files: Vec<TextFileReference>,
+    ) -> Result<(), AgentRuntimeError<M::Error>> {
         let _execution = self
             .executions
             .claim(run.id(), run.agent_id())
@@ -278,6 +308,7 @@ where
         self.synchronize_run(run).await?;
         let event = RunEvent::RunResumed {
             content: content.into(),
+            files,
             interrupted_calls: run.interrupted_tool_calls(),
         };
         self.record_persisted(run, event).await

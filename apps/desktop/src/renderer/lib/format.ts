@@ -1,13 +1,4 @@
-import type { ChatMessage, RunStatus } from '../../shared/contracts'
-
-export const statusLabels: Record<RunStatus, string> = {
-  running: '运行中',
-  waiting_for_input: '等待回复',
-  completed: '已完成',
-  failed: '运行失败',
-  cancelled: '已停止',
-  interrupted: '已中断',
-}
+import type { ChatMessage } from '../../shared/contracts'
 
 export function number(value: number): string {
   return new Intl.NumberFormat('en-US').format(value)

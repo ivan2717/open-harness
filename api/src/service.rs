@@ -10,6 +10,7 @@ use crate::{
     snapshot::Snapshot,
     time,
 };
+use agent_core::TextFileReference;
 use agent_core::agent::{Agent, AgentRun, RunStatus as CoreStatus};
 use agent_runtime::{
     AgentRuntime, ContextPolicy, EventStoreHistoryAccess, JsonlEventStore, Model,
@@ -43,11 +44,18 @@ mod tests;
 #[path = "workspace_service.rs"]
 mod workspace;
 
+#[path = "message_files.rs"]
+mod message_files;
+
+#[path = "extension_service.rs"]
+mod extensions;
+
 #[derive(Clone)]
 pub struct AppState {
     inner: Arc<Service>,
 }
 struct Service {
+    extensions: Arc<crate::extensions::ExtensionHost>,
     directory: PathBuf,
     token: Option<String>,
     runs: RwLock<HashMap<String, Arc<RunEntry>>>,
@@ -80,6 +88,7 @@ impl AppState {
         let directory = fs::canonicalize(directory)?;
         let state = Self {
             inner: Arc::new(Service {
+                extensions: crate::extensions::ExtensionHost::open(&directory)?,
                 directory,
                 token: token.filter(|token| !token.is_empty()),
                 runs: RwLock::new(HashMap::new()),
@@ -113,7 +122,7 @@ impl AppState {
             detail.messages.clear();
             detail.events.clear();
             detail.error = None;
-            detail.compacting = false;
+            detail.summary.compacting = false;
             for event in run.events() {
                 projection::apply(&mut detail, event);
             }
@@ -185,7 +194,7 @@ impl AppState {
         for entry in &entries {
             let detail = entry.snapshot.get();
             if entry.runtime.is_executing(&detail.summary.id)
-                || detail.compacting
+                || detail.summary.compacting
                 || detail.summary.status == RunStatus::Running
             {
                 return Err(ServiceError::Conflict(
@@ -309,6 +318,7 @@ impl AppState {
             ServiceCompactor::Http(Box::new(ModelContextCompactor::new(model.clone())))
         };
         let (workspace, workspace_error, agent) = self.workspace_entry(&detail);
+        let project = detail.summary.workspace_path.as_ref().map(PathBuf::from);
         let snapshot = match existing {
             Some(snapshot) => snapshot,
             None => Snapshot::new(
@@ -329,10 +339,13 @@ impl AppState {
             model,
             if demo {
                 ServiceTools::Demo(DemoTools::new(self.inner.delay.saturating_mul(3)))
-            } else if let Some(tools) = &workspace {
-                ServiceTools::Local(tools.clone())
             } else {
-                ServiceTools::None
+                ServiceTools::Host(crate::extensions::ExtensionTools::new(
+                    self.inner.extensions.clone(),
+                    id.clone(),
+                    project,
+                    workspace.clone(),
+                ))
             },
             context,
             ObservedEventStore {
@@ -368,7 +381,7 @@ impl AppState {
         {
             return Err(ServiceError::BadRequest("请先配置此模型".into()));
         }
-        validate_message(&input.prompt)?;
+        crate::input::validate(&input.prompt, &input.files)?;
         let workspace_path = self.validate_workspace_input(&input)?;
         if let Some(path) = &workspace_path {
             self.ensure_workspace_idle(path, None)?;
@@ -384,11 +397,11 @@ impl AppState {
         );
         let now = time::now();
         let detail = RunDetail {
-            compacting: false,
             summary: RunSummary {
+                compacting: false,
                 id: id.clone(),
                 revision: 0,
-                title: input.prompt.trim().chars().take(64).collect(),
+                title: crate::input::title(&input.prompt, &input.files),
                 prompt: input.prompt.clone(),
                 status: RunStatus::Running,
                 model_id: input.model_id,
@@ -406,7 +419,7 @@ impl AppState {
         Self::require_workspace_available(&entry)?;
         let run = entry
             .runtime
-            .start_run(&entry.agent, &id, input.prompt)
+            .start_run_with_files(&entry.agent, &id, input.prompt, input.files)
             .await
             .map_err(ServiceError::internal)?;
         entry.snapshot.event(&run.events()[0])?;
@@ -432,7 +445,15 @@ impl AppState {
         cancel_restored(&entry, run).await
     }
     pub async fn input(&self, id: &str, message: String) -> Result<RunDetail, ServiceError> {
-        validate_message(&message)?;
+        self.input_with_files(id, message, Vec::new()).await
+    }
+    pub async fn input_with_files(
+        &self,
+        id: &str,
+        message: String,
+        files: Vec<TextFileReference>,
+    ) -> Result<RunDetail, ServiceError> {
+        crate::input::validate(&message, &files)?;
         let _gate = self.inner.model_gate.lock().await;
         self.ensure_accepting_work()?;
         let entry = self.entry(id)?;
@@ -445,7 +466,7 @@ impl AppState {
         if let Some(path) = &entry.snapshot.get().summary.workspace_path {
             self.ensure_workspace_idle(path, Some(id))?;
         }
-        if entry.snapshot.get().compacting {
+        if entry.snapshot.get().summary.compacting {
             return Err(ServiceError::Conflict("请等待或取消上下文压缩".into()));
         }
         let _operation = entry.operations.lock().await;
@@ -463,7 +484,11 @@ impl AppState {
         while entry.runtime.is_executing(id) {
             tokio::task::yield_now().await;
         }
-        if let Err(error) = entry.runtime.submit_input(&mut run, message).await {
+        if let Err(error) = entry
+            .runtime
+            .submit_input_with_files(&mut run, message, files)
+            .await
+        {
             workspace::reconcile_admission_error(&entry, id, &error).await;
             return Err(ServiceError::internal(error));
         }
@@ -483,7 +508,7 @@ impl AppState {
         let entry = self.entry(id)?;
         let operation = entry.operations.lock().await;
         let detail = entry.snapshot.get();
-        if detail.compacting
+        if detail.summary.compacting
             || entry.runtime.is_executing(id)
             || detail.summary.status == RunStatus::Running
         {
@@ -509,7 +534,7 @@ impl AppState {
             .map_err(ServiceError::internal)?
             .ok_or(ServiceError::NotFound)?;
         entry.snapshot.update(|detail| {
-            detail.compacting = true;
+            detail.summary.compacting = true;
             detail.error = None;
         })?;
         let worker = entry.clone();
@@ -530,7 +555,7 @@ impl AppState {
             })
             .await;
             let _ = worker.snapshot.update(|detail| {
-                detail.compacting = false;
+                detail.summary.compacting = false;
                 if let Err(error) = result
                     && !matches!(error, agent_runtime::AgentRuntimeError::CompactionCancelled)
                 {
@@ -548,7 +573,9 @@ impl AppState {
         let entry = self.entry(id)?;
         let _operation = entry.operations.lock().await;
         entry.runtime.cancel_compaction(id).await;
-        entry.snapshot.update(|detail| detail.compacting = false)?;
+        entry
+            .snapshot
+            .update(|detail| detail.summary.compacting = false)?;
         Ok(entry.snapshot.get())
     }
 
@@ -579,9 +606,9 @@ impl AppState {
             let _operation = entry.operations.lock().await;
             let detail = entry.snapshot.get();
             let id = &detail.summary.id;
-            if detail.compacting {
+            if detail.summary.compacting {
                 entry.runtime.cancel_compaction(id).await;
-                let _ = entry.snapshot.update(|detail| detail.compacting = false);
+                let _ = entry.snapshot.update(|detail| detail.summary.compacting = false);
             }
             if entry.runtime.is_executing(id) || detail.summary.status == RunStatus::Running {
                 match entry.runtime.restore_run(id).await {
@@ -595,6 +622,7 @@ impl AppState {
                 }
             }
         })).await;
+        self.inner.extensions.shutdown().await;
     }
 }
 
@@ -670,15 +698,6 @@ fn valid_id(id: &str) -> bool {
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
 }
-fn validate_message(message: &str) -> Result<(), ServiceError> {
-    if message.trim().is_empty() || message.chars().count() > 4000 {
-        return Err(ServiceError::BadRequest(
-            "输入必须包含 1–4000 个字符".into(),
-        ));
-    }
-    Ok(())
-}
-
 #[derive(Debug)]
 pub enum ServiceError {
     NotFound,

@@ -59,6 +59,21 @@ start work in an arbitrary path without native directory selection.
 Existing conversations display their bound project, permission and model as
 fixed values; starting a new task is required to change that execution context.
 
+Use the plus button (hover or focus for its “添加文件” hint), drag local files into the composer, or copy files in the
+file manager and paste with Cmd+V / Ctrl+V to add references. Ordinary text pastes
+remain text. References appear as removable filename chips, survive settings
+navigation, and remain in the draft if sending fails. Unsent file snapshots are
+kept only for the current app session; sent snapshots are saved in the run log.
+Text and code files must be valid UTF-8: up to 8 files, 256 KiB each and 512 KiB
+combined per message. Directories, symlinks, images, PDF and other binary formats
+are rejected explicitly. Files can be sent without a project or accompanying text.
+Attaching a file does not grant access to its parent directory or permission to
+modify it. The model reads the captured content, even if the original later changes.
+Snapshots participate in token estimation, context compression and history search;
+the chat displays filenames and sizes without expanding their full content. Open
+a sent reference to preview the exact saved text, even if its original path no
+longer exists.
+
 Automatic limits are resolved in the desktop main process before they reach the
 Rust runtime. Provider metadata takes priority over a small directory of verified
 model IDs on official endpoints. Unknown models start with an 8,192-token window
@@ -118,6 +133,43 @@ real model may make one or more summary generation requests. No separate token
 counting requests are made. Input submission and model execution cannot race with
 manual compaction; failed maintenance leaves the conversation available.
 
+## Rich answers and output files
+
+Assistant answers render Markdown headings, lists, quotes, GFM tables, task lists,
+links, and fenced code. Code blocks support copying and syntax highlighting.
+User messages remain literal. Streaming answers and saved history use the same
+renderer; the persisted conversation keeps the original Markdown source.
+
+Local Markdown images and file links resolve relative to the conversation's
+project (absolute paths inside that project also work). Images can be enlarged;
+audio and video use native controls without autoplay. Text/code files have an
+in-app preview; other files offer native open, reveal and save actions where
+appropriate. Missing files and unsupported previews show a readable fallback.
+Remote media is loaded only on request; ordinary web links open in the browser.
+Local resources are limited to 100 MiB each, with text previews up to 256 KiB.
+Audio/video playback depends on Electron's supported codecs. PDF and Office
+documents currently open in the system application rather than an embedded viewer.
+
+Resource access is separate from Markdown rendering. The main process checks the
+run, message and project boundary, copies bounded local resources into its private
+cache on first resolution, and serves them through opaque resource URLs. Cached
+resources survive app restarts and later source edits/deletions. A file that has
+never been resolved is still dependent on its original path. User-input previews
+come from the authoritative event snapshot rather than rereading that path.
+HTML and executable files are never executed by the message renderer. Input
+attachments remain UTF-8 snapshots; output previews do not add model vision,
+audio/video understanding, or native provider file-generation APIs.
+
+The design follows [DeepSeek Harness's separation of assistant Markdown and
+resource rendering](https://github.com/deepseek-ai/deepseek-harness/tree/master/packages/client/ui-primitives)
+and [session-scoped file access](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/api/workspace-files/README.md).
+Its [document previews](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/client/ui-sidebar-documentpreview/README.md)
+use transient preview data; our persistent local snapshots are an additional
+choice. [OpenAI's public file workflow](https://learn.chatgpt.com/docs/artifacts-viewer)
+also separates conversation output from file preview/open actions. These
+references inform the boundaries; we do not assume a particular private desktop
+renderer implementation.
+
 ## Boundaries
 
 - `src/main`: window lifecycle, backend child process, authenticated HTTP and
@@ -133,7 +185,8 @@ manual compaction; failed maintenance leaves the conversation available.
   protocols, tool effects, and compaction decisions remain in Rust.
 
 Desktop navigation uses a hash history so routes also work from packaged local
-assets. React renders model and tool text as text, never executable HTML. Native
+assets. Assistant Markdown renders through React with raw HTML disabled; user and
+tool text remain literal. Native
 provider replay payloads are excluded from the public UI projection.
 
 ## Checks and packaging
@@ -146,6 +199,8 @@ npm run build
 npm run test:e2e
 npm run test:e2e:models
 npm run test:e2e:workspace
+npm run test:e2e:files
+npm run test:e2e:rich
 npm run package:dir
 ```
 
@@ -176,6 +231,11 @@ execution coverage currently requires macOS with the system sandbox available.
 For a packaged-app check, set `OPENHARNESS_E2E_EXECUTABLE` to the packaged
 executable and run `node tests/e2e/desktop.mjs`.
 
+`test:e2e:rich` verifies streamed Markdown, code copying, image enlargement,
+actual audio/video playback, ranged resource reads, opt-in remote images, native
+file action routing, and restart recovery after source files are deleted. It uses
+an isolated project and local model fixture, without provider API calls.
+
 The 2026-10-21 dependency audit reported no production dependency advisories.
 The packaging toolchain still reports eight moderate entries in the transitive
 `sprintf-js` logging dependency chain; its latest published version has no fix.
@@ -185,3 +245,36 @@ release suggested by automatic audit remediation.
 For an isolated development or test data directory, set
 `OPENHARNESS_DESKTOP_DATA_DIR` to an absolute path before launching Electron.
 Never point two application instances at the same directory.
+
+## Tools and skills
+
+The Settings page includes **工具服务** (MCP) and **技能**. Add a local executable
+with one argument per line, or a Streamable HTTP URL. Enable, edit, remove and test
+connections from the same page. Connection tests discover capabilities without
+calling tools. Credentials are environment-variable references; OAuth is not yet
+supported. Saving or refreshing configuration does not call a model.
+
+MCP calls show the service, operation and arguments in a conversation approval
+card. MCP services have their own filesystem/network permissions, outside the
+built-in project sandbox. Per-conversation connections retain state; changing or
+disabling a server revokes its sessions. Cancelled or interrupted external actions
+are never automatically replayed. Configuration revisions reject stale updates.
+
+Use **打开文件夹** to install a personal skill folder containing `SKILL.md`, then
+refresh. Project `.agents/skills` and `.openharness/skills` folders are discovered
+automatically. Each conversation has a compact **技能** control to inspect,
+refresh or disable its available workflows. The model lists metadata and loads
+the selected instructions/resources in bounded pages. `$skill-name` requests a
+specific workflow. Loading scripts does not execute them or expand permissions.
+
+Selected projects can read/search PDF, DOCX, XLSX and PPTX directly in read-only
+mode. Document tools return source locations and continuation cursors. Plain text
+reads support files up to 32 MiB; edit/review limits remain independent. OCR,
+native vision/audio input and full document layout rendering are not included.
+The attachment picker still imports UTF-8 snapshots; use the project tools for
+these document formats.
+
+`npm run test:e2e:extensions` exercises real Electron IPC, the Rust API, document
+fixtures, local Skills and a stateful stdio MCP peer. It covers settings CRUD,
+discovery, lazy loading, permissions, approvals, cancellation and restart. MCP
+crate tests additionally cover Streamable HTTP JSON/SSE and failure cleanup.

@@ -13,6 +13,7 @@ mod subscription;
 mod tool;
 
 pub use agent_core::token_usage::{ModelUsageRecord, RequestUsageBaseline};
+pub use agent_core::{TextFileReference, format_user_input};
 pub use context::{
     ApproximateTokenCounter, ApproximateTokenCounterError, CompactingContextError,
     CompactingContextManager, ContextCheckpoint, ContextCheckpointStore, ContextCompactor,

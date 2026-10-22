@@ -47,13 +47,7 @@ fn user_messages<'a>(
 ) -> impl Iterator<Item = ModelMessage> {
     events
         .into_iter()
-        .filter_map(|envelope| match &envelope.event {
-            RunEvent::RunStarted { instruction } => Some(ModelMessage::user(instruction.clone())),
-            RunEvent::InputReceived { content } | RunEvent::RunResumed { content, .. } => {
-                Some(ModelMessage::user(content.clone()))
-            }
-            _ => None,
-        })
+        .filter_map(|envelope| envelope.event.user_input().map(ModelMessage::user))
 }
 
 fn protected_user_events(input: ContextInputRef<'_>, preserve_all: bool) -> Vec<&RunEventEnvelope> {
@@ -98,13 +92,7 @@ pub(super) fn protected_user_context(
         .into_iter()
         .filter(|event| event.sequence <= through_sequence)
         .filter_map(|envelope| {
-            let content = match &envelope.event {
-                RunEvent::RunStarted { instruction } => instruction,
-                RunEvent::InputReceived { content } | RunEvent::RunResumed { content, .. } => {
-                    content
-                }
-                _ => return None,
-            };
+            let content = envelope.event.user_input()?;
             Some(serde_json::json!({"sequence": envelope.sequence, "content": content}))
         })
         .collect::<Vec<_>>();
@@ -348,15 +336,11 @@ impl<'a> ToolOutputProjection<'a> {
         let mut assistant_step = None;
         for envelope in events {
             match &envelope.event {
-                RunEvent::RunStarted { instruction } => {
-                    messages.push(ModelMessage::user(instruction.clone()))
-                }
-                RunEvent::InputReceived { content } => {
-                    messages.push(ModelMessage::user(content.clone()))
-                }
+                RunEvent::RunStarted { .. } | RunEvent::InputReceived { .. } => messages.push(
+                    ModelMessage::user(envelope.event.user_input().expect("user event")),
+                ),
                 RunEvent::RunResumed {
-                    content,
-                    interrupted_calls,
+                    interrupted_calls, ..
                 } => {
                     // Native windows may already contain the assistant calls;
                     // their missing results must still appear in this tail.
@@ -367,7 +351,9 @@ impl<'a> ToolOutputProjection<'a> {
                             true,
                         ));
                     }
-                    messages.push(ModelMessage::user(content.clone()));
+                    messages.push(ModelMessage::user(
+                        envelope.event.user_input().expect("user event"),
+                    ));
                 }
                 RunEvent::ModelResponseReceived {
                     content,

@@ -6,6 +6,8 @@ edition.workspace = true
 [dependencies]
 agent-core.workspace = true
 agent-local = { path = "../crates/agent-local" }
+agent-mcp = { path = "../crates/agent-mcp" }
+agent-skills = { path = "../crates/agent-skills" }
 agent-providers = { path = "../crates/agent-providers" }
 agent-runtime = { path = "../crates/agent-runtime" }
 axum.workspace = true

@@ -104,6 +104,51 @@ describe('desktop bridge request boundary', () => {
     ).toEqual({ message: 'Check current files first' })
     expect(() => apiRequest({ operation: 'resumeRun', id: 'run-1', message: '' })).toThrow()
   })
+  it('allows attachment-only turns and keeps file snapshots on each input route', () => {
+    const files = [{ name: 'README.md', path: '/tmp/README.md', text: 'Referenced content' }]
+    expect(
+      apiRequest({ operation: 'createRun', input: { prompt: '', model_id: 'm', files } }).body,
+    ).toEqual({ prompt: '', model_id: 'm', files })
+    for (const operation of ['submitInput', 'resumeRun']) {
+      expect(apiRequest({ operation, id: 'run-1', message: '', files }).body).toEqual({
+        message: '',
+        files,
+      })
+    }
+    expect(apiRequest({ operation: 'resumeRun', id: 'run-1', files }).body).toEqual({
+      message: '',
+      files,
+    })
+    expect(
+      apiRequest({ operation: 'createRun', input: { prompt: '😀'.repeat(4000), model_id: 'm' } })
+        .body,
+    ).toHaveProperty('prompt', '😀'.repeat(4000))
+    expect(() =>
+      apiRequest({ operation: 'createRun', input: { prompt: '😀'.repeat(4001), model_id: 'm' } }),
+    ).toThrow('4,000')
+  })
+  it('rejects malformed and oversized attachment snapshots at the IPC boundary', () => {
+    for (const files of [
+      {},
+      [{ name: '../file', text: 'a' }],
+      [{ name: 'file', path: '/tmp/a\0b', text: 'a' }],
+      [{ name: 'file', text: 'a\0b' }],
+      [{ name: 'file', text: 'a\fb' }],
+      [{ name: 'file', text: 'a\u0085b' }],
+      [{ name: 'bad\nname', text: 'a' }],
+      [{ name: 'file', path: '/tmp/bad\u0085path', text: 'a' }],
+      [{ name: 'file', text: 42 }],
+      [{ name: 'file', text: '中'.repeat(90_000) }],
+      Array.from({ length: 9 }, () => ({ name: 'file', text: '' })),
+      Array.from({ length: 3 }, () => ({ name: 'file', text: 'a'.repeat(256 * 1024) })),
+    ])
+      expect(() =>
+        apiRequest({ operation: 'createRun', input: { prompt: '', model_id: 'm', files } }),
+      ).toThrow()
+    expect(() =>
+      apiRequest({ operation: 'submitInput', id: 'run-1', message: '', files: [] }),
+    ).toThrow()
+  })
 })
 
 describe('SSE framing', () => {

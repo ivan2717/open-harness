@@ -1,11 +1,14 @@
-import { useLayoutEffect, useRef, useState } from 'react'
+import { useLayoutEffect, useRef, useState, type ClipboardEvent, type DragEvent } from 'react'
 import { ArrowUp, LoaderCircle, Square } from 'lucide-react'
-import type { ModelInfo } from '../../shared/contracts'
+import type { ModelInfo, TextFileReference } from '../../shared/contracts'
 import { useUiStore, type ProjectSelection } from '../state/ui-store'
 import { errorMessage } from '../lib/format'
 import { ComposerModel } from './ComposerModel'
 import { InlineError } from './Feedback'
 import { ProjectPicker } from './ProjectPicker'
+import { FileReferences } from './FileReferences'
+import { useFileReferences } from '../lib/use-file-references'
+import { AttachFilesButton } from './AttachFilesButton'
 
 interface ComposerProps {
   draftKey: string
@@ -14,12 +17,11 @@ interface ComposerProps {
   onModelChange?: (id: string) => void
   project?: ProjectSelection | null
   onProjectChange?: (project: ProjectSelection | null) => void
-  onSubmit: (prompt: string) => Promise<void>
+  onSubmit: (prompt: string, files: TextFileReference[]) => Promise<void>
   pending?: boolean
   running?: boolean
   onStop?: () => void
   stopping?: boolean
-  waiting?: boolean
   disabled?: boolean
   submitDisabledReason?: string
 }
@@ -36,7 +38,6 @@ export function Composer({
   running,
   onStop,
   stopping,
-  waiting,
   disabled,
   submitDisabledReason,
 }: ComposerProps) {
@@ -48,9 +49,19 @@ export function Composer({
   const [composing, setComposing] = useState(false)
   const [choosing, setChoosing] = useState(false)
   const [projectError, setProjectError] = useState<string | null>(null)
+  const references = useFileReferences(draftKey)
+  const dragDepth = useRef(0)
+  const [dragging, setDragging] = useState(false)
   const canSubmit =
-    Boolean(draft.trim()) && !pending && !running && !disabled && !submitDisabledReason && !choosing
-  const controlsBusy = pending || choosing
+    Boolean(draft.trim() || references.files.length) &&
+    !pending &&
+    !running &&
+    !disabled &&
+    !submitDisabledReason &&
+    !choosing &&
+    !references.pending
+  const controlsBusy = pending || choosing || references.pending
+  const filesDisabled = controlsBusy || disabled || running
 
   useLayoutEffect(() => {
     const field = textarea.current
@@ -93,14 +104,62 @@ export function Composer({
     if (!canSubmit || submitting.current) return
     submitting.current = true
     const submittedDraft = draft
+    const submittedFiles = references.files
     try {
-      await onSubmit(submittedDraft.trim())
+      await onSubmit(
+        submittedDraft.trim(),
+        submittedFiles.map(({ name, path, text }) => ({ name, path, text })),
+      )
       if (useUiStore.getState().drafts[draftKey] === submittedDraft) clearDraft(draftKey)
+      useUiStore.getState().removeDraftFiles(
+        draftKey,
+        submittedFiles.map((file) => file.id),
+      )
     } catch {
       // The owning mutation renders its error; keep the draft for retry.
     } finally {
       submitting.current = false
     }
+  }
+
+  function isFileDrag(event: DragEvent) {
+    return Array.from(event.dataTransfer.types).includes('Files')
+  }
+
+  function dropFiles(event: DragEvent) {
+    if (!isFileDrag(event)) return
+    event.preventDefault()
+    dragDepth.current = 0
+    setDragging(false)
+    if (filesDisabled) return
+    const files = Array.from(event.dataTransfer.files)
+    void references.importReferences(() => window.harness.importFiles(files))
+  }
+
+  function pasteFiles(event: ClipboardEvent<HTMLTextAreaElement>) {
+    const files = Array.from(event.clipboardData.files)
+    const types = Array.from(event.clipboardData.types)
+    const text = event.clipboardData.getData('text/plain')
+    const uris = event.clipboardData.getData('text/uri-list')
+    const hasFileUri = uris.split(/\r?\n/).some((line) => /^file:/i.test(line.trim()))
+    // Ordinary text remains a native textarea paste, preserving selection/undo.
+    if (!files.length && (text || uris) && !hasFileUri && !types.includes('Files')) return
+    event.preventDefault()
+    if (filesDisabled) return
+    const start = event.currentTarget.selectionStart
+    const end = event.currentTarget.selectionEnd
+    void references
+      .importReferences(
+        files.length ? () => window.harness.importFiles(files) : () => window.harness.pasteFiles(),
+      )
+      .then((handled) => {
+        if (!handled && text && (useUiStore.getState().drafts[draftKey] ?? '') === draft) {
+          setDraft(draftKey, draft.slice(0, start) + text + draft.slice(end))
+          requestAnimationFrame(() =>
+            textarea.current?.setSelectionRange(start + text.length, start + text.length),
+          )
+        }
+      })
   }
 
   return (
@@ -111,19 +170,42 @@ export function Composer({
         onChange={onProjectChange}
         disabled={controlsBusy}
       />
-      <div className={`composer ${waiting ? 'composer-waiting' : ''}`}>
-        {waiting && (
-          <div className="composer-hint">
-            <span className="status-dot status-waiting_for_input" />
-            等待你的补充
-          </div>
-        )}
+      <div
+        className={`composer ${dragging ? 'composer-dragging' : ''}`}
+        onDragEnter={(event) => {
+          if (!isFileDrag(event)) return
+          event.preventDefault()
+          dragDepth.current += 1
+          if (!filesDisabled) setDragging(true)
+        }}
+        onDragOver={(event) => {
+          if (!isFileDrag(event)) return
+          event.preventDefault()
+          event.dataTransfer.dropEffect = filesDisabled ? 'none' : 'copy'
+        }}
+        onDragLeave={(event) => {
+          if (!isFileDrag(event)) return
+          dragDepth.current = Math.max(0, dragDepth.current - 1)
+          if (!dragDepth.current) setDragging(false)
+        }}
+        onDrop={dropFiles}
+      >
+        {dragging && <div className="composer-drop-hint">松开以引用文件</div>}
+        <FileReferences
+          files={references.files.map((file) => ({
+            ...file,
+            size: new TextEncoder().encode(file.text).byteLength,
+          }))}
+          onRemove={references.remove}
+          disabled={pending}
+        />
         <textarea
           ref={textarea}
           rows={2}
           value={draft}
           disabled={disabled || running}
           onChange={(event) => setDraft(draftKey, event.target.value)}
+          onPaste={pasteFiles}
           onCompositionStart={() => setComposing(true)}
           onCompositionEnd={() => setComposing(false)}
           onKeyDown={(event) => {
@@ -138,16 +220,15 @@ export function Composer({
               void submit()
             }
           }}
-          placeholder={
-            running
-              ? '正在执行，你可以随时停止…'
-              : waiting
-                ? '补充信息，继续这次任务…'
-                : '描述任务，或直接提问…'
-          }
-          aria-label={waiting ? '补充信息' : '任务描述'}
+          placeholder="描述任务，或直接提问…"
+          aria-label="任务描述"
         />
         <div className="composer-footer">
+          <AttachFilesButton
+            disabled={filesDisabled}
+            pending={references.pending}
+            onClick={() => void references.importReferences(() => window.harness.chooseFiles())}
+          />
           <div className="composer-footer-right">
             <ComposerModel
               models={models}
@@ -174,7 +255,7 @@ export function Composer({
                 className="send-button"
                 disabled={!canSubmit}
                 onClick={() => void submit()}
-                aria-label={waiting ? '提交补充信息' : '开始运行'}
+                aria-label="开始运行"
                 title={submitDisabledReason ?? '发送 · Enter'}
                 aria-description={submitDisabledReason}
               >
@@ -188,6 +269,7 @@ export function Composer({
           </div>
         </div>
       </div>
+      {references.error && <InlineError message={references.error} />}
       {projectError && <InlineError message={projectError} />}
     </div>
   )

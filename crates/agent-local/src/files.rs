@@ -8,11 +8,11 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-pub(crate) fn definitions() -> Vec<ToolDefinition> {
+pub(crate) fn definitions(mode: PermissionMode) -> Vec<ToolDefinition> {
     let make = |name: &str, description: &str, properties: serde_json::Value, required: &[&str]| {
         ToolDefinition { name: name.into(), description: description.into(), input_schema: json!({"type":"object","properties":properties,"required":required,"additionalProperties":false}).to_string() }
     };
-    vec![
+    let mut definitions = vec![
         make(
             "list_files",
             "List files in a workspace-relative directory. Protected paths and dependency/build directories are excluded.",
@@ -21,7 +21,7 @@ pub(crate) fn definitions() -> Vec<ToolDefinition> {
         ),
         make(
             "read_file",
-            "Read a UTF-8 file, returning up to 32 KiB and next_offset for pagination. Offsets count characters.",
+            "Read a UTF-8 text file up to 32 MiB, returning a bounded chunk and next_offset for pagination. Offsets count characters. For PDF/DOCX/XLSX/PPTX use read_document.",
             json!({"path":{"type":"string"},"offset":{"type":"integer","minimum":0}}),
             &["path"],
         ),
@@ -49,7 +49,16 @@ pub(crate) fn definitions() -> Vec<ToolDefinition> {
             json!({"command":{"type":"string"},"timeout_seconds":{"type":"integer","minimum":1,"maximum":120}}),
             &["command"],
         ),
-    ]
+    ];
+    definitions.extend(crate::documents::definitions());
+    definitions.retain(|tool| match tool.name.as_str() {
+        "write_file" | "edit_file" => mode == PermissionMode::WorkspaceWrite,
+        "run_command" => {
+            mode == PermissionMode::WorkspaceWrite && crate::command::sandbox_available()
+        }
+        _ => true,
+    });
+    definitions
 }
 
 #[derive(Deserialize)]
@@ -100,7 +109,15 @@ impl LocalTools {
                     if paths::skipped_directory(&name) || kind.is_symlink() {
                         continue;
                     }
-                    entries.push(json!({"name":name,"directory":kind.is_dir()}));
+                    let metadata = entry.metadata()?;
+                    let reader = if kind.is_dir() {
+                        None
+                    } else if crate::documents::supported(&entry.path()) {
+                        Some("read_document")
+                    } else {
+                        Some("read_file")
+                    };
+                    entries.push(json!({"name":name,"directory":kind.is_dir(),"size_bytes":metadata.len(),"reader":reader}));
                     if entries.len() > 1000 {
                         return Err(io::Error::other(
                             "directory has too many entries; choose a subdirectory",
@@ -113,9 +130,7 @@ impl LocalTools {
             "read_file" => {
                 let input: ReadInput = parse(&call.arguments)?;
                 let target = paths::resolve(self.root(), &input.path)?;
-                let content = paths::text_file(&target)?.ok_or_else(|| {
-                    io::Error::new(io::ErrorKind::NotFound, "file does not exist")
-                })?;
+                let content = paths::read_text(&target, paths::READ_LIMIT)?;
                 let mut chars = content.chars().skip(input.offset).peekable();
                 let chunk: String = chars.by_ref().take(8192).collect();
                 let next = chars.peek().map(|_| input.offset + chunk.chars().count());
@@ -124,40 +139,10 @@ impl LocalTools {
             }
             "search_files" => {
                 let input: SearchInput = parse(&call.arguments)?;
-                if input.query.is_empty() || input.query.len() > 1024 {
-                    return Err(io::Error::other("query must contain 1 to 1024 bytes"));
-                }
-                let target = paths::resolve(self.root(), &input.path)?;
-                let all = if target.is_file() {
-                    [(
-                        input.path.clone(),
-                        paths::text_file(&target)?.unwrap_or_default(),
-                    )]
-                    .into()
-                } else {
-                    crate::journal::snapshot(&target)?
-                };
-                let mut results = Vec::new();
-                'outer: for (path, content) in all {
-                    for (index, line) in content.lines().enumerate() {
-                        if line.contains(&input.query) {
-                            let path =
-                                if target.is_dir() && !input.path.is_empty() && input.path != "." {
-                                    format!("{}/{path}", input.path.trim_end_matches('/'))
-                                } else {
-                                    path.clone()
-                                };
-                            results.push(
-                                json!({"path":path,"line":index+1,"text":paths::bounded(line,256)}),
-                            );
-                            if results.len() == 100 {
-                                break 'outer;
-                            }
-                        }
-                    }
-                }
-                json!({"limit_reached":results.len()==100,"matches":results}).to_string()
+                crate::search::search(self.root(), &input.path, &input.query)?.to_string()
             }
+            "read_document" | "search_document" => crate::documents::call(self.root(), &call)?,
+
             "write_file" => {
                 let input: WriteInput = parse(&call.arguments)?;
                 self.write(&input.path, input.expected_content, input.content)?;

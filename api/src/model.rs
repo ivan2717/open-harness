@@ -95,23 +95,20 @@ impl Model for ServiceModel {
 
 pub enum ServiceTools {
     Demo(DemoTools),
-    Local(agent_local::LocalTools),
-    None,
+    Host(crate::extensions::ExtensionTools),
 }
 impl ToolExecutor for ServiceTools {
     type Error = io::Error;
     fn definitions(&self) -> &[ToolDefinition] {
         match self {
             Self::Demo(tools) => tools.definitions(),
-            Self::Local(tools) => tools.definitions(),
-            Self::None => &[],
+            Self::Host(tools) => tools.definitions(),
         }
     }
     async fn execute(&self, call: ToolCall) -> Result<String, Self::Error> {
         match self {
             Self::Demo(tools) => tools.execute(call).await,
-            Self::Local(tools) => tools.execute(call).await,
-            Self::None => Err(io::Error::other("unknown tool")),
+            Self::Host(tools) => tools.execute(call).await,
         }
     }
 }

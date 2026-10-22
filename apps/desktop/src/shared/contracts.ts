@@ -1,4 +1,6 @@
 import type { ModelCapacity, ResolvedModelLimits } from './model-limits'
+import type { ExtensionConfig, ExtensionSettings, McpCatalog, RunExtensions } from './extensions'
+import type { ResolvedResource, ResourceAction, ResourceReference } from './message-resources'
 
 export type RunStatus =
   'running' | 'waiting_for_input' | 'completed' | 'failed' | 'cancelled' | 'interrupted'
@@ -56,6 +58,8 @@ export interface RunSummary {
   title: string
   prompt: string
   status: RunStatus
+  /** Manual context work remains active even while the run is waiting for input. */
+  compacting?: boolean
   model_id: string
   workspace_path?: string | null
   permission_mode?: PermissionMode
@@ -67,6 +71,7 @@ export interface ChatMessage {
   id: string
   role: 'user' | 'assistant' | 'tool'
   text: string
+  files?: FileReferenceInfo[]
   reasoning?: string
   tool_name?: string
   is_error?: boolean
@@ -131,7 +136,6 @@ export interface ContextSnapshot {
 }
 
 export interface RunDetail extends RunSummary {
-  compacting?: boolean
   messages: ChatMessage[]
   events: TimelineEvent[]
   context: ContextSnapshot | null
@@ -141,8 +145,27 @@ export interface RunDetail extends RunSummary {
 export interface CreateRunInput {
   prompt: string
   model_id: string
+  files?: TextFileReference[]
   workspace_path?: string
   permission_mode?: PermissionMode
+}
+
+/** A user-selected UTF-8 file snapshot, not a grant to its parent directory. */
+export interface TextFileReference {
+  name: string
+  path?: string
+  text: string
+}
+
+export interface FileReferenceInfo {
+  name: string
+  path?: string
+  size: number
+}
+
+export interface FileImportResult {
+  files: TextFileReference[]
+  errors: string[]
 }
 
 export interface FileChange {
@@ -179,20 +202,34 @@ export interface WorkspaceReview {
 }
 
 export interface DesktopBridge {
+  extensionSettings(): Promise<ExtensionSettings>
+  saveExtensions(config: ExtensionConfig): Promise<ExtensionSettings>
+  testMcp(id: string): Promise<McpCatalog>
+  runExtensions(id: string): Promise<RunExtensions>
+  refreshRunSkills(id: string): Promise<RunExtensions>
+  approveExtension(id: string, approvalId: string, allow: boolean): Promise<RunExtensions>
+  openSkillsDirectory(): Promise<void>
+  resolveResource(reference: ResourceReference): Promise<ResolvedResource>
+  resourceAction(id: string, action: ResourceAction): Promise<void>
+  openExternal(url: string): Promise<void>
+  copyText(text: string): Promise<void>
   config(): Promise<AppConfig>
   listRuns(): Promise<RunSummary[]>
   getRun(id: string): Promise<RunDetail>
   createRun(input: CreateRunInput): Promise<RunDetail>
+  chooseFiles(): Promise<FileImportResult>
+  importFiles(files: File[]): Promise<FileImportResult>
+  pasteFiles(): Promise<FileImportResult>
   chooseWorkspace(): Promise<string | null>
   getWorkspace(id: string): Promise<WorkspaceReview>
   approveCommand(id: string, approvalId: string, allow: boolean): Promise<WorkspaceReview>
   revertFile(id: string, path: string): Promise<WorkspaceReview>
-  resumeRun(id: string, message?: string): Promise<RunDetail>
+  resumeRun(id: string, message?: string, files?: TextFileReference[]): Promise<RunDetail>
   cancelRun(id: string): Promise<RunDetail>
   compactRun(id: string): Promise<RunDetail>
   cancelCompaction(id: string): Promise<RunDetail>
   configureModel(input: ConfigureModelInput): Promise<ConfigureModelResult>
-  submitInput(id: string, message: string): Promise<RunDetail>
+  submitInput(id: string, message: string, files?: TextFileReference[]): Promise<RunDetail>
   watchRun(
     id: string,
     listener: (snapshot: RunDetail) => void,

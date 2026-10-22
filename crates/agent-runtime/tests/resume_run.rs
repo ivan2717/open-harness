@@ -252,6 +252,7 @@ fn forged_or_incomplete_recovery_outcomes_are_rejected_on_write_and_restore() {
     wrong[0].outcome = InterruptedToolOutcome::NotStarted;
     assert_eq!(
         run.record(RunEvent::RunResumed {
+            files: Vec::new(),
             content: "Continue".into(),
             interrupted_calls: wrong
         })
@@ -260,6 +261,7 @@ fn forged_or_incomplete_recovery_outcomes_are_rejected_on_write_and_restore() {
     );
     assert_eq!(
         run.record(RunEvent::RunResumed {
+            files: Vec::new(),
             content: "Continue".into(),
             interrupted_calls: vec![]
         })
@@ -267,6 +269,7 @@ fn forged_or_incomplete_recovery_outcomes_are_rejected_on_write_and_restore() {
         AgentRunError::InvalidResume
     );
     let event = RunEvent::RunResumed {
+        files: Vec::new(),
         content: "Continue".into(),
         interrupted_calls: run.interrupted_tool_calls(),
     };

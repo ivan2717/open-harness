@@ -20,7 +20,8 @@ function contentSecurityPolicy(): Plugin {
             "default-src 'self'",
             `script-src 'self'${development ? " 'unsafe-inline'" : ''}`,
             "style-src 'self' 'unsafe-inline'",
-            "img-src 'self' data: blob:",
+            "img-src 'self' data: blob: openharness-resource: https: http:",
+            'media-src openharness-resource: https: http:',
             "font-src 'self' data:",
             development
               ? "connect-src 'self' ws://localhost:* ws://127.0.0.1:* http://localhost:* http://127.0.0.1:*"

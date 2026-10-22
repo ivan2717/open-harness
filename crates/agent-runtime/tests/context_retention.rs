@@ -106,6 +106,7 @@ fn append_correction(run: &mut AgentRun, correction: &str) {
     })
     .unwrap();
     run.record(RunEvent::InputReceived {
+        files: Vec::new(),
         content: correction.to_owned(),
     })
     .unwrap();
@@ -364,4 +365,84 @@ async fn protected_user_input_that_exceeds_the_budget_is_never_silently_summariz
     );
     assert_eq!(run.events(), original_events);
     assert_eq!(run.instruction(), original);
+}
+
+#[tokio::test]
+async fn compaction_retains_latest_file_and_keeps_old_snapshot_searchable() {
+    use agent_runtime::{SEARCH_RUN_HISTORY_TOOL, TextFileReference, format_user_input};
+    let old = TextFileReference {
+        name: "earlier.txt".into(),
+        path: None,
+        text: format!("archive-needle\n\"original\" {}", "evidence ".repeat(900)),
+    };
+    let latest = TextFileReference {
+        name: "latest.txt".into(),
+        path: None,
+        text: "Keep this current file verbatim.".into(),
+    };
+    let mut run = AgentRun::start_with_files(
+        "retention-files",
+        "context-agent",
+        "Compare the records",
+        vec![old.clone()],
+    );
+    for step in 0..4 {
+        append_tool_step(&mut run, &format!("before-files-{step}"));
+    }
+    run.record(RunEvent::RunCancelled).unwrap();
+    run.record(RunEvent::RunResumed {
+        content: String::new(),
+        files: vec![latest.clone()],
+        interrupted_calls: Vec::new(),
+    })
+    .unwrap();
+    let original_events = run.events().to_vec();
+    let compactor = ForgetfulCompactor::default();
+    let manager = CompactingContextManager::new(
+        ContextPolicy::builder()
+            .input_token_limit(20_000)
+            .compaction_threshold(5_000)
+            .compaction_target(3_500)
+            .recent_tail_tokens(1_000)
+            .build()
+            .unwrap(),
+        compactor.clone(),
+        InMemoryContextCheckpointStore::new(),
+        ApproximateTokenCounter::new(1).unwrap(),
+    );
+    let prepared = manager
+        .prepare_owned(ContextInput::new(
+            run.id(),
+            INSTRUCTIONS,
+            original_events.clone(),
+            Vec::new(),
+        ))
+        .await
+        .unwrap();
+    let omitted = prepared.omitted_history.unwrap();
+    assert!(user_messages(&prepared.request).contains(&format_user_input("", &[latest]).as_str()));
+    assert!(compactor.calls.lock().unwrap().iter().flatten().any(|event| matches!(&event.event, RunEvent::RunStarted { files, .. } if files == &vec![old.clone()])));
+    assert_eq!(run.events(), original_events);
+    let store = InMemoryEventStore::new();
+    persist_run(&store, &run).await;
+    let access = EventStoreHistoryAccess::new();
+    let result = access
+        .execute(
+            &store,
+            HistoryContext {
+                run_id: run.id().into(),
+                through_sequence: omitted.through_sequence,
+                checkpoint_id: omitted.checkpoint_id,
+            },
+            ToolCall {
+                id: "search-file".into(),
+                name: SEARCH_RUN_HISTORY_TOOL.into(),
+                arguments: serde_json::json!({"query":"archive-needle\n\"original\""}).to_string(),
+            },
+        )
+        .await
+        .unwrap();
+    let result: serde_json::Value = serde_json::from_str(&result).unwrap();
+    assert_eq!(result["total_matches"], 1);
+    assert_eq!(result["hits"][0]["sequence"], 0);
 }

@@ -78,6 +78,7 @@ async fn create(state: &AppState, prompt: &str) -> RunDetail {
     state
         .create(CreateRunInput {
             prompt: prompt.into(),
+            files: Vec::new(),
             model_id: "local-demo".into(),
             workspace_path: None,
             permission_mode: Default::default(),
@@ -318,7 +319,11 @@ async fn sse_sends_initial_and_reconnection_snapshots_with_auth() {
     let created = create(&state, "SSE").await;
     let id = &created.summary.id;
     let app = api::app(state.clone());
-    for path in ["/api/config".to_owned(), format!("/api/runs/{id}/events")] {
+    for path in [
+        "/api/config".to_owned(),
+        format!("/api/runs/{id}/events"),
+        format!("/api/runs/{id}/messages/event-0/files/0"),
+    ] {
         let (status, _) = request(app.clone(), "GET", &path, None).await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
     }
@@ -474,4 +479,187 @@ async fn invalid_requests_are_rejected_without_runs() {
             .0,
         StatusCode::NOT_FOUND
     );
+}
+
+#[tokio::test]
+async fn file_references_survive_create_input_resume_and_restart_without_project_access() {
+    use agent_core::agent::RunEvent;
+
+    let directory = Directory::new();
+    let initial = state(&directory).await;
+    let app = api::app(initial.clone());
+    let file = |name: &str, text: &str| json!({"name":name,"path":format!("/not-granted/{name}"),"text":text});
+    let first = "创建时保存的内容 CREATE_SNAPSHOT";
+    let second = "补充时保存的内容 INPUT_SNAPSHOT";
+    let third = "继续时保存的内容 RESUME_SNAPSHOT";
+    let (status, created) = request(
+        app,
+        "POST",
+        "/api/runs",
+        Some(json!({
+            "prompt":"/ask 请查看引用文件",
+            "model_id":"local-demo",
+            "files":[file("first.rs",first)],
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let id = created["id"].as_str().unwrap();
+    assert_eq!(
+        settled(&initial, id).await.summary.status,
+        RunStatus::WaitingForInput
+    );
+    initial.shutdown().await;
+    let reopened = state(&directory).await;
+    let app = api::app(reopened.clone());
+    let (status, input) = request(
+        app.clone(),
+        "POST",
+        &format!("/api/runs/{id}/input"),
+        Some(json!({"message":"", "files":[file("second.txt",second)]})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(!input.to_string().contains("INPUT_SNAPSHOT"));
+    assert_eq!(
+        settled(&reopened, id).await.summary.status,
+        RunStatus::Completed
+    );
+    let (status, resumed) = request(
+        app,
+        "POST",
+        &format!("/api/runs/{id}/resume"),
+        Some(json!({"files":[file("third.md",third)]})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(!resumed.to_string().contains("RESUME_SNAPSHOT"));
+    assert_eq!(
+        settled(&reopened, id).await.summary.status,
+        RunStatus::Completed
+    );
+    reopened.shutdown().await;
+    let final_state = state(&directory).await;
+    let detail = final_state.get(id).unwrap();
+    assert_eq!(detail.summary.prompt, "/ask 请查看引用文件");
+    assert!(detail.summary.workspace_path.is_none());
+    assert!(final_state.workspace_review(id).await.is_err());
+    let users: Vec<_> = detail
+        .messages
+        .iter()
+        .filter(|message| message.role == "user")
+        .collect();
+    assert_eq!(users.len(), 3);
+    for (message, (name, text)) in users.iter().zip([
+        ("first.rs", first),
+        ("second.txt", second),
+        ("third.md", third),
+    ]) {
+        assert_eq!(message.files.len(), 1);
+        assert_eq!(message.files[0].name, name);
+        assert_eq!(message.files[0].size, text.len());
+        assert_eq!(
+            message.files[0].path.as_deref(),
+            Some(format!("/not-granted/{name}").as_str())
+        );
+        assert!(!message.text.contains("SNAPSHOT"));
+        let (status, snapshot) = request(
+            api::app(final_state.clone()),
+            "GET",
+            &format!("/api/runs/{id}/messages/{}/files/0", message.id),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(snapshot["name"], name);
+        assert_eq!(
+            snapshot["text"], text,
+            "preview reads the saved event, not the path"
+        );
+    }
+    for path in [
+        format!("/api/runs/{id}/messages/{}/files/1", users[0].id),
+        format!("/api/runs/{id}/messages/event-999999/files/0"),
+        format!("/api/runs/{id}/messages/event-1/files/0"),
+        "/api/runs/does-not-exist/messages/event-0/files/0".into(),
+    ] {
+        assert_eq!(
+            request(api::app(final_state.clone()), "GET", &path, None)
+                .await
+                .0,
+            StatusCode::NOT_FOUND,
+        );
+    }
+    assert_eq!(users[1].text, "");
+    assert_eq!(users[2].text, "");
+    let display = serde_json::to_string(&detail).unwrap();
+    assert!(
+        !display.contains("SNAPSHOT"),
+        "snapshots are not expanded in UI DTOs"
+    );
+    let stored = JsonlEventStore::new(directory.0.join("events"))
+        .load(id)
+        .await
+        .unwrap()
+        .unwrap();
+    let snapshots: Vec<_> = stored
+        .events
+        .iter()
+        .filter_map(|event| match &event.event {
+            RunEvent::RunStarted { files, .. }
+            | RunEvent::InputReceived { files, .. }
+            | RunEvent::RunResumed { files, .. } => Some(files[0].text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(snapshots, vec![first, second, third]);
+    final_state.shutdown().await;
+}
+
+#[tokio::test]
+async fn file_only_messages_use_filenames_for_titles_and_invalid_files_do_not_create_runs() {
+    let directory = Directory::new();
+    let state = state(&directory).await;
+    let app = api::app(state.clone());
+    let file = json!({"name":"notes.md","text":"FILE_BODY_SENTINEL"});
+    for files in [
+        json!([{"name":"", "text":"x"}]),
+        json!([{"name":"../notes.md", "text":"x"}]),
+        json!([{"name":"notes.md", "path":"bad\npath", "text":"x"}]),
+        json!([{"name":"notes.md", "text":"binary\u{0000}value"}]),
+        json!([{"name":"notes.md", "text":"x".repeat(256 * 1024 + 1)}]),
+        json!((0..9).map(|_| file.clone()).collect::<Vec<_>>()),
+        json!(
+            (0..3)
+                .map(|_| json!({"name":"notes.md", "text":"x".repeat(200 * 1024)}))
+                .collect::<Vec<_>>()
+        ),
+    ] {
+        let (status, _) = request(
+            app.clone(),
+            "POST",
+            "/api/runs",
+            Some(json!({
+                "prompt":"read files", "model_id":"local-demo", "files":files,
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+    assert!(state.list().is_empty());
+    let (status, created) = request(
+        app,
+        "POST",
+        "/api/runs",
+        Some(json!({
+            "prompt":"", "model_id":"local-demo", "files":[file],
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(created["title"], "notes.md");
+    assert_eq!(created["prompt"], "");
+    assert_eq!(created["messages"][0]["files"][0]["name"], "notes.md");
+    assert!(!created.to_string().contains("FILE_BODY_SENTINEL"));
+    state.shutdown().await;
 }

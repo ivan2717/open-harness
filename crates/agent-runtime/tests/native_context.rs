@@ -236,6 +236,7 @@ async fn changed_event_prefix_invalidates_native_state_even_when_sequences_match
     manager.prepare_owned(input(&run)).await.unwrap();
     let mut changed = input(&run);
     changed.events[0].event = RunEvent::RunStarted {
+        files: Vec::new(),
         instruction: "New constraints".to_owned(),
     };
 

@@ -118,13 +118,20 @@ export class Backend {
 
   async request(request: ApiRequest): Promise<unknown> {
     const origin = await this.origin()
+    // MCP discovery has a 60-second runtime deadline plus bounded cleanup.
+    // Leave room for its result without extending ordinary local API requests.
+    const timeout =
+      request.method === 'POST' &&
+      /^\/api\/extensions\/mcp\/[a-zA-Z0-9_-]{1,128}\/test$/.test(request.path)
+        ? 70_000
+        : 30_000
     let response: Response
     try {
       response = await fetch(`${origin}${request.path}`, {
         method: request.method,
         headers: { Authorization: `Bearer ${this.token}`, 'Content-Type': 'application/json' },
         body: request.body === undefined ? undefined : JSON.stringify(request.body),
-        signal: AbortSignal.timeout(30_000),
+        signal: AbortSignal.timeout(timeout),
         redirect: 'error',
       })
     } catch {

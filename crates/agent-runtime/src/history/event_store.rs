@@ -261,15 +261,26 @@ fn event_matches_query(event: &RunEvent, folded_query: &str) -> bool {
     if matches(event_type(event)) {
         return true;
     }
+    let user_matches = |content: &str, files: &[crate::TextFileReference]| {
+        matches(content)
+            || files.iter().any(|file| {
+                matches(&file.name)
+                    || file.path.as_deref().is_some_and(matches)
+                    || matches(&file.text)
+            })
+    };
     match event {
-        RunEvent::RunStarted { instruction } => matches(instruction),
-        RunEvent::ModelResponseReceived { content, .. } | RunEvent::InputReceived { content } => {
-            matches(content)
-        }
+        RunEvent::RunStarted { instruction, files } => user_matches(instruction, files),
+        RunEvent::InputReceived { content, files } => user_matches(content, files),
+        RunEvent::ModelResponseReceived { content, .. } => matches(content),
         RunEvent::RunResumed {
             content,
+            files,
             interrupted_calls,
-        } => matches(content) || interrupted_calls.iter().any(|call| matches(&call.call_id)),
+        } => {
+            user_matches(content, files)
+                || interrupted_calls.iter().any(|call| matches(&call.call_id))
+        }
         RunEvent::ToolCallRequested {
             call_id,
             tool_name,

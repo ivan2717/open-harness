@@ -11,7 +11,8 @@ import {
   WifiOff,
 } from 'lucide-react'
 import { configOptions, runsOptions } from '../lib/queries'
-import { dateTime, statusLabels } from '../lib/format'
+import { dateTime } from '../lib/format'
+import { RunActivity } from './RunActivity'
 
 export function AppShell() {
   const location = useLocation()
@@ -101,14 +102,10 @@ export function AppShell() {
                   params={{ runId: run.id }}
                   className={`run-link ${location.pathname === `/runs/${encodeURIComponent(run.id)}` ? 'is-active' : ''}`}
                 >
-                  <span className={`status-dot status-${run.status}`} />
+                  <RunActivity active={run.status === 'running' || Boolean(run.compacting)} />
                   <span className="min-w-0 flex-1">
                     <span className="run-link-title">{run.title || run.prompt}</span>
-                    <span className="run-link-meta">
-                      {dateTime(run.updated_at)}
-                      <span>·</span>
-                      {statusLabels[run.status]}
-                    </span>
+                    <span className="run-link-meta">{dateTime(run.updated_at)}</span>
                   </span>
                 </Link>
               ))}

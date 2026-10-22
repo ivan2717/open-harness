@@ -533,6 +533,7 @@ mod tests {
             step: 0,
             occurred_at: SystemTime::now(),
             event: RunEvent::RunStarted {
+                files: Vec::new(),
                 instruction: "Persist a large history".to_owned(),
             },
         };

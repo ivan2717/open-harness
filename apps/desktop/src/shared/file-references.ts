@@ -1,0 +1,3 @@
+export const MAX_REFERENCE_FILES = 8
+export const MAX_FILE_REFERENCE_BYTES = 256 * 1024
+export const MAX_REFERENCE_TOTAL_BYTES = 512 * 1024

@@ -7,6 +7,7 @@ import { configOptions } from '../lib/queries'
 import { useUiStore } from '../state/ui-store'
 import { ModelSettings } from '../components/ModelSettings'
 import { DeveloperTools } from '../components/DeveloperTools'
+import { ExtensionsSettings } from '../components/ExtensionsSettings'
 import { taskModels } from '../lib/task-models'
 
 export function SettingsPage() {
@@ -67,6 +68,7 @@ export function SettingsPage() {
           )}
           {config.data.model_config_error && <p role="alert">{config.data.model_config_error}</p>}
           <ModelSettings />
+          <ExtensionsSettings />
           <section className="settings-section">
             <h2>界面偏好</h2>
             <div className="settings-row">

@@ -285,6 +285,7 @@ async fn a_run_can_wait_for_input_and_resume() {
     assert_eq!(status, RunStatus::WaitingForInput);
 
     run.record(RunEvent::InputReceived {
+        files: Vec::new(),
         content: "Cargo.toml".to_owned(),
     })
     .unwrap();

@@ -4,6 +4,7 @@ use std::{
 };
 
 pub(crate) const FILE_LIMIT: usize = 256 * 1024;
+pub(crate) const READ_LIMIT: usize = 32 * 1024 * 1024;
 pub(crate) const OUTPUT_LIMIT: usize = 64 * 1024;
 const PROTECTED_NAMES: &[&str] = &[
     ".git",
@@ -75,7 +76,8 @@ pub(crate) fn skipped_directory(name: &str) -> bool {
     denied_component(name)
         || matches!(
             name,
-            "node_modules"
+            ".DS_Store"
+                | "node_modules"
                 | "target"
                 | "dist"
                 | "out"
@@ -119,46 +121,68 @@ pub(crate) fn resolve(root: &Path, relative: &str) -> io::Result<PathBuf> {
     Ok(candidate)
 }
 
+/// Opens a bounded regular file without following its final symlink. All callers
+/// must first resolve the workspace path to apply the component policy.
+pub(crate) fn read_bytes(path: &Path, limit: usize) -> io::Result<Vec<u8>> {
+    use std::io::Read;
+    let metadata = fs::symlink_metadata(path)?;
+    if !metadata.is_file() || metadata.file_type().is_symlink() {
+        return Err(denied("expected a regular file"));
+    }
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+        if metadata.nlink() > 1 {
+            return Err(denied("hard-linked files are not accessible"));
+        }
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    if metadata.len() > limit as u64 {
+        return Err(io::Error::other(format!(
+            "file exceeds {} MiB read limit",
+            limit as f64 / 1048576.0
+        )));
+    }
+    let file = options.open(path)?;
+    let opened = file.metadata()?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if opened.ino() != metadata.ino() || opened.dev() != metadata.dev() || opened.nlink() > 1 {
+            return Err(denied("file changed while opening; retry"));
+        }
+    }
+    if !opened.is_file() {
+        return Err(denied("expected a regular file"));
+    }
+    let mut bytes = Vec::new();
+    file.take((limit + 1) as u64).read_to_end(&mut bytes)?;
+    if bytes.len() > limit {
+        return Err(io::Error::other("file exceeds read limit"));
+    }
+    Ok(bytes)
+}
+
+pub(crate) fn read_text(path: &Path, limit: usize) -> io::Result<String> {
+    let bytes = read_bytes(path, limit)?;
+    if bytes.contains(&0) {
+        return Err(io::Error::other(
+            "binary file; use read_document for PDF, DOCX, XLSX or PPTX",
+        ));
+    }
+    String::from_utf8(bytes).map_err(|_| {
+        io::Error::other("not a UTF-8 text file; use read_document for supported documents")
+    })
+}
+
+/// The smaller edit/review bound is independent from the paginated read limit.
 pub(crate) fn text_file(path: &Path) -> io::Result<Option<String>> {
-    match fs::symlink_metadata(path) {
+    match read_text(path, FILE_LIMIT) {
+        Ok(text) => Ok(Some(text)),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error),
-        Ok(metadata) => {
-            if !metadata.is_file() || metadata.file_type().is_symlink() {
-                return Err(denied("expected a regular file"));
-            }
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::MetadataExt;
-                if metadata.nlink() > 1 {
-                    return Err(denied("hard-linked files are not accessible"));
-                }
-            }
-            if metadata.len() > FILE_LIMIT as u64 {
-                return Err(io::Error::other("file exceeds 256 KiB limit"));
-            }
-            let mut options = fs::OpenOptions::new();
-            options.read(true);
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::OpenOptionsExt;
-                options.custom_flags(libc::O_NOFOLLOW);
-            }
-            use std::io::Read;
-            let mut content = Vec::new();
-            options
-                .open(path)?
-                .take((FILE_LIMIT + 1) as u64)
-                .read_to_end(&mut content)?;
-            if content.len() > FILE_LIMIT || content.contains(&0) {
-                return Err(io::Error::other(
-                    "binary or oversized file is not supported",
-                ));
-            }
-            String::from_utf8(content)
-                .map(Some)
-                .map_err(io::Error::other)
-        }
     }
 }
 

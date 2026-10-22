@@ -104,6 +104,77 @@ fn drain(receiver: &mut RunEventReceiver) -> Vec<agent_runtime::RunEventNotifica
 }
 
 #[tokio::test]
+async fn attached_file_snapshots_survive_restart_input_and_resume_and_are_counted() {
+    use agent_runtime::{ApproximateTokenCounter, ModelMessage, TextFileReference, TokenCounter};
+    let directory = TestDirectory::new();
+    let agent = test_agent();
+    let files = |label: &str| {
+        vec![TextFileReference {
+            name: format!("{label}.txt"),
+            path: Some(format!("/unavailable/{label}.txt")),
+            text: format!("snapshot-{label}:{}", "已选择的内容".repeat(500)),
+        }]
+    };
+    let runtime = AgentRuntime::with_event_store(
+        ScriptedModel::new([ModelResponse::input_required("More files?".into())]),
+        NoTools,
+        test_context_manager(),
+        JsonlEventStore::new(directory.path()),
+        None,
+    );
+    let mut run = runtime
+        .start_run_with_files(&agent, "file-snapshots", "", files("first"))
+        .await
+        .unwrap();
+    runtime.run_until_blocked(&agent, &mut run).await.unwrap();
+    let request = runtime.model().requests().remove(0);
+    let mut bare = request.clone();
+    bare.messages[0] = ModelMessage::user(String::new());
+    let counter = ApproximateTokenCounter::default();
+    assert!(counter.count_tokens(&request) > counter.count_tokens(&bare) + 1_000);
+    drop(runtime);
+
+    let runtime = AgentRuntime::with_event_store(
+        ScriptedModel::new([
+            ModelResponse::final_answer("Read first and second.".into()),
+            ModelResponse::final_answer("Read all three.".into()),
+        ]),
+        NoTools,
+        test_context_manager(),
+        JsonlEventStore::new(directory.path()),
+        None,
+    );
+    let mut run = runtime
+        .restore_run("file-snapshots")
+        .await
+        .unwrap()
+        .unwrap();
+    runtime
+        .submit_input_with_files(&mut run, "", files("second"))
+        .await
+        .unwrap();
+    runtime.run_until_blocked(&agent, &mut run).await.unwrap();
+    runtime
+        .resume_run_with_files(&mut run, "", files("third"))
+        .await
+        .unwrap();
+    runtime.run_until_blocked(&agent, &mut run).await.unwrap();
+    let restored = runtime.restore_run(run.id()).await.unwrap().unwrap();
+    assert_eq!(restored.events(), run.events());
+    let requests = runtime.model().requests();
+    let final_request = serde_json::to_string(requests.last().unwrap()).unwrap();
+    for label in ["first", "second", "third"] {
+        assert!(final_request.contains(&format!("snapshot-{label}")));
+        assert!(restored.events().iter().any(|event| {
+            event
+                .event
+                .user_input()
+                .is_some_and(|text| text.contains(&format!("snapshot-{label}")))
+        }));
+    }
+}
+
+#[tokio::test]
 async fn event_store_retries_are_idempotent_but_conflicts_are_rejected() {
     let agent = test_agent();
     let run = agent.start_run("run-idempotent", "Test duplicate events");
@@ -221,7 +292,7 @@ async fn submitted_input_is_persisted_before_the_run_resumes() {
         .unwrap();
     assert!(matches!(
         &stored.events.last().unwrap().event,
-        RunEvent::InputReceived { content } if content == "open-harness"
+        RunEvent::InputReceived { content, .. } if content == "open-harness"
     ));
     assert_eq!(run.status(), RunStatus::Running);
 
@@ -234,7 +305,7 @@ async fn submitted_input_is_persisted_before_the_run_resumes() {
     assert_eq!(received.len(), run.events().len());
     assert!(received.iter().any(|notification| matches!(
         &notification.envelope.event,
-        RunEvent::InputReceived { content } if content == "open-harness"
+        RunEvent::InputReceived { content, .. } if content == "open-harness"
     )));
 }
 
@@ -695,6 +766,7 @@ async fn jsonl_index_preserves_retry_and_conflict_checks_for_old_events() {
     );
     let mut conflict = run.events()[0].clone();
     conflict.event = RunEvent::RunStarted {
+        files: Vec::new(),
         instruction: "Different event at the same sequence".to_owned(),
     };
     assert!(matches!(

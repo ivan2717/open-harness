@@ -35,6 +35,8 @@ pub struct RunSummary {
     pub title: String,
     pub prompt: String,
     pub status: RunStatus,
+    #[serde(default)]
+    pub compacting: bool,
     pub model_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_path: Option<String>,
@@ -49,6 +51,8 @@ pub struct ChatMessage {
     pub id: String,
     pub role: String,
     pub text: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files: Vec<FileReferenceInfo>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -64,12 +68,22 @@ impl ChatMessage {
             id,
             role: role.into(),
             text,
+            files: Vec::new(),
             reasoning: None,
             tool_name: None,
             is_error: None,
             status: "complete".into(),
         }
     }
+}
+
+/// Display metadata only; the durable user event owns the immutable text snapshot.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FileReferenceInfo {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    pub size: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -120,8 +134,6 @@ pub struct ContextSnapshot {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunDetail {
-    #[serde(default)]
-    pub compacting: bool,
     #[serde(flatten)]
     pub summary: RunSummary,
     pub messages: Vec<ChatMessage>,
@@ -135,6 +147,8 @@ pub struct RunDetail {
 #[serde(deny_unknown_fields)]
 pub struct CreateRunInput {
     pub prompt: String,
+    #[serde(default)]
+    pub files: Vec<agent_core::TextFileReference>,
     pub model_id: String,
     #[serde(default)]
     pub workspace_path: Option<String>,
@@ -146,6 +160,8 @@ pub struct CreateRunInput {
 #[serde(deny_unknown_fields)]
 pub struct ResumeRunInput {
     pub message: Option<String>,
+    #[serde(default)]
+    pub files: Vec<agent_core::TextFileReference>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -164,6 +180,8 @@ pub struct RevertInput {
 #[serde(deny_unknown_fields)]
 pub struct SubmitInput {
     pub message: String,
+    #[serde(default)]
+    pub files: Vec<agent_core::TextFileReference>,
 }
 
 /// Credentials are accepted only on configuration and never included in responses.
@@ -178,4 +196,33 @@ pub struct ConfigureModel {
     pub max_output_tokens: usize,
     pub reasoning_mode: String,
     pub reasoning_effort: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RunDetail;
+
+    #[test]
+    fn compaction_activity_is_shared_without_changing_detail_json_shape() {
+        let mut saved = serde_json::json!({
+            "id": "run-1", "revision": 2, "title": "test", "prompt": "test",
+            "status": "waiting_for_input", "model_id": "local-demo",
+            "created_at": "2026-10-22T00:00:00Z", "updated_at": "2026-10-22T00:00:00Z",
+            "messages": [], "events": [], "context": null,
+            "compacting": true
+        });
+        let detail: RunDetail = serde_json::from_value(saved.clone()).unwrap();
+        assert!(detail.summary.compacting);
+        let summary = serde_json::to_value(&detail.summary).unwrap();
+        assert_eq!(summary["compacting"], true);
+        let serialized = serde_json::to_string(&detail).unwrap();
+        assert_eq!(serialized.matches("\"compacting\"").count(), 1);
+        assert!(!serialized.contains("\"summary\""));
+        let restored: RunDetail = serde_json::from_str(&serialized).unwrap();
+        assert!(restored.summary.compacting);
+
+        saved.as_object_mut().unwrap().remove("compacting");
+        let legacy: RunDetail = serde_json::from_value(saved).unwrap();
+        assert!(!legacy.summary.compacting);
+    }
 }

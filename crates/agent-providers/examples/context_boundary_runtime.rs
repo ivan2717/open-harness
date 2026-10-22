@@ -678,6 +678,7 @@ fn seeded_history(
         if index > 0 {
             run.record(RunEvent::InputReceived {
                 content: parts[index].into(),
+                files: Vec::new(),
             })?;
         }
         run.begin_step()?;
@@ -697,6 +698,7 @@ fn seeded_history(
     }
     run.record(RunEvent::InputReceived {
         content: QUESTION.into(),
+        files: Vec::new(),
     })?;
     Ok(run)
 }
@@ -836,7 +838,7 @@ mod tests {
                 .all(|response| matches!(response.content[0], ContentBlock::Reasoning { .. }))
         );
         assert!(
-            matches!(&restored.events().last().unwrap().event, RunEvent::InputReceived { content } if content == QUESTION)
+            matches!(&restored.events().last().unwrap().event, RunEvent::InputReceived { content, .. } if content == QUESTION)
         );
     }
 }

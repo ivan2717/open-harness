@@ -21,19 +21,27 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test:e2e:models": "npm run build && node scripts/backend.mjs debug && node tests/e2e/models.mjs",
-    "test:e2e:workspace": "npm run build && node scripts/backend.mjs debug && node tests/e2e/workspace.mjs"
+    "test:e2e:workspace": "npm run build && node scripts/backend.mjs debug && node tests/e2e/workspace.mjs",
+    "test:e2e:files": "npm run build && node scripts/backend.mjs debug && node tests/e2e/file-references.mjs",
+    "test:e2e:extensions": "npm run build && node scripts/backend.mjs debug && node tests/e2e/extensions.mjs",
+    "test:e2e:rich": "npm run build && node scripts/backend.mjs debug && node tests/e2e/rich-messages.mjs"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.90.0",
     "@tanstack/react-router": "^1.170.45",
     "lucide-react": "^0.468.0",
+    "mdast-util-from-markdown": "^2.1.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
+    "react-markdown": "^10.1.0",
+    "rehype-highlight": "^7.0.2",
+    "remark-gfm": "^4.0.1",
     "zustand": "^5.0.8"
   },
   "devDependencies": {
     "@playwright/test": "^1.64.1",
     "@tailwindcss/vite": "^4.1.0",
+    "@types/hast": "^3.0.5",
     "@types/node": "^24.0.0",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",

@@ -1,24 +1,24 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
-import {
-  ChevronRight,
-  FlaskConical,
-  PanelRightOpen,
-  FileDiff,
-  FolderOpen,
-  Play,
-  Minimize2,
-} from 'lucide-react'
+import { FlaskConical, PanelRightOpen, FileDiff, FolderOpen, Play, Minimize2 } from 'lucide-react'
 import { Composer } from '../components/Composer'
+import { RunActivity } from '../components/RunActivity'
 import { ContextInspector } from '../components/ContextInspector'
 import { Conversation } from '../components/Conversation'
 import { CommandApprovals, WorkspaceReviewPanel } from '../components/WorkspaceReview'
+import { RunExtensions } from '../components/RunExtensions'
 import { ErrorState, InlineError, Loading } from '../components/Feedback'
-import { errorMessage, statusLabels } from '../lib/format'
+import { errorMessage } from '../lib/format'
 import { configOptions, storeSnapshot, useRun, useWorkspace } from '../lib/queries'
 import { taskModels } from '../lib/task-models'
 import { useCreateRun } from '../lib/use-create-run'
 import { useUiStore } from '../state/ui-store'
+import type { TextFileReference } from '../../shared/contracts'
+
+interface UserMessageInput {
+  message?: string
+  files?: TextFileReference[]
+}
 
 function InspectorToggle({ onOpen }: { onOpen?: () => void }) {
   const open = useUiStore((state) => state.inspectorOpen)
@@ -65,11 +65,12 @@ export function WelcomePage() {
                 onProjectChange={setProject}
                 pending={create.isPending}
                 submitDisabledReason={!model ? '添加模型后即可开始任务。' : undefined}
-                onSubmit={async (prompt) => {
+                onSubmit={async (prompt, files) => {
                   if (!model) throw new Error('添加模型后即可开始任务。')
                   await create.mutateAsync({
                     prompt,
                     model_id: model.id,
+                    files,
                     ...(project
                       ? { workspace_path: project.path, permission_mode: project.permission }
                       : {}),
@@ -100,7 +101,8 @@ export function RunPage({ runId }: { runId: string }) {
   )
   const refreshWorkspace = () => void client.invalidateQueries({ queryKey: ['workspace', runId] })
   const resume = useMutation({
-    mutationFn: (message?: string) => window.harness.resumeRun(runId, message),
+    mutationFn: ({ message, files }: UserMessageInput) =>
+      window.harness.resumeRun(runId, message, files),
     onSuccess: (run) => {
       storeSnapshot(client, run)
       refreshWorkspace()
@@ -122,7 +124,8 @@ export function RunPage({ runId }: { runId: string }) {
     onSuccess: (run) => storeSnapshot(client, run),
   })
   const input = useMutation({
-    mutationFn: (message: string) => window.harness.submitInput(runId, message),
+    mutationFn: ({ message, files }: UserMessageInput) =>
+      window.harness.submitInput(runId, message ?? '', files),
     onSuccess: (run) => storeSnapshot(client, run),
   })
   const compact = useMutation({
@@ -144,6 +147,7 @@ export function RunPage({ runId }: { runId: string }) {
   const running = run.status === 'running'
   const waiting = run.status === 'waiting_for_input'
   const compacting = run.compacting || compact.isPending
+  const active = running || compacting || input.isPending || resume.isPending
   const mutationError =
     cancel.error ??
     input.error ??
@@ -158,13 +162,11 @@ export function RunPage({ runId }: { runId: string }) {
         <header className="workspace-header">
           <div className="min-w-0 flex-1">
             <div className="workspace-heading">
-              <span className={`status-dot status-${run.status}`} />
+              <RunActivity active={Boolean(active)} />
               <span className="truncate">{run.title || run.prompt}</span>
             </div>
             <div className="run-header-meta">
               <span>{model?.name ?? run.model_id}</span>
-              <ChevronRight size={10} />
-              <span>{statusLabels[run.status]}</span>
             </div>
             {run.workspace_path && (
               <div className="run-project-meta" title={run.workspace_path}>
@@ -189,9 +191,6 @@ export function RunPage({ runId }: { runId: string }) {
                 改动与命令 {workspace.data?.changes.length || ''}
               </button>
             )}
-            <span className={`run-status-label status-text-${run.status}`}>
-              {statusLabels[run.status]}
-            </span>
             <InspectorToggle onOpen={() => setReviewRun(null)} />
           </div>
         </header>
@@ -211,6 +210,7 @@ export function RunPage({ runId }: { runId: string }) {
         )}
         <Conversation run={run} />
         <div className="run-composer-area">
+          <RunExtensions key={runId} runId={runId} running={running} busy={cancel.isPending} />
           <CommandApprovals
             approvals={workspace.data?.approvals ?? []}
             busy={approve.isPending || cancel.isPending}
@@ -224,22 +224,21 @@ export function RunPage({ runId }: { runId: string }) {
           )}
           {run.error && <InlineError message={run.error} />}
           {mutationError && <InlineError message={errorMessage(mutationError)} />}
-          {!running && !waiting && (
+          {!running && !waiting && run.status !== 'completed' && (
             <div className="finished-note">
-              <span>历史已保存，发送消息可继续此会话。</span>
-              {run.status !== 'completed' && (
-                <button
-                  className="resume-button"
-                  disabled={resume.isPending || compacting || !model?.available}
-                  onClick={() => resume.mutate(undefined)}
-                >
-                  <Play size={12} />
-                  继续任务
-                </button>
-              )}
+              {run.status === 'interrupted' && <span>执行已中断，消息已保存。</span>}
+              <button
+                className="resume-button"
+                disabled={resume.isPending || compacting || !model?.available}
+                onClick={() => resume.mutate({})}
+              >
+                <Play size={12} />
+                继续任务
+              </button>
             </div>
           )}
           <Composer
+            key={runId}
             draftKey={`run:${runId}`}
             models={config.data?.models ?? []}
             modelId={run.model_id}
@@ -254,17 +253,14 @@ export function RunPage({ runId }: { runId: string }) {
             running={running}
             onStop={() => cancel.mutate()}
             stopping={cancel.isPending}
-            waiting={waiting}
             pending={input.isPending || resume.isPending}
             disabled={compacting || (!running && !model?.available)}
-            onSubmit={async (prompt) => {
-              if (waiting) await input.mutateAsync(prompt)
-              else await resume.mutateAsync(prompt)
+            onSubmit={async (prompt, files) => {
+              if (waiting) await input.mutateAsync({ message: prompt, files })
+              else await resume.mutateAsync({ message: prompt, files })
             }}
           />
-          <p className="composer-bottom-note">
-            {running ? '流式内容提交后会保存到运行记录。' : 'Enter 发送 · Shift + Enter 换行'}
-          </p>
+          <p className="composer-bottom-note">Enter 发送 · Shift + Enter 换行</p>
         </div>
       </section>
       {inspectorOpen && (

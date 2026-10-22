@@ -218,10 +218,8 @@ summary::-webkit-details-marker {
 .run-link.is-active {
   background: #e3eadc;
 }
-.run-link > .status-dot {
-  margin-top: 5px;
-  width: 5px;
-  height: 5px;
+.run-link > .run-activity {
+  margin-top: 2px;
 }
 .run-link-title {
   font-size: 11px;
@@ -243,31 +241,20 @@ summary::-webkit-details-marker {
   font-size: 11px;
   margin-top: 4px;
 }
-.status-dot {
-  display: inline-block;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: #b1b9a8;
+.run-activity {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  height: 12px;
   flex-shrink: 0;
+  color: #7a9e7b;
 }
-.status-running {
-  background: #5f9b77;
-  box-shadow: 0 0 0 3px #5f9b7712;
-  animation: pulse-dot 1.7s ease-in-out infinite;
-}
-.status-waiting_for_input {
-  background: #c39548;
-}
-.status-completed {
-  background: #7a9e7b;
-}
-.status-failed {
-  background: #c17e69;
-}
-.status-cancelled,
-.status-interrupted {
-  background: #a5ab9f;
+.run-idle-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
 }
 .sidebar-empty {
   padding: 20px 10px;
@@ -624,19 +611,6 @@ button.composer-context-project:not(:disabled):hover {
 .stop-button:not(:disabled):hover {
   background: #dbe3d3;
 }
-.composer-hint {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  font-size: 11px;
-  padding: 10px 17px;
-  border-bottom: 1px solid #ece8d6;
-  background: #fcfbf4;
-  color: #a89554;
-}
-.composer-waiting {
-  border-color: #dacf9f;
-}
 .inspector {
   width: 290px;
   flex-shrink: 0;
@@ -984,29 +958,106 @@ details[open] > summary .details-chevron {
 .timeline-empty {
   padding-top: 60px;
 }
+.composer-dragging {
+  outline: 2px solid #9bb683;
+  outline-offset: 3px;
+}
+.composer-drop-hint {
+  padding: 12px 18px 0;
+  color: #536b48;
+  font-size: 12px;
+}
+.composer-attach {
+  flex-shrink: 0;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+}
+.composer-attach:hover:not(:disabled),
+.composer-attach:focus-visible {
+  background: #edf0e8;
+  color: #303c34;
+}
+.composer-attach:disabled:hover {
+  background: transparent;
+  color: #677267;
+}
+.composer-attach-tooltip {
+  position: fixed;
+  z-index: 100;
+  max-width: calc(100vw - 16px);
+  padding: 9px 12px;
+  border: 1px solid #454a43;
+  border-radius: 10px;
+  background: #30352f;
+  color: #fff;
+  box-shadow: 0 4px 14px #18201518;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.composer-attach-tooltip small {
+  display: block;
+  margin-top: 2px;
+  color: #c8cec4;
+  font-size: 11px;
+}
+.file-references {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  list-style: none;
+  padding: 0;
+  margin: 8px 0;
+}
+.composer > .file-references {
+  margin: 14px 18px 0;
+}
+.file-references li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+  padding: 6px 8px;
+  background: #f3f5ef;
+  border: 1px solid #e1e6db;
+  border-radius: 7px;
+  color: #53604f;
+  font-size: 12px;
+}
+.file-references li > svg {
+  flex-shrink: 0;
+}
+.file-reference-name {
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.file-reference-size {
+  color: #7b8677;
+  font-size: 10px;
+  white-space: nowrap;
+}
+.file-references button {
+  display: grid;
+  place-items: center;
+  border: 0;
+  padding: 2px;
+  border-radius: 3px;
+  background: transparent;
+  color: inherit;
+}
+.file-references button:hover:not(:disabled) {
+  background: #e2e8db;
+}
 .run-header-meta {
   display: flex;
   align-items: center;
   gap: 6px;
-  margin: 5px 0 0 15px;
+  margin: 5px 0 0 21px;
   color: #677267;
   font-size: 11px;
-}
-.run-status-label {
-  font-size: 11px;
-  padding: 4px 7px;
-  border-radius: 4px;
-  color: #677267;
-  background: #eff4e8;
-  white-space: nowrap;
-}
-.status-text-failed {
-  background: #fcf0e8;
-  color: #9c6745;
-}
-.status-text-waiting_for_input {
-  background: #faf4de;
-  color: #b09c5e;
 }
 .run-demo-notice {
   display: flex;
@@ -1220,20 +1271,6 @@ details[open] > summary .details-chevron {
   align-items: center;
   font-size: 11px;
   color: #677267;
-}
-.run-result {
-  margin: 25px 0 0 41px;
-  display: flex;
-  gap: 6px;
-  align-items: center;
-  font-size: 11px;
-  color: #677267;
-}
-.run-result-failed {
-  color: #bf9a78;
-}
-.run-result-interrupted {
-  flex-wrap: wrap;
 }
 .scroll-bottom {
   position: absolute;
@@ -1668,7 +1705,7 @@ details[open] > summary .details-chevron {
   display: flex;
   align-items: center;
   gap: 7px;
-  margin: 5px 0 0 15px;
+  margin: 5px 0 0 21px;
   color: #677267;
   font-size: 11px;
   max-width: 450px;

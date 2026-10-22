@@ -1,8 +1,11 @@
 use crate::{
     context::initial_context,
-    contracts::{ChatMessage, ObservedTokenUsage, RunDetail, RunStatus, TimelineEvent},
+    contracts::{
+        ChatMessage, FileReferenceInfo, ObservedTokenUsage, RunDetail, RunStatus, TimelineEvent,
+    },
     time,
 };
+use agent_core::TextFileReference;
 use agent_core::agent::{RunEvent, RunEventEnvelope};
 use agent_runtime::ContentBlock;
 
@@ -17,16 +20,14 @@ pub fn apply(detail: &mut RunDetail, envelope: &RunEventEnvelope) {
     }
     let id = format!("event-{}", envelope.sequence);
     let (kind, label, text) = match &envelope.event {
-        RunEvent::RunStarted { instruction } => {
+        RunEvent::RunStarted { instruction, files } => {
             // The public snapshot may already contain totals when reopening.
             // Rebuild them from durable samples exactly once during replay.
             if let Some(context) = &mut detail.context {
                 context.observed_usage = None;
             }
-            detail
-                .messages
-                .push(ChatMessage::complete(id, "user", instruction.clone()));
-            ("run_started", "运行开始", instruction.clone())
+            detail.messages.push(user_message(id, instruction, files));
+            ("run_started", "运行开始", input_detail(instruction, files))
         }
         RunEvent::ModelRequestStarted => {
             detail.summary.status = RunStatus::Running;
@@ -118,16 +119,19 @@ pub fn apply(detail: &mut RunDetail, envelope: &RunEventEnvelope) {
             detail.summary.status = RunStatus::WaitingForInput;
             ("input_requested", "等待输入", prompt.clone())
         }
-        RunEvent::InputReceived { content } => {
+        RunEvent::InputReceived { content, files } => {
             detail.summary.status = RunStatus::Running;
-            detail
-                .messages
-                .push(ChatMessage::complete(id, "user", content.clone()));
-            ("input_received", "收到补充输入", content.clone())
+            detail.messages.push(user_message(id, content, files));
+            (
+                "input_received",
+                "收到补充输入",
+                input_detail(content, files),
+            )
         }
         RunEvent::RunResumed {
             content,
             interrupted_calls,
+            files,
         } => {
             detail.summary.status = RunStatus::Running;
             detail.error = None;
@@ -147,10 +151,8 @@ pub fn apply(detail: &mut RunDetail, envelope: &RunEventEnvelope) {
                             .into();
                 }
             }
-            detail
-                .messages
-                .push(ChatMessage::complete(id, "user", content.clone()));
-            ("run_resumed", "继续会话", content.clone())
+            detail.messages.push(user_message(id, content, files));
+            ("run_resumed", "继续会话", input_detail(content, files))
         }
         RunEvent::RunCompleted { answer } => {
             detail.summary.status = RunStatus::Completed;
@@ -194,6 +196,35 @@ pub fn apply(detail: &mut RunDetail, envelope: &RunEventEnvelope) {
     });
 }
 
+fn user_message(id: String, text: &str, files: &[TextFileReference]) -> ChatMessage {
+    let mut message = ChatMessage::complete(id, "user", text.into());
+    message.files = files
+        .iter()
+        .map(|file| FileReferenceInfo {
+            name: file.name.clone(),
+            path: file.path.clone(),
+            size: file.text.len(),
+        })
+        .collect();
+    message
+}
+
+fn input_detail(text: &str, files: &[TextFileReference]) -> String {
+    if files.is_empty() {
+        return text.into();
+    }
+    let names = files
+        .iter()
+        .map(|file| file.name.as_str())
+        .collect::<Vec<_>>()
+        .join("、");
+    if text.is_empty() {
+        format!("引用文件：{names}")
+    } else {
+        format!("{text}\n引用文件：{names}")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -202,8 +233,8 @@ mod tests {
 
     fn detail() -> RunDetail {
         RunDetail {
-            compacting: false,
             summary: RunSummary {
+                compacting: false,
                 id: "test".into(),
                 revision: 0,
                 title: "test".into(),
@@ -238,6 +269,7 @@ mod tests {
             0,
             RunEvent::RunStarted {
                 instruction: "test".into(),
+                files: Vec::new(),
             },
         )];
         for input_tokens in [Some(100), None, Some(200)] {

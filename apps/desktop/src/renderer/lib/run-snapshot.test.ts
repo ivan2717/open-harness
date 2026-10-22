@@ -75,4 +75,15 @@ describe('session list updates', () => {
     expect(mergeRunLists(list, [running])[0]).toBe(completed)
     expect(mergeRunLists(list, [{ ...completed, status: 'running' }])[0]).toBe(completed)
   })
+
+  it('preserves manual compaction activity in list updates and clears it on a newer snapshot', () => {
+    const idle = snapshot({ revision: 2, status: 'waiting_for_input', compacting: false })
+    const compacting = snapshot({ revision: 3, status: 'waiting_for_input', compacting: true })
+    const active = updateRunList([idle], compacting)
+    expect(active[0].compacting).toBe(true)
+    expect(active[0]).not.toHaveProperty('messages')
+    expect(mergeRunLists(active, [idle])[0].compacting).toBe(true)
+    const finished = { ...idle, revision: 4 }
+    expect(mergeRunLists(active, [finished])[0].compacting).toBe(false)
+  })
 })

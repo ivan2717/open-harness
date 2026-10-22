@@ -89,6 +89,7 @@ impl Fixture {
     fn input(&self, model_id: String, permission_mode: PermissionMode) -> CreateRunInput {
         CreateRunInput {
             prompt: "Fix answer.txt and preserve my existing changes.".into(),
+            files: Vec::new(),
             model_id,
             workspace_path: Some(self.project.display().to_string()),
             permission_mode,

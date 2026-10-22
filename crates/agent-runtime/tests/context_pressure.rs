@@ -65,6 +65,7 @@ fn history(output: usize, assistant: usize) -> ContextInput {
                 0,
                 0,
                 RunEvent::RunStarted {
+                    files: Vec::new(),
                     instruction: "Inspect records.".into(),
                 },
             ),
@@ -372,6 +373,7 @@ async fn manual_compaction_runs_below_trigger_and_reports_no_progress() {
             0,
             0,
             RunEvent::RunStarted {
+                files: Vec::new(),
                 instruction: "short".into(),
             },
         )],
@@ -387,6 +389,7 @@ async fn old_user_messages_are_summarized_while_latest_input_and_canonical_log_s
         5,
         3,
         RunEvent::InputReceived {
+            files: Vec::new(),
             content: "latest correction".into(),
         },
     ));

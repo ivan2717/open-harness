@@ -1,5 +1,6 @@
 use std::{collections::HashSet, error::Error, fmt, sync::Arc, time::SystemTime};
 
+use crate::TextFileReference;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -27,6 +28,15 @@ impl Agent {
 
     pub fn start_run(&self, run_id: impl Into<String>, instruction: impl Into<String>) -> AgentRun {
         AgentRun::new(run_id, self.id.clone(), instruction)
+    }
+
+    pub fn start_run_with_files(
+        &self,
+        run_id: impl Into<String>,
+        instruction: impl Into<String>,
+        files: Vec<TextFileReference>,
+    ) -> AgentRun {
+        AgentRun::start_with_files(run_id, self.id.clone(), instruction, files)
     }
 }
 
@@ -80,6 +90,15 @@ impl AgentRun {
         agent_id: impl Into<String>,
         instruction: impl Into<String>,
     ) -> Self {
+        Self::start_with_files(id, agent_id, instruction, Vec::new())
+    }
+
+    pub fn start_with_files(
+        id: impl Into<String>,
+        agent_id: impl Into<String>,
+        instruction: impl Into<String>,
+        files: Vec<TextFileReference>,
+    ) -> Self {
         Self {
             id: id.into(),
             agent_id: agent_id.into(),
@@ -95,6 +114,7 @@ impl AgentRun {
                 occurred_at: SystemTime::now(),
                 event: RunEvent::RunStarted {
                     instruction: instruction.into(),
+                    files,
                 },
             }],
         }
@@ -200,7 +220,7 @@ impl AgentRun {
 
     pub fn instruction(&self) -> &str {
         match &self.events[0].event {
-            RunEvent::RunStarted { instruction } => instruction,
+            RunEvent::RunStarted { instruction, .. } => instruction,
             _ => unreachable!("the first run event is always RunStarted"),
         }
     }
@@ -343,10 +363,13 @@ impl AgentRun {
     fn validate_event(&self, event: &RunEvent) -> Result<(RunStatus, StepPhase), AgentRunError> {
         if let RunEvent::RunResumed {
             content,
+            files,
             interrupted_calls,
         } = event
         {
-            if content.trim().is_empty() || *interrupted_calls != self.interrupted_tool_calls() {
+            if (content.trim().is_empty() && files.is_empty())
+                || *interrupted_calls != self.interrupted_tool_calls()
+            {
                 return Err(AgentRunError::InvalidResume);
             }
             return Ok((RunStatus::Running, StepPhase::Ready));
@@ -581,6 +604,8 @@ pub struct RunEventEnvelope {
 pub enum RunEvent {
     RunStarted {
         instruction: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        files: Vec<TextFileReference>,
     },
     ModelRequestStarted,
     ModelResponseReceived {
@@ -616,12 +641,16 @@ pub enum RunEvent {
     },
     InputReceived {
         content: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        files: Vec<TextFileReference>,
     },
     /// Explicit user continuation. Unresolved calls are settled atomically as
     /// interrupted, never replayed. This also abandons an unfinished model
     /// request and permits a fresh step after a terminal or interrupted run.
     RunResumed {
         content: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        files: Vec<TextFileReference>,
         interrupted_calls: Vec<InterruptedToolCall>,
     },
     RunCompleted {
@@ -634,6 +663,20 @@ pub enum RunEvent {
 }
 
 impl RunEvent {
+    /// The same model-visible representation is used for normal replay,
+    /// protected inputs, and native-compaction context.
+    pub fn user_input(&self) -> Option<String> {
+        match self {
+            Self::RunStarted { instruction, files } => {
+                Some(crate::format_user_input(instruction, files))
+            }
+            Self::InputReceived { content, files } | Self::RunResumed { content, files, .. } => {
+                Some(crate::format_user_input(content, files))
+            }
+            _ => None,
+        }
+    }
+
     /// Display/history projection. Canonical storage retains the opaque state.
     pub fn without_provider_state(&self) -> Self {
         let mut event = self.clone();

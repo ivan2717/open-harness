@@ -8,7 +8,7 @@ use crate::{
 };
 use axum::{
     Json, Router,
-    extract::{Path, Request, State},
+    extract::{DefaultBodyLimit, Path, Request, State},
     http::StatusCode,
     middleware::{self, Next},
     response::{
@@ -25,8 +25,20 @@ pub(crate) fn router(state: AppState) -> Router {
         .merge(health_router::health_router())
         .route("/config", get(config))
         .route("/models", post(configure_model))
+        .route("/extensions", get(extension_settings).post(save_extensions))
+        .route("/extensions/mcp/{id}/test", post(test_mcp))
+        .route("/runs/{id}/extensions", get(run_extensions))
+        .route("/runs/{id}/extensions/refresh", post(refresh_run_skills))
+        .route(
+            "/runs/{id}/extensions/approvals/{approval}",
+            post(approve_extension),
+        )
         .route("/runs", get(list).post(create))
         .route("/runs/{id}", get(detail))
+        .route(
+            "/runs/{id}/messages/{message_id}/files/{index}",
+            get(message_file),
+        )
         .route("/runs/{id}/cancel", post(cancel))
         .route("/runs/{id}/input", post(input))
         .route("/runs/{id}/resume", post(resume))
@@ -36,6 +48,9 @@ pub(crate) fn router(state: AppState) -> Router {
         .route("/runs/{id}/compact", post(compact))
         .route("/runs/{id}/compact/cancel", post(cancel_compaction))
         .route("/runs/{id}/events", get(events))
+        // UTF-8 file snapshots have separate byte limits; JSON escaping may
+        // expand an otherwise valid 512 KiB text payload.
+        .layer(DefaultBodyLimit::max(4 * 1024 * 1024))
         .layer(middleware::from_fn_with_state(state.clone(), authorize))
         .with_state(state)
 }
@@ -65,6 +80,45 @@ async fn authorize(State(state): State<AppState>, request: Request, next: Next) 
 async fn config(State(state): State<AppState>) -> Json<AppConfig> {
     Json(state.config())
 }
+
+async fn extension_settings(
+    State(state): State<AppState>,
+) -> Json<crate::extensions::ExtensionSettings> {
+    Json(state.extension_settings())
+}
+async fn save_extensions(
+    State(state): State<AppState>,
+    Json(config): Json<crate::extensions::ExtensionConfig>,
+) -> Result<Json<crate::extensions::ExtensionSettings>, ServiceError> {
+    state.save_extensions(config).map(Json)
+}
+async fn test_mcp(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<agent_mcp::McpCatalog>, ServiceError> {
+    state.test_mcp(&id).await.map(Json)
+}
+async fn run_extensions(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<crate::extensions::RunExtensions>, ServiceError> {
+    state.run_extensions(&id).map(Json)
+}
+async fn refresh_run_skills(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<crate::extensions::RunExtensions>, ServiceError> {
+    state.refresh_run_skills(&id).map(Json)
+}
+async fn approve_extension(
+    State(state): State<AppState>,
+    Path((id, approval)): Path<(String, String)>,
+    Json(input): Json<ApprovalInput>,
+) -> Result<Json<crate::extensions::RunExtensions>, ServiceError> {
+    state
+        .approve_extension(&id, &approval, input.allow)
+        .map(Json)
+}
 async fn configure_model(
     State(state): State<AppState>,
     Json(input): Json<ConfigureModel>,
@@ -92,6 +146,12 @@ async fn detail(
 ) -> Result<Json<RunDetail>, ServiceError> {
     state.get(&id).map(Json)
 }
+async fn message_file(
+    State(state): State<AppState>,
+    Path((id, message_id, index)): Path<(String, String, usize)>,
+) -> Result<Json<agent_core::TextFileReference>, ServiceError> {
+    state.message_file(&id, &message_id, index).await.map(Json)
+}
 async fn create(
     State(state): State<AppState>,
     Json(input): Json<CreateRunInput>,
@@ -112,14 +172,20 @@ async fn input(
     Path(id): Path<String>,
     Json(input): Json<SubmitInput>,
 ) -> Result<Json<RunDetail>, ServiceError> {
-    state.input(&id, input.message).await.map(Json)
+    state
+        .input_with_files(&id, input.message, input.files)
+        .await
+        .map(Json)
 }
 async fn resume(
     State(state): State<AppState>,
     Path(id): Path<String>,
     Json(input): Json<ResumeRunInput>,
 ) -> Result<Json<RunDetail>, ServiceError> {
-    state.resume(&id, input.message).await.map(Json)
+    state
+        .resume_with_files(&id, input.message, input.files)
+        .await
+        .map(Json)
 }
 async fn workspace(
     State(state): State<AppState>,

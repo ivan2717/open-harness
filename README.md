@@ -32,7 +32,10 @@ can make focused edits; each shell command still requires a separate approval.
 The desktop shows pending approvals, command results, and file changes in an
 on-demand project panel. The offline demonstration does not operate on projects.
 
-The local tools read, list, search, create, and edit bounded UTF-8 files. Paths
+The local tools read, list, search, create, and edit bounded UTF-8 files. Built-in
+`read_document` and `search_document` extract PDF, DOCX, XLSX and PPTX text even
+in read-only projects, with page/paragraph/slide/cell locations and pagination.
+Scanned documents require OCR, which is not yet included. Paths
 are relative to the selected directory; symlinks, hard-linked files, credential
 paths, and Git internals are rejected by file tools. Project `AGENTS.md` guidance
 is captured when the conversation starts; nested guidance can be read on demand.
@@ -64,6 +67,31 @@ tool outcomes as unknown or not started. It never re-executes old tool calls.
 The model is instructed to inspect actual state before taking further action.
 Missing project directories disable execution without making history unreadable.
 
+### MCP and Skills
+
+Settings includes **tool services** and **skills**. MCP services support local
+stdio executables and Streamable HTTP, with connection tests and paginated
+discovery of tools, resources and prompts. Conversations keep separate persistent
+MCP sessions so multi-step tools retain state. External calls require explicit
+approval in the conversation; MCP servers use their own permissions rather than
+the project's built-in file sandbox. Disabling or changing a server revokes its
+connections and pending approvals. Switching an unrelated skill preserves them.
+
+Personal skills live in the application-managed `runtime/skills` folder, opened
+from Settings. Project skills are discovered in `.agents/skills` and
+`.openharness/skills`. A skill consists of `SKILL.md` with YAML `name` and
+`description`, plus optional reference/script files. The model discovers metadata,
+loads a selected workflow on demand, and reads supporting resources as needed.
+Use `$skill-name` to select one explicitly. Skills do not bypass permissions or
+execute scripts automatically. Refresh after installing or editing skills.
+
+Configuration uses atomic persistence and revision checks. Neither saving MCP
+configuration nor loading a skill sends a model request. MCP credentials are
+referenced by environment-variable name; OAuth is not implemented. See
+[MCP protocol support and limits](crates/agent-mcp/README.md),
+[skill discovery and bounds](crates/agent-skills/README.md), and
+[local document tools](crates/agent-local/README.md).
+
 ## Development
 
 Install Rust with rustup. `rust-toolchain.toml` selects stable Rust with rustfmt
@@ -88,6 +116,12 @@ cargo run -p api --locked
 ```
 
 ## Module boundaries
+
+- `agent-local`: permission-scoped file, document and approved command tools.
+- `agent-mcp`: official MCP SDK transport, protocol negotiation and session lifecycle.
+- `agent-skills`: bounded skill discovery, metadata and scoped resource reads.
+- `api::extensions`: persisted configuration, per-conversation MCP clients,
+  approval lifecycle and composition with the ordinary `ToolExecutor` interface.
 
 - `agent-core`: agent configuration, ordered conversation types, opaque provider
   state, event types, and validated run transitions. It contains no vendor wire
@@ -173,6 +207,7 @@ using the previous interfaces need these changes:
 | Core `ProviderProtocol` and `ProviderResponseState::validate_response` | Use adapter-owned format keys and `Model::validate_replay_state`; built-in codecs live in `agent-adapters::WireProtocol`. |
 | Direct `ModelRequest::validate_provider_state` | This checks generic invariants only; use `Model::validate_request` or `validate_provider_state_with` to include adapter payload validation. |
 | `RunEvent::ModelResponseReceived` literals | Supply `token_usage` (`None` for legacy/manual events). Existing serialized logs still load without it. |
+| `RunStarted`, `InputReceived`, `RunResumed` literals | Supply `files: Vec::new()` for plain text. The optional persisted field holds explicit `TextFileReference` snapshots; older logs remain readable. Existing runtime string methods remain available; use their `_with_files` variants for references. |
 | Raw `estimate_request_tokens` diagnostics | Use `measure_request(input, request)` for the same calibrated estimate and headroom used by the context policy. |
 | Wrappers around a `ContextManager` | Forward `request_usage_baseline` to preserve its counter-bound durable estimate anchors; forward `compact_now` to expose manual maintenance. |
 | Custom `TokenCounter` | Optionally implement a stable, versioned `estimator_identity` to retain calibration after history rewrites and restarts. Exact-prefix calibration still works without it. |

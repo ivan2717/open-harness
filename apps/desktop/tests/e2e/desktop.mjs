@@ -93,12 +93,27 @@ try {
   await expect.poll(() => page.evaluate(() => window.location.hash)).toMatch(/\/runs\//)
   const runId = await page.evaluate(() => window.location.hash.split('/runs/')[1])
   await expect(page.getByRole('button', { name: '停止运行', exact: true })).toBeVisible()
+  await expect(
+    page.locator('.workspace-heading').getByRole('img', { name: '运行中' }),
+  ).toBeVisible()
+  await expect(
+    page.locator('.run-link.is-active').getByRole('img', { name: '运行中' }),
+  ).toBeVisible()
+  await expect(page.locator('.run-link.is-active .animate-spin')).toHaveCSS(
+    'animation-name',
+    'spin',
+  )
+  await page.screenshot({ path: resolve(artifacts, 'desktop-activity-running.png') })
   await expect
     .poll(() => page.evaluate(async (id) => (await window.harness.getRun(id)).status, runId), {
       timeout: 45_000,
     })
     .toBe('completed')
   const complete = await page.evaluate((id) => window.harness.getRun(id), runId)
+  await expect(page.locator('.workspace-heading').getByRole('img', { name: '空闲' })).toBeVisible()
+  await expect(page.locator('.run-link.is-active').getByRole('img', { name: '空闲' })).toBeVisible()
+  await expect(page.locator('.run-link-meta').filter({ hasText: /已完成|等待回复/ })).toHaveCount(0)
+  await expect(page.locator('.run-status-label, .run-result, .finished-note')).toHaveCount(0)
   assert.equal(complete.model_id, 'local-demo')
   const prompt = complete.prompt
   assert.ok(
@@ -141,6 +156,8 @@ try {
   await expect
     .poll(() => page.evaluate(async (id) => (await window.harness.getRun(id)).status, cancelledId))
     .toBe('cancelled')
+  await expect(page.locator('.run-link.is-active').getByRole('img', { name: '空闲' })).toBeVisible()
+  await expect(page.getByRole('button', { name: '继续任务', exact: true })).toBeVisible()
 
   await page.getByRole('link', { name: /新建会话/ }).click()
   const resumed = await page.evaluate(() =>
@@ -149,10 +166,17 @@ try {
   await page.evaluate((id) => {
     window.location.hash = `/runs/${id}`
   }, resumed.id)
-  await expect(page.getByRole('textbox', { name: '补充信息', exact: true })).toBeVisible()
+  await expect(page.getByRole('textbox', { name: '任务描述', exact: true })).toBeEditable()
+  await expect(page.locator('.run-link.is-active').getByRole('img', { name: '空闲' })).toBeVisible()
+  await expect(page.locator('.composer-hint, .composer-waiting')).toHaveCount(0)
+  await expect(page.getByRole('textbox', { name: '任务描述', exact: true })).toHaveAttribute(
+    'placeholder',
+    '描述任务，或直接提问…',
+  )
+  await page.screenshot({ path: resolve(artifacts, 'desktop-activity-idle.png') })
   const resumedId = resumed.id
-  await page.getByRole('textbox', { name: '补充信息', exact: true }).fill('继续执行本地诊断。')
-  await page.getByRole('button', { name: '提交补充信息', exact: true }).click()
+  await page.getByRole('textbox', { name: '任务描述', exact: true }).fill('继续执行本地诊断。')
+  await page.getByRole('button', { name: '开始运行', exact: true }).click()
   await expect
     .poll(() => page.evaluate(async (id) => (await window.harness.getRun(id)).status, resumedId), {
       timeout: 45_000,

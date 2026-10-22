@@ -16,8 +16,8 @@ async fn cancellation_reconciles_completion_or_failure_after_its_initial_read() 
         let id = format!("race-{completed}");
         let now = time::now();
         let detail = RunDetail {
-            compacting: false,
             summary: RunSummary {
+                compacting: false,
                 id: id.clone(),
                 revision: 0,
                 title: "race".into(),
@@ -116,6 +116,7 @@ async fn shutdown_settles_active_work_and_rejects_new_execution() {
         .unwrap();
     let input = || CreateRunInput {
         prompt: "shutdown".into(),
+        files: Vec::new(),
         model_id: MODEL_ID.into(),
         workspace_path: None,
         permission_mode: Default::default(),

@@ -2,7 +2,7 @@
 
 Date: 2026-10-22
 
-## Target and scope
+## Initial composer target and scope
 
 Adapt the supplied Codex composer's grouping and interactions to Open Harness.
 Keep the existing light palette, system fonts, Lucide icons and real task behavior.
@@ -12,6 +12,7 @@ together, model management belongs to the model picker, and global settings stay
 in the sidebar. The composer has no generic plus menu or settings icon.
 Voice, attachments, remote execution and changing a running conversation's model
 are outside scope; no nonfunctional controls were added for them.
+Later attachment and rich-message work is recorded in the follow-ups below.
 
 ## Visual evidence and normalization
 
@@ -138,3 +139,110 @@ with the run start and appending newer events below. The filled marker identifie
 the final, latest event. The existing desktop E2E suite passed and its refreshed
 `test-results/desktop-timeline.png` was inspected for chronological layout. Type
 checking, build and formatting passed.
+
+## File references follow-up
+
+The composer accepts explicit local text files through a plus button, drag
+and drop, or a file-manager copy/paste. A filename-and-size chip appears above the
+draft, with a remove action; the conversation shows the same concise metadata.
+The drag target gets a temporary outline and drop hint. Ordinary text and web
+links keep native paste behavior. Existing project/model controls remain in place.
+
+Inspected `test-results/desktop-file-references-draft.png` and
+`test-results/desktop-file-references-conversation.png`; no clipped controls or
+unexpected expanded file contents were found. The new Electron E2E exercises real
+disk-backed File objects and the native macOS clipboard shortcut, removal,
+deduplication, navigation, admission failure, file-only messages, create/input/resume,
+and restart. The local provider fixture receives all three saved snapshots even
+after source files change. The test restores the original OS clipboard on exit.
+
+All four Electron suites, 42 desktop unit tests, core/runtime regression tests and
+API tests passed. Workspace all-target compilation, TypeScript, formatting and
+release build passed. File contents participate in context measurements and
+compression. Unsupported binary formats and oversized files produce explicit
+errors; references do not expand project access permissions.
+The macOS application was repackaged and reopened; native UI inspection confirmed
+the new attachment control and preservation of all five existing conversations.
+
+The attachment button now uses a circular plus with a custom “添加文件” tooltip
+that also explains drag-and-drop and the platform's paste shortcut. The tooltip
+appears on hover or keyboard focus and is rendered outside the composer's clipped
+container. Native macOS inspection verified the visible tooltip, Escape dismissal,
+and opening/cancelling the file picker. Type checking and the desktop build passed;
+the packaged app was updated and reopened.
+
+## Rich messages and output resources follow-up
+
+Assistant messages now render Markdown/GFM with heading hierarchy, code highlighting
+and copying, tables, lists and quotes. Input text remains literal. Linked local
+images enlarge in a dialog; audio/video use native playback controls. Text files
+preview in-app, and file actions offer open, reveal and save as appropriate.
+External media requires an explicit load action. PDF/Office documents use system
+applications; input attachments remain UTF-8 text snapshots.
+
+Inspected `test-results/rich-messages.png` and the image preview dialog. No clipped
+content or nested interactive controls were found. The new Electron E2E covers
+partial streaming and final Markdown, code copying through IPC, PNG/SVG rendering,
+actual WAV/WebM playback, byte ranges, remote-load opt-in, text preview, native file
+action routing and saving, rejected paths, and snapshots after deleting source
+files and restarting. The SVG check confirms scripts and nested external loads
+remain inactive. File action dialogs and external launches are mocked in tests.
+
+All 71 desktop unit tests, TypeScript, formatting and production build passed.
+The baseline desktop and attachment Electron suites passed, as did the API desktop
+and workspace integration suites. The updated macOS application was packaged and
+reopened: all six existing conversations remain, the user's original “烛影” answer
+now has a rendered heading, and the existing “李秀成.md” attachment opens its saved
+text preview. No new provider request was sent during these checks.
+
+## Quiet conversation activity follow-up
+
+Conversation lists and headers now show only a small rotating loader while active
+and a static green dot while idle. Visible waiting/completed labels, the duplicated
+header badge and the completed-result footer are removed. The composer uses the
+same neutral border and prompt in every idle state, with no waiting-for-input
+banner. Errors, command approvals, cancellation and interruption recovery remain
+available in their relevant controls.
+
+Manual compaction activity is included in the API's run summary and sidebar cache,
+so it also shows the loader and returns to a dot after completion or cancellation.
+The detailed run JSON remains compatible; runtime statuses still determine which
+input/resume operation to use.
+
+Inspected `test-results/desktop-activity-running.png` and
+`test-results/desktop-activity-idle.png`. Desktop, model and file-reference Electron
+suites passed, covering active/idle transitions, continued messages, cancellation,
+manual compaction and file-only follow-ups. The desktop suite checks that the
+loader is animated. All 72 desktop unit tests and 23 API tests, TypeScript,
+formatting and production builds passed.
+The packaged macOS app was reopened and the original story conversation inspected:
+all six conversations remain, idle dots are green, and neither the header nor the
+composer displays the removed waiting labels.
+
+## Document tools, MCP and Skills
+
+Added compact Settings sections for MCP services and Skills, with form-based
+stdio/HTTP configuration, connection testing, editing, enable switches and
+removal. Skill installation uses an explicit folder entry and refresh. A small
+conversation disclosure shows project and personal Skills; pending MCP calls
+show actionable approval cards with inspectable arguments.
+
+Inspected `test-results/desktop-extensions-settings.png` and
+`test-results/desktop-mcp-approval.png`. The Electron extension suite passed actual
+configuration CRUD, Skill switches/refresh, read-only DOCX/PDF extraction, lazy
+Skill/resource reads, stateful MCP calls, resources/prompts, approvals, denial,
+cancellation and restart persistence. The existing workspace and three-protocol
+model suites also passed. The model fixture now reports usage proportional to its
+actual request instead of a fixed value that masked growing tool definitions.
+
+Rust workspace: 400 tests passed; strict workspace Clippy passed. Desktop: 77
+unit tests, TypeScript, production build and formatting passed. The actual files
+from the reported failure were checked locally without exposing their text or
+calling a model: Word extracted 111 source units, PDF extracted all five pages.
+No source document was modified.
+
+The packaged macOS application was fully restarted and inspected. All seven
+existing conversations loaded, the configured model remained available, and
+Settings displayed the new tool-service and skill controls. MCP connection tests
+have a dedicated 70-second desktop deadline covering the service's 60-second
+deadline; ordinary API requests retain their 30-second limit.

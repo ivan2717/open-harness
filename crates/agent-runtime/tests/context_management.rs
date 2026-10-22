@@ -306,7 +306,7 @@ async fn compacting_runtime_sends_a_summary_without_deleting_durable_events() {
     assert_eq!(stored.events, run.events());
     assert!(matches!(
         &stored.events[0].event,
-        RunEvent::RunStarted { instruction } if instruction == &original_instruction
+        RunEvent::RunStarted { instruction, .. } if instruction == &original_instruction
     ));
 }
 
@@ -793,7 +793,7 @@ async fn a_stale_checkpoint_is_cleared_and_rebuilt_from_changed_history() {
     let original_compaction_calls = compactor.calls().len();
 
     let mut changed_events = run.events().to_vec();
-    let RunEvent::RunStarted { instruction } = &mut changed_events[0].event else {
+    let RunEvent::RunStarted { instruction, .. } = &mut changed_events[0].event else {
         unreachable!()
     };
     let changed_instruction = format!("different-prefix-{}", "y".repeat(200));
@@ -818,7 +818,7 @@ async fn a_stale_checkpoint_is_cleared_and_rebuilt_from_changed_history() {
         call.events.iter().any(|envelope| {
             matches!(
                 &envelope.event,
-                RunEvent::RunStarted { instruction } if instruction == &changed_instruction
+                RunEvent::RunStarted { instruction, .. } if instruction == &changed_instruction
             )
         })
     }));
