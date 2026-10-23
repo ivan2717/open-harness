@@ -5,6 +5,35 @@ transport. Configure an API root (including its version path), an in-memory API
 key, a deployed model name, its explicit context window, and its output limit.
 Supported protocols are Chat Completions, Responses, and Anthropic Messages.
 
+Image input is an explicit `ProviderConfig.supports_images` capability, never
+inferred from the protocol or model name. `ToolExecutor::execute_output` returns
+`ToolOutput { text, images }`; text-only executors keep using `execute`. Responses
+uses native `function_call_output` image blocks; Anthropic embeds images inside
+`tool_result`; Chat Completions sends attributed user image blocks only after all
+pending tool text results. A direct request with images to a model configured
+without visual input is rejected. The runtime instead clearly reports the omitted
+image and keeps structural observations usable, before planning its input budget.
+
+Tool images are limited to four per result, 5 MiB and 4,194,304 pixels per image,
+with an 8192-pixel maximum edge. Supported header formats are PNG, JPEG, WebP and
+GIF. Capture a bounded viewport or resize in the driver; coordinate-based tools
+must retain the screenshot-to-screen transform rather than silently resize here.
+The active context retains only the latest image-bearing tool result. Older
+observations remain in the event store; text history/summary projections omit
+image bytes explicitly. Each retained image reserves 8192 estimated input tokens,
+with normal provider-usage calibration; this allowance is not an exact token count.
+`JsonlEventStore` saves checked SHA256 image sidecars atomically and stores only
+references in the JSONL journal. After successful persistence, `AgentRun` releases
+older image bytes into content IDs. `EventStore::load_for_runtime` hydrates only
+the latest group; older references receive path/type/size checks without reading
+all historical rasters on every round. Full `load`/`load_range` restores image
+bytes and verifies checksums. Missing references fail restoration; corruption
+fails the actual image read. Checkpoint and Wiki source fingerprints use image
+content IDs so releasing pixels does not invalidate source history. Provider
+validation rejects unresolved references; hashes are never sent as image data.
+Live event notifications also carry persisted content IDs, so a slow subscriber
+cannot retain a queue of full screenshots; load their pixels by event sequence.
+
 All response content, replay validation, and usage normalization go through
 `agent-adapters`. Provider response state preserves reasoning signatures,
 encrypted reasoning items, and function calls; it is never converted into user

@@ -106,6 +106,7 @@ impl StreamingModel for StreamingOnly {
 
     fn capabilities(&self) -> ModelCapabilities {
         ModelCapabilities {
+            supports_images: false,
             reasoning: ReasoningCapabilities {
                 options: vec![ReasoningOption {
                     id: "careful".into(),

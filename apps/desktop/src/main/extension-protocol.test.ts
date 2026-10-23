@@ -86,6 +86,71 @@ describe('extension bridge validation', () => {
       '/api/runs/run-1/extensions/refresh',
     )
   })
+  it('preserves an explicit boolean session grant without silently widening one-shot approvals', () => {
+    for (const session of [true, false]) {
+      expect(
+        apiRequest({
+          operation: 'approveExtension',
+          id: 'run-1',
+          approvalId: 'mcp-2',
+          allow: true,
+          session,
+        }),
+      ).toEqual({
+        path: '/api/runs/run-1/extensions/approvals/mcp-2',
+        method: 'POST',
+        body: { allow: true, session },
+      })
+    }
+    expect(
+      apiRequest({ operation: 'approveExtension', id: 'run-1', approvalId: 'mcp-2', allow: false })
+        .body,
+    ).toEqual({ allow: false })
+    for (const session of [null, 'true', 'false', 1, 0, {}, []])
+      expect(() =>
+        apiRequest({
+          operation: 'approveExtension',
+          id: 'run-1',
+          approvalId: 'mcp-2',
+          allow: true,
+          session,
+        }),
+      ).toThrow('Invalid approval scope')
+    for (const approvalId of ['../other', 'mcp-2?allow=true', '', null])
+      expect(() =>
+        apiRequest({
+          operation: 'approveExtension',
+          id: 'run-1',
+          approvalId,
+          allow: true,
+          session: true,
+        }),
+      ).toThrow()
+  })
+  it('revokes only the named run through a fixed DELETE endpoint', () => {
+    expect(apiRequest({ operation: 'revokeControl', id: 'run-1' })).toEqual({
+      path: '/api/runs/run-1/extensions/control',
+      method: 'DELETE',
+    })
+    expect(
+      apiRequest({
+        operation: 'revokeControl',
+        id: 'run-1',
+        path: 'https://example.com/all',
+        method: 'POST',
+        body: { scope: 'global' },
+      }),
+    ).toEqual({ path: '/api/runs/run-1/extensions/control', method: 'DELETE' })
+    for (const id of [
+      '../other',
+      'run-1/../other',
+      'run-1?scope=all',
+      'https://example.com',
+      '',
+      null,
+    ])
+      expect(() => apiRequest({ operation: 'revokeControl', id })).toThrow()
+  })
   it('preserves qualified plugin skill identifiers at their full bound', () => {
     const id = `${'p'.repeat(64)}:${'s'.repeat(64)}`
     expect(

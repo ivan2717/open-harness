@@ -73,6 +73,7 @@ fn history(old_size: usize) -> ContextInput {
         run.record(RunEvent::ToolCallSucceeded {
             call_id: id.into(),
             output: "x".repeat(size),
+            images: Vec::new(),
         })
         .unwrap();
     }

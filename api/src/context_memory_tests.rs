@@ -86,6 +86,7 @@ impl Fixture {
         fs::create_dir_all(&directory).unwrap();
         let host = ExtensionHost::open(&directory.join("host")).unwrap();
         let configured = crate::model::configure(ConfigureModel {
+            supports_images: false,
             protocol: ProviderProtocol::ChatCompletions,
             base_url: self.endpoint.clone(),
             api_key: "local-fixture-only".into(),
@@ -273,6 +274,7 @@ fn history(run_id: &str, assistant_chars: usize, with_tool: bool) -> ContextInpu
             &mut events,
             1,
             RunEvent::ToolCallSucceeded {
+                images: vec![],
                 call_id: "read".into(),
                 output: format!("{}{MIDDLE}{}", "a".repeat(6_000), "z".repeat(6_000)),
             },

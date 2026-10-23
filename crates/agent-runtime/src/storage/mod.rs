@@ -1,5 +1,6 @@
 //! Event persistence contracts and local store implementations.
 
+mod images;
 mod jsonl;
 mod memory;
 
@@ -42,6 +43,21 @@ pub trait EventStore: Send + Sync {
         &self,
         run_id: &str,
     ) -> impl Future<Output = Result<Option<StoredRun>, EventStoreError>> + Send;
+
+    /// Restore active execution without retaining historical screenshot bytes.
+    /// The latest image group remains inline; older images retain content IDs.
+    /// Public `load` and `load_range` still return complete image payloads.
+    fn load_for_runtime(
+        &self,
+        run_id: &str,
+    ) -> impl Future<Output = Result<Option<StoredRun>, EventStoreError>> + Send {
+        async move {
+            Ok(self.load(run_id).await?.map(|mut stored| {
+                agent_core::agent::release_historical_image_data(&mut stored.events);
+                stored
+            }))
+        }
+    }
 
     /// Load a half-open sequence range. An existing run returns `Some`, even
     /// when the range is empty or lies beyond its last event.

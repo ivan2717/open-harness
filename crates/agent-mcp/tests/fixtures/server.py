@@ -1,6 +1,8 @@
 """Dependency-free test MCP peer, launched directly without a shell."""
 import json
 import os
+import signal
+import subprocess
 import sys
 import time
 
@@ -8,6 +10,30 @@ mode = sys.argv[1]
 if len(sys.argv) > 2:
     with open(sys.argv[2], "w") as pid:
         pid.write(str(os.getpid()))
+
+detached = None
+if mode == "detached_cleanup":
+    detached = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(60)"],
+        start_new_session=True,
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    with open(sys.argv[2] + ".child", "w") as pid:
+        pid.write(str(detached.pid))
+
+def cleanup(*_):
+    if detached is not None:
+        # Real servers need time to close resources after EOF or SIGTERM.
+        time.sleep(0.1)
+        detached.terminate()
+        detached.wait(timeout=2)
+        with open(sys.argv[2] + ".cleaned", "w") as marker:
+            marker.write("closed")
+    if _:
+        sys.exit(0)
+
+if detached is not None:
+    signal.signal(signal.SIGTERM, cleanup)
 
 initialized = False
 calls = 0
@@ -54,3 +80,5 @@ for line in sys.stdin:
     else:
         raise RuntimeError("unexpected method " + method)
     print(json.dumps({"jsonrpc": "2.0", "id": request["id"], "result": result}), flush=True)
+
+cleanup()

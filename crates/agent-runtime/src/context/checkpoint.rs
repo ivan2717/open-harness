@@ -285,7 +285,12 @@ pub(super) fn event_prefix_fingerprint(
     // Two independent deterministic FNV-1a streams make accidental reuse
     // vanishingly unlikely. This is an integrity key, not an authentication
     // primitive; authorization remains the EventStore's responsibility.
-    let encoded = serde_json::to_vec(events)?;
+    let references = events
+        .iter()
+        .map(RunEventEnvelope::with_image_references)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| serde_json::Error::io(std::io::Error::other(error)))?;
+    let encoded = serde_json::to_vec(&references)?;
     let mut first = 0xcbf2_9ce4_8422_2325_u64;
     let mut second = 0x8422_2325_cbf2_9ce4_u64;
     for byte in b"agent-runtime-context-v1".iter().chain(&encoded) {
@@ -295,4 +300,38 @@ pub(super) fn event_prefix_fingerprint(
         second = second.wrapping_mul(0x0000_0100_0000_01b3);
     }
     Ok(format!("{first:016x}{second:016x}"))
+}
+
+#[cfg(test)]
+mod image_fingerprint_tests {
+    use super::*;
+    #[test]
+    fn source_identity_survives_releasing_inline_images() {
+        let image = agent_core::ModelImage::new("image/png", "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZcZkAAAAASUVORK5CYII=").unwrap();
+        let events = vec![RunEventEnvelope {
+            sequence: 1,
+            step: 1,
+            occurred_at: std::time::UNIX_EPOCH,
+            event: agent_core::agent::RunEvent::ToolCallSucceeded {
+                call_id: "c".into(),
+                output: "observed".into(),
+                images: vec![image],
+            },
+        }];
+        let references = vec![events[0].with_image_references().unwrap()];
+        assert_eq!(
+            event_prefix_fingerprint(&events).unwrap(),
+            event_prefix_fingerprint(&references).unwrap()
+        );
+        let mut references = references;
+        if let agent_core::agent::RunEvent::ToolCallSucceeded { images, .. } =
+            &mut references[0].event
+        {
+            images[0].data_base64 = format!("sha256:{}", "0".repeat(64));
+        }
+        assert_ne!(
+            event_prefix_fingerprint(&events).unwrap(),
+            event_prefix_fingerprint(&references).unwrap()
+        );
+    }
 }

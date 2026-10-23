@@ -72,6 +72,7 @@ pub struct ProviderConfig {
     pub context_window: usize,
     pub max_output_tokens: usize,
     pub reasoning: ReasoningMode,
+    pub supports_images: bool,
 }
 impl fmt::Debug for ProviderConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -92,6 +93,7 @@ impl fmt::Debug for ProviderConfig {
 pub enum ProviderError {
     InvalidConfig(&'static str),
     InvalidRequest,
+    ImagesUnsupported,
     InvalidResponse,
     IncompleteStream,
     Transport,
@@ -132,6 +134,9 @@ impl fmt::Display for ProviderError {
         match self {
             Self::InvalidConfig(reason) => write!(f, "invalid model configuration: {reason}"),
             Self::InvalidRequest => f.write_str("model request or replay state is invalid"),
+            Self::ImagesUnsupported => {
+                f.write_str("image input is disabled for this model configuration")
+            }
             Self::InvalidResponse => f.write_str("provider returned an invalid response"),
             Self::IncompleteStream => f.write_str("provider stream ended before completion"),
             Self::Transport => f.write_str("could not connect to the model provider"),
@@ -152,6 +157,7 @@ pub struct HttpModel {
     reasoning: ReasoningMode,
     metadata: ModelContextMetadata,
     identity: ProviderContextIdentity,
+    supports_images: bool,
 }
 impl fmt::Debug for HttpModel {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -255,6 +261,7 @@ impl HttpModel {
             model: config.model,
             reasoning: config.reasoning,
             metadata,
+            supports_images: config.supports_images,
             identity,
         })
     }
@@ -594,6 +601,7 @@ impl Model for HttpModel {
     }
     fn capabilities(&self) -> ModelCapabilities {
         ModelCapabilities {
+            supports_images: self.supports_images,
             context: ContextCapabilities {
                 accepts_native_context: false,
                 supports_native_compaction: false,

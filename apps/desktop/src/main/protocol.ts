@@ -16,6 +16,12 @@ import {
 export const channels = {
   openSkillsDirectory: 'openharness:skills:open-directory',
   installPlugin: 'openharness:plugins:install',
+  bundledPlugins: 'openharness:plugins:bundled',
+  installBundledPlugin: 'openharness:plugins:install-bundled',
+  prepareBrowser: 'openharness:browser:prepare',
+  connectChrome: 'openharness:chrome:connect',
+  chromeConnectionStatus: 'openharness:chrome:status',
+  computerSettings: 'openharness:computer:settings',
   resolveResource: 'openharness:resource:resolve',
   resourceAction: 'openharness:resource:action',
   openExternal: 'openharness:resource:external',
@@ -38,7 +44,14 @@ export type BridgeRequest =
   | { operation: 'uninstallPlugin'; id: string }
   | { operation: 'saveExtensions'; config: ExtensionConfig }
   | { operation: 'testMcp' | 'runExtensions' | 'refreshRunSkills' | 'runMemory'; id: string }
-  | { operation: 'approveExtension'; id: string; approvalId: string; allow: boolean }
+  | {
+      operation: 'approveExtension'
+      id: string
+      approvalId: string
+      allow: boolean
+      session?: boolean
+    }
+  | { operation: 'revokeControl'; id: string }
   | { operation: 'config' | 'listRuns' }
   | {
       operation: 'getRun' | 'getWorkspace' | 'cancelRun' | 'compactRun' | 'cancelCompaction'
@@ -186,7 +199,12 @@ export function modelConfiguration(value: unknown): ConfigureModelInput {
     api_key: boundedText(input.api_key, 4096, 'API key').trim(),
     reasoning_mode: reasoning_mode as ConfigureModelInput['reasoning_mode'],
     reasoning_effort: reasoning_effort as ConfigureModelInput['reasoning_effort'],
+    ...(input.supports_images === undefined
+      ? {}
+      : { supports_images: input.supports_images === true }),
   }
+  if (input.supports_images !== undefined && typeof input.supports_images !== 'boolean')
+    throw new Error('Invalid image capability')
   if (context_window !== undefined && max_output_tokens !== undefined)
     resolveModelLimits(configuration)
   return configuration
@@ -243,11 +261,18 @@ export function apiRequest(value: unknown): ApiRequest {
       return { path: `/api/runs/${identifier(request.id)}/extensions/refresh`, method: 'POST' }
     case 'approveExtension':
       if (typeof request.allow !== 'boolean') throw new Error('Invalid approval decision')
+      if (request.session !== undefined && typeof request.session !== 'boolean')
+        throw new Error('Invalid approval scope')
       return {
         path: `/api/runs/${identifier(request.id)}/extensions/approvals/${identifier(request.approvalId)}`,
         method: 'POST',
-        body: { allow: request.allow },
+        body: {
+          allow: request.allow,
+          ...(request.session === undefined ? {} : { session: request.session }),
+        },
       }
+    case 'revokeControl':
+      return { path: `/api/runs/${identifier(request.id)}/extensions/control`, method: 'DELETE' }
     case 'config':
       return { path: '/api/config', method: 'GET' }
     case 'listRuns':

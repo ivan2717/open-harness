@@ -262,6 +262,8 @@ pub(super) fn select_compaction_boundary<N: TokenCounter>(
 }
 
 pub(super) struct ToolOutputProjection<'a> {
+    supports_images: bool,
+    latest_image_sequence: Option<u64>,
     max_chars: usize,
     prune_new: bool,
     replacements: HashMap<u64, PrunedToolOutput>,
@@ -282,6 +284,17 @@ impl<'a> ToolOutputProjection<'a> {
             })
             .collect();
         Self {
+            supports_images: input.supports_images,
+            latest_image_sequence: input
+                .events
+                .iter()
+                .rev()
+                .find_map(|event| match &event.event {
+                    RunEvent::ToolCallSucceeded { images, .. } if !images.is_empty() => {
+                        Some(event.sequence)
+                    }
+                    _ => None,
+                }),
             max_chars,
             prune_new: true,
             replacements: HashMap::new(),
@@ -326,12 +339,12 @@ impl<'a> ToolOutputProjection<'a> {
             return Some((replacement.content.clone(), replacement.is_error));
         }
         match &event.event {
-            RunEvent::ToolCallSucceeded { call_id, output } => {
-                Some(match self.bound_output(call_id, output) {
-                    Ok(output) => (output, false),
-                    Err(error) => (error, true),
-                })
-            }
+            RunEvent::ToolCallSucceeded {
+                call_id, output, ..
+            } => Some(match self.bound_output(call_id, output) {
+                Ok(output) => (output, false),
+                Err(error) => (error, true),
+            }),
             RunEvent::ToolCallFailed { message, .. } => {
                 Some((clip_middle(message, self.max_chars), true))
             }
@@ -407,13 +420,32 @@ impl<'a> ToolOutputProjection<'a> {
                         assistant_step = Some(envelope.step);
                     }
                 }
-                RunEvent::ToolCallSucceeded { call_id, .. } => {
-                    let (content, is_error) = self.output(envelope).expect("tool result");
-                    messages.push(ModelMessage::tool_result(
-                        call_id.clone(),
-                        content,
-                        is_error,
-                    ));
+                RunEvent::ToolCallSucceeded {
+                    call_id, images, ..
+                } => {
+                    let (mut content, is_error) = self.output(envelope).expect("tool result");
+                    let latest = self.latest_image_sequence == Some(envelope.sequence);
+                    let inline = images.iter().all(|image| image.reference_id().is_none());
+                    let retain_images = latest && inline && !is_error && self.supports_images;
+                    if !images.is_empty() && !retain_images {
+                        content.push_str(if !latest {
+                            "\n[Older image observation omitted from active context; observe the current interface again when needed.]"
+                        } else if !self.supports_images {
+                            "\n[Image not sent: the configured model does not support visual input. Use structured UI observations; do not infer image contents.]"
+                        } else if !inline {
+                            "\n[Archived image is not available in this context. Observe the current interface again; do not infer image contents.]"
+                        } else {
+                            "\n[Image observation unavailable because this tool result could not fit the output budget.]"
+                        });
+                    }
+                    let mut message = ModelMessage::tool_result(call_id.clone(), content, is_error);
+                    if retain_images
+                        && let ContentBlock::ToolResult { images: target, .. } =
+                            &mut message.content[0]
+                    {
+                        *target = images.clone();
+                    }
+                    messages.push(message);
                 }
                 RunEvent::ToolCallFailed { call_id, .. } => {
                     messages.push(ModelMessage::tool_result(
@@ -440,7 +472,9 @@ impl<'a> ToolOutputProjection<'a> {
             return false;
         }
         match &event.event {
-            RunEvent::ToolCallSucceeded { call_id, output } => {
+            RunEvent::ToolCallSucceeded {
+                call_id, output, ..
+            } => {
                 if output.chars().count() > self.max_chars {
                     return true;
                 }
@@ -483,9 +517,13 @@ impl<'a> ToolOutputProjection<'a> {
 
     pub(super) fn clipped_event(&self, event: &RunEventEnvelope) -> RunEventEnvelope {
         let output = self.output(event);
+        let had_images = matches!(&event.event, RunEvent::ToolCallSucceeded { images, .. } if !images.is_empty());
         let mut event = event.clone();
         event.event = event.event.without_provider_state();
-        if let Some((content, is_error)) = output {
+        if let Some((mut content, is_error)) = output {
+            if had_images {
+                content.push_str("\n[Historical image bytes omitted from summary input. Preserve only independently documented results; do not infer the screenshot contents.]");
+            }
             let call_id = match &event.event {
                 RunEvent::ToolCallSucceeded { call_id, .. }
                 | RunEvent::ToolCallFailed { call_id, .. } => call_id.clone(),
@@ -500,6 +538,7 @@ impl<'a> ToolOutputProjection<'a> {
                 RunEvent::ToolCallSucceeded {
                     call_id,
                     output: content,
+                    images: Vec::new(),
                 }
             };
         }

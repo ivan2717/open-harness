@@ -15,8 +15,10 @@ import { toolOutcome } from '../lib/format'
 import { skillActivityLabel } from '../lib/skill-activity'
 import { FileReferences } from './FileReferences'
 import { MessageMarkdown } from './MessageMarkdown'
+import { LocalMessageResource } from './MessageResource'
 
 function Message({ message, runId }: { message: ChatMessage; runId: string }) {
+  const [toolExpanded, setToolExpanded] = useState(false)
   if (
     message.role === 'assistant' &&
     message.status === 'complete' &&
@@ -30,7 +32,10 @@ function Message({ message, runId }: { message: ChatMessage; runId: string }) {
   if (message.role === 'tool')
     return (
       <div className="tool-row">
-        <details className={`tool-card ${outcome.failed ? 'tool-error' : ''}`}>
+        <details
+          className={`tool-card ${outcome.failed ? 'tool-error' : ''}`}
+          onToggle={(event) => setToolExpanded(event.currentTarget.open)}
+        >
           <summary>
             <span className="tool-card-icon">
               {skillActivity ? <BookOpen size={14} /> : <Terminal size={14} />}
@@ -51,6 +56,14 @@ function Message({ message, runId }: { message: ChatMessage; runId: string }) {
             <ChevronRight className="details-chevron" size={13} />
           </summary>
           <pre>{message.text || '暂无输出'}</pre>
+          {toolExpanded &&
+            message.images?.map((_, index) => (
+              <LocalMessageResource
+                key={index}
+                reference={{ runId, messageId: message.id, imageIndex: index }}
+                label={`操作截图 ${index + 1}`}
+              />
+            ))}
         </details>
       </div>
     )

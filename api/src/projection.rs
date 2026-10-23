@@ -87,13 +87,24 @@ pub fn apply(detail: &mut RunDetail, envelope: &RunEventEnvelope) {
                 format!("{tool_name}\n{arguments}"),
             )
         }
-        RunEvent::ToolCallSucceeded { call_id, output } => {
+        RunEvent::ToolCallSucceeded {
+            call_id,
+            output,
+            images,
+        } => {
             if let Some(message) = detail
                 .messages
                 .iter_mut()
                 .find(|message| message.id == format!("tool-{call_id}"))
             {
                 message.text = output.clone();
+                message.images = images
+                    .iter()
+                    .map(|image| crate::contracts::ToolImageInfo {
+                        sequence: envelope.sequence,
+                        mime_type: image.mime_type.clone(),
+                    })
+                    .collect();
                 message.is_error = Some(false);
                 message.status = "complete".into();
             }

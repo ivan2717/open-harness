@@ -85,6 +85,17 @@ export function resourceReference(value: unknown): ResourceReference {
   const item = value as Record<string, unknown>
   const runId = identifier(item.runId)
   const messageId = identifier(item.messageId)
+  if (item.imageIndex !== undefined) {
+    if (
+      item.source !== undefined ||
+      item.fileIndex !== undefined ||
+      !Number.isInteger(item.imageIndex) ||
+      Number(item.imageIndex) < 0 ||
+      Number(item.imageIndex) > 3
+    )
+      throw new Error('截图引用无效。')
+    return { runId, messageId, imageIndex: Number(item.imageIndex) }
+  }
   if (item.source !== undefined) {
     if (
       item.fileIndex !== undefined ||
@@ -304,7 +315,10 @@ export class MessageResourceStore {
       }
       if (!links.destinations.has(normalizedDestination(reference.source!)))
         throw new Error('此文件未关联到当前消息。')
-    } else if (message.role !== 'user' || !message.files?.[reference.fileIndex]) {
+    } else if (reference.imageIndex !== undefined) {
+      if (message.role !== 'tool' || !message.images?.[reference.imageIndex])
+        throw new Error('截图不存在。')
+    } else if (message.role !== 'user' || !message.files?.[reference.fileIndex!]) {
       throw new Error('引用文件不存在。')
     }
     const cached = await this.load(id, reference)
@@ -324,6 +338,30 @@ export class MessageResourceStore {
       bytes = await readBounded(path, MAX_RESOURCE_BYTES)
       if ((await realpath(candidate)) !== path || (await realpath(run.workspace_path)) !== root)
         throw new Error('文件路径已变化，请重试。')
+    } else if (reference.imageIndex !== undefined) {
+      const image = (await this.backend.request({
+        path: `/api/runs/${reference.runId}/messages/${reference.messageId}/images/${reference.imageIndex}`,
+        method: 'GET',
+      })) as { mime_type: string; data_base64: string }
+      const extension = (
+        {
+          'image/png': 'png',
+          'image/jpeg': 'jpg',
+          'image/webp': 'webp',
+          'image/gif': 'gif',
+        } as Record<string, string>
+      )[image.mime_type]
+      if (
+        !extension ||
+        typeof image.data_base64 !== 'string' ||
+        image.data_base64.length > 7 * 1024 * 1024
+      )
+        throw new Error('截图格式或大小无效。')
+      name = `截图-${reference.imageIndex + 1}.${extension}`
+      bytes = Buffer.from(image.data_base64, 'base64')
+      if (!bytes.length || bytes.toString('base64') !== image.data_base64)
+        throw new Error('截图编码无效。')
+      if (bytes.length > 5 * 1024 * 1024) throw new Error('截图过大。')
     } else {
       const file = (await this.backend.request({
         path: `/api/runs/${reference.runId}/messages/${reference.messageId}/files/${reference.fileIndex}`,

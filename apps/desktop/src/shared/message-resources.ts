@@ -1,6 +1,8 @@
 /** Presentation references; these do not change model input or filesystem permissions. */
 export type ResourceReference = { runId: string; messageId: string } & (
-  { source: string; fileIndex?: never } | { fileIndex: number; source?: never }
+  | { source: string; fileIndex?: never; imageIndex?: never }
+  | { fileIndex: number; source?: never; imageIndex?: never }
+  | { imageIndex: number; source?: never; fileIndex?: never }
 )
 
 export type ResourceKind = 'image' | 'video' | 'audio' | 'text' | 'file'

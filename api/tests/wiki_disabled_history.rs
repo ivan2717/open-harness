@@ -57,6 +57,7 @@ impl Fixture {
             .unwrap();
         let model = state
             .configure_model(ConfigureModel {
+                supports_images: false,
                 protocol: ProviderProtocol::ChatCompletions,
                 base_url: self.endpoint.clone(),
                 api_key: "local-test-only".into(),

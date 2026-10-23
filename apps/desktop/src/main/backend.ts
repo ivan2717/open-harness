@@ -14,6 +14,7 @@ export class Backend {
   constructor(
     private binary: string,
     private dataDirectory: string,
+    private environment: NodeJS.ProcessEnv = {},
   ) {}
 
   start(): Promise<string> {
@@ -22,6 +23,7 @@ export class Backend {
       const child = spawn(this.binary, [], {
         env: {
           ...process.env,
+          ...this.environment,
           OPENHARNESS_BIND: '127.0.0.1:0',
           OPENHARNESS_DATA_DIR: this.dataDirectory,
           OPENHARNESS_API_TOKEN: this.token,
@@ -34,29 +36,37 @@ export class Backend {
       let output = ''
       const timer = setTimeout(() => {
         if (settled) return
-        this.failure = new Error('The local runtime did not become ready within 30 seconds')
+        this.failure = new Error(
+          'The local runtime did not become ready within 30 seconds. 请重新启动 Open Harness。',
+        )
         settled = true
         reject(this.failure)
         child.kill()
       }, 30_000)
       const fail = (error: Error): void => {
-        this.failure = error
+        // Terminating a timed-out startup can produce exit(0). Keep its cause,
+        // rather than replacing it with a misleading clean-exit message.
+        this.failure ??= error
         clearTimeout(timer)
         if (!settled) {
           settled = true
-          reject(error)
+          reject(this.failure)
         }
       }
       child.on('error', () =>
         fail(
           new Error(
-            'Could not start the local runtime. Build the Rust API binary and restart the app.',
+            'Could not start the local runtime. 请重新启动 Open Harness；若仍失败，请重新构建或安装应用。',
           ),
         ),
       )
       child.on('exit', (code, signal) => {
         if (!this.stopping)
-          fail(new Error(`The local runtime stopped (${signal ?? code ?? 'unknown'})`))
+          fail(
+            new Error(
+              `The local runtime stopped (${signal ?? code ?? 'unknown'}). 请重新启动 Open Harness。`,
+            ),
+          )
         else {
           clearTimeout(timer)
           if (!settled) {
@@ -70,7 +80,7 @@ export class Backend {
         if (settled) return
         output += chunk.toString('utf8')
         if (output.length > 64_000) {
-          fail(new Error('Invalid local runtime startup response'))
+          fail(new Error('Invalid local runtime startup response. 请重新启动 Open Harness。'))
           child.kill()
           return
         }
@@ -86,13 +96,13 @@ export class Backend {
               typeof candidate.address !== 'string' ||
               !/^127\.0\.0\.1:\d{1,5}$/.test(candidate.address)
             ) {
-              fail(new Error('Invalid local runtime address'))
+              fail(new Error('Invalid local runtime address. 请重新启动 Open Harness。'))
               child.kill()
               return
             }
             const port = Number(candidate.address.split(':')[1])
             if (port < 1 || port > 65535) {
-              fail(new Error('Invalid local runtime port'))
+              fail(new Error('Invalid local runtime port. 请重新启动 Open Harness。'))
               child.kill()
               return
             }

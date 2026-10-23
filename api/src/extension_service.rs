@@ -73,12 +73,29 @@ impl AppState {
         approval: &str,
         allow: bool,
     ) -> Result<RunExtensions, ServiceError> {
+        self.approve_extension_scoped(id, approval, allow, false)
+    }
+    pub fn approve_extension_scoped(
+        &self,
+        id: &str,
+        approval: &str,
+        allow: bool,
+        session: bool,
+    ) -> Result<RunExtensions, ServiceError> {
         self.get(id)?;
         self.inner
             .extensions
             .approvals
-            .decide(id, approval, allow)
+            .decide_scoped(id, approval, allow, session)
             .map_err(|error| ServiceError::Conflict(error.to_string()))?;
+        self.run_extensions(id)
+    }
+    pub async fn revoke_control(&self, id: &str) -> Result<RunExtensions, ServiceError> {
+        let detail = self.get(id)?;
+        self.inner.extensions.revoke_run(id);
+        if detail.summary.status == crate::contracts::RunStatus::Running {
+            self.cancel(id).await?;
+        }
         self.run_extensions(id)
     }
 }

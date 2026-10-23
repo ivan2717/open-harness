@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "chrome": {
+      "command": "./launch.sh",
+      "env_vars": ["OPENHARNESS_NODE_BINARY", "ELECTRON_RUN_AS_NODE", "OPENHARNESS_CHROME_CONFIG"]
+    }
+  }
+}

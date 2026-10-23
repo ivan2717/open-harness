@@ -1,6 +1,7 @@
 appId: dev.openharness.desktop
 productName: Open Harness
 asar: true
+afterSign: ./scripts/verify-signature.mjs
 directories:
   output: release
 files:
@@ -9,7 +10,12 @@ files:
 extraResources:
   - from: resources/bin
     to: bin
+  - from: resources/plugins
+    to: plugins
+  - from: node_modules/playwright-core
+    to: browser-runtime
 mac:
+  forceCodeSigning: true
   category: public.app-category.developer-tools
   target: dmg
 win:

@@ -39,6 +39,7 @@ pub async fn run(model: DeepSeekModel) -> Result<Value, Box<dyn std::error::Erro
                 "Batch {i}: important artifact /work/result-{i}.json\n{}",
                 "unchanged log entry\n".repeat(500)
             ),
+            images: Vec::new(),
         })?;
     }
     let events = run.events().to_vec();

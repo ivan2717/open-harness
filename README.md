@@ -71,6 +71,54 @@ tool outcomes as unknown or not started. It never re-executes old tool calls.
 The model is instructed to inspect actual state before taking further action.
 Missing project directories disable execution without making history unreadable.
 
+### Browser and computer operation
+
+Open **插件** in the desktop rail to install the optional bundled **Browser Use**
+and **Computer Use** plugins. Each bundles a Skill and a local MCP executor;
+the existing harness runs the model/tool loop, approvals, history and cancellation.
+Installation does not start a browser, operate an app, or call a model.
+
+**Browser Use** drives an isolated Playwright Chromium session through bounded
+page text, accessibility observations, element references and screenshots. Click
+**准备浏览器** once to download the matching Chromium, then install the plugin.
+This version supports macOS and Linux; Windows has no supported launcher yet.
+It does not attach to the user's existing browser profile. See the
+[Browser Use contract and limitations](plugins/browser-use/README.md).
+
+**Computer Use** operates one explicitly selected running macOS application.
+It requires macOS 14 or later, Accessibility permission, and Screen Recording
+permission for window screenshots. The plugin card offers **辅助功能**,
+**屏幕录制** and **检查权限**; permission prompts only follow those user actions.
+Building from source also requires Xcode Command Line Tools. There is no native
+Windows/Linux desktop executor in this version. See the
+[Computer Use setup and GUI checks](plugins/computer-use/README.md).
+
+Before a first action, the conversation offers **允许本次** or a scoped
+**允许本会话** grant. Browser grants apply to its isolated session; computer grants
+bind one application/process, with another approval required to switch apps.
+Use **停止控制** to revoke the grant and stop its owned executor; run cancellation
+and application shutdown also clean up owned work. Stopping cannot undo an input
+already delivered. Screenshots and UI text are observations, not authorization.
+
+In **模型 → 接入模型**, enable **此模型支持图片输入** only for a vision-capable
+model. Structured UI observations remain available without this option, while
+omitted screenshots are explicitly reported. Chat Completions, Responses and
+Messages adapt real image blocks separately. The runtime retains only the latest
+screenshot group in active context and memory; older images remain in checked
+SHA256 sidecars for explicit archive reads. Live notifications carry references
+so slow subscribers do not accumulate screenshot pixels. Context budgets reserve an image
+allowance without counting base64 as text. Images never enter Wiki or compaction
+as imagined descriptions. The long-run tests cover 40 successive screenshots,
+restore/continue, complete archive retrieval and corrupt-image rejection on read.
+
+After preparing Chromium, validate from the repository root with
+`npm --prefix apps/desktop run test:browser`,
+`npm --prefix apps/desktop run test:computer`, and
+`npm --prefix apps/desktop run test:e2e:computer`. The native macOS fixture uses
+`node plugins/computer-use/tests/gui-smoke.mjs`; missing OS permissions report
+`blocked`, not a successful GUI run. Rust protocol and retention tests run with
+`cargo test -p agent-core -p agent-runtime -p agent-memory -p agent-providers --offline`.
+
 ### Plugins, MCP and Skills
 
 The built-in **LLM Wiki** memory plugin is enabled by default and can be turned

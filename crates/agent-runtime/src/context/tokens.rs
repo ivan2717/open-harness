@@ -80,6 +80,7 @@ impl ApproximateTokenCounter {
 
     fn count_request_prefix(&self, request: &ModelRequest, message_count: usize) -> usize {
         let mut units = self.text_units(&request.instructions);
+        let mut image_tokens = 0usize;
         let messages = &request.messages[..message_count.min(request.messages.len())];
 
         for message in messages {
@@ -107,10 +108,19 @@ impl ApproximateTokenCounter {
                         .saturating_add(self.text_units(name))
                         .saturating_add(self.text_units(arguments)),
                     ContentBlock::ToolResult {
-                        call_id, content, ..
-                    } => self
-                        .text_units(call_id)
-                        .saturating_add(self.text_units(content)),
+                        call_id,
+                        content,
+                        images,
+                        ..
+                    } => {
+                        image_tokens = image_tokens.saturating_add(
+                            images
+                                .len()
+                                .saturating_mul(agent_core::IMAGE_TOKEN_ALLOWANCE),
+                        );
+                        self.text_units(call_id)
+                            .saturating_add(self.text_units(content))
+                    }
                 };
                 units = units.saturating_add(cost);
             }
@@ -147,6 +157,7 @@ impl ApproximateTokenCounter {
             .saturating_add(framing)
             .saturating_add(opaque_tokens)
             .saturating_add(response_state_tokens)
+            .saturating_add(image_tokens)
             .max(1)
     }
 }
@@ -163,7 +174,7 @@ impl Default for ApproximateTokenCounter {
 impl TokenCounter for ApproximateTokenCounter {
     fn estimator_identity(&self) -> Option<String> {
         Some(format!(
-            "approximate-v1:{}:{}",
+            "approximate-v2-images:{}:{}",
             self.count_bytes, self.units_per_token
         ))
     }

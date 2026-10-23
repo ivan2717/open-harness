@@ -353,6 +353,7 @@ async fn non_streaming_adapters_use_the_same_settlement_contract() {
 #[test]
 fn reasoning_choices_are_adapter_defined_and_validated_without_wire_names() {
     let capabilities = ModelCapabilities {
+        supports_images: false,
         reasoning: ReasoningCapabilities {
             options: vec![
                 ReasoningOption {

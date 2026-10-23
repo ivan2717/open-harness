@@ -300,6 +300,7 @@ async fn a_completed_tool_batch_can_resume_without_replaying_its_side_effects() 
         .record(RunEvent::ToolCallSucceeded {
             call_id: "c1".into(),
             output: "written".into(),
+            images: Vec::new(),
         })
         .unwrap();
     for event in historical.events() {

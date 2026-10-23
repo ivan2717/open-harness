@@ -105,6 +105,7 @@ fn input() -> ContextInput {
         run.record(RunEvent::ToolCallSucceeded {
             call_id,
             output: "x".repeat(100),
+            images: Vec::new(),
         })
         .unwrap();
     }

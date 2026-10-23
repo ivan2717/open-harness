@@ -6,6 +6,7 @@ import type {
   RunExtensions,
   PluginSourceKind,
   SkillCatalog,
+  BundledPlugin,
 } from './extensions'
 import type { ResolvedResource, ResourceAction, ResourceReference } from './message-resources'
 import type { RunMemory } from './memory'
@@ -42,6 +43,7 @@ export interface ConfigureModelInput {
   max_output_tokens?: number
   reasoning_mode: 'off' | 'standard' | 'deepseek'
   reasoning_effort: 'low' | 'medium' | 'high'
+  supports_images?: boolean
 }
 
 export type ResolvedModelConfiguration = Omit<
@@ -80,6 +82,7 @@ export interface ChatMessage {
   role: 'user' | 'assistant' | 'tool'
   text: string
   files?: FileReferenceInfo[]
+  images?: { sequence: number; mime_type: string }[]
   reasoning?: string
   tool_name?: string
   is_error?: boolean
@@ -210,6 +213,12 @@ export interface WorkspaceReview {
 }
 
 export interface DesktopBridge {
+  bundledPlugins(): Promise<BundledPlugin[]>
+  installBundledPlugin(id: BundledPlugin['id']): Promise<ExtensionSettings>
+  prepareBrowser(): Promise<void>
+  chromeConnectionStatus(): Promise<NonNullable<BundledPlugin['chrome']>>
+  connectChrome(mode?: 'store' | 'development' | 'repair'): Promise<void>
+  openComputerSettings(permission: 'accessibility' | 'screen-recording'): Promise<void>
   extensionSettings(): Promise<ExtensionSettings>
   skillCatalog(workspacePath?: string): Promise<SkillCatalog>
   saveExtensions(config: ExtensionConfig): Promise<ExtensionSettings>
@@ -223,7 +232,13 @@ export interface DesktopBridge {
   runExtensions(id: string): Promise<RunExtensions>
   runMemory(id: string): Promise<RunMemory>
   refreshRunSkills(id: string): Promise<RunExtensions>
-  approveExtension(id: string, approvalId: string, allow: boolean): Promise<RunExtensions>
+  approveExtension(
+    id: string,
+    approvalId: string,
+    allow: boolean,
+    session?: boolean,
+  ): Promise<RunExtensions>
+  revokeControl(id: string): Promise<RunExtensions>
   openSkillsDirectory(): Promise<void>
   resolveResource(reference: ResourceReference): Promise<ResolvedResource>
   resourceAction(id: string, action: ResourceAction): Promise<void>

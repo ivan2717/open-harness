@@ -1,12 +1,32 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { spawn } from 'node:child_process'
+import { EventEmitter } from 'node:events'
+import { PassThrough } from 'node:stream'
 import { Backend } from './backend'
 import { apiRequest } from './protocol'
+import { initializeRuntime, watchInitializedRuntime } from './runtime-startup'
+
+vi.mock('node:child_process', () => ({ spawn: vi.fn() }))
 
 afterEach(() => {
   vi.restoreAllMocks()
   vi.unstubAllGlobals()
   vi.useRealTimers()
+  vi.mocked(spawn).mockReset()
 })
+
+function runtimeProcess() {
+  const child = Object.assign(new EventEmitter(), {
+    stdin: new PassThrough(),
+    stdout: new PassThrough(),
+    stderr: new PassThrough(),
+    kill: vi.fn(() => true),
+    exitCode: null,
+    signalCode: null,
+  })
+  vi.mocked(spawn).mockReturnValue(child as unknown as ReturnType<typeof spawn>)
+  return child
+}
 
 function delayedBackend(responseDelay: number): Backend {
   vi.useFakeTimers()
@@ -57,5 +77,120 @@ describe('local runtime request deadlines', () => {
     const assertion = expect(result).rejects.toThrow('Could not reach the local runtime')
     await vi.advanceTimersByTimeAsync(70_000)
     await assertion
+  })
+})
+
+describe('local runtime initialization', () => {
+  it('does not start a process or readiness timer while keychain initialization is pending', async () => {
+    vi.useFakeTimers()
+    const child = runtimeProcess()
+    const backend = new Backend('fixture-api', 'fixture-directory')
+    let unlock!: () => void
+    const load = new Promise<[]>((resolve) => {
+      unlock = () => resolve([])
+    })
+    const initialization = initializeRuntime(backend, () => load, vi.fn())
+    const cancelled = new AbortController()
+    const active = new AbortController()
+    const cancelledWatch = vi.fn().mockResolvedValue(undefined)
+    const activeWatch = vi.fn().mockResolvedValue(undefined)
+    const stopped = watchInitializedRuntime(initialization, cancelled.signal, cancelledWatch)
+    const watching = watchInitializedRuntime(initialization, active.signal, activeWatch)
+    cancelled.abort()
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(spawn).not.toHaveBeenCalled()
+    expect(vi.getTimerCount()).toBe(0)
+    expect(activeWatch).not.toHaveBeenCalled()
+    unlock()
+    await Promise.resolve()
+    expect(spawn).toHaveBeenCalledOnce()
+    expect(vi.getTimerCount()).toBe(1)
+    child.stdout.write(JSON.stringify({ event: 'ready', address: '127.0.0.1:1234' }) + '\n')
+    await Promise.all([initialization, stopped, watching])
+    expect(cancelledWatch).not.toHaveBeenCalled()
+    expect(activeWatch).toHaveBeenCalledOnce()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('starts the runtime even if saved models cannot be decrypted', async () => {
+    const backend = { start: vi.fn().mockResolvedValue('http://127.0.0.1:1234'), request: vi.fn() }
+    const report = vi.fn()
+    await initializeRuntime(
+      backend,
+      async () => {
+        throw new Error('fixture keychain unavailable')
+      },
+      report,
+    )
+    expect(backend.start).toHaveBeenCalledOnce()
+    expect(backend.request).not.toHaveBeenCalled()
+    expect(report).toHaveBeenCalledWith(expect.stringContaining('本地会话记录仍然可用'))
+  })
+
+  it('does not subscribe until restored model registration finishes', async () => {
+    const input = {
+      protocol: 'responses' as const,
+      base_url: 'http://127.0.0.1:1234',
+      api_key: 'fixture-only',
+      model: 'fixture-model',
+      context_window: 128_000,
+      max_output_tokens: 8_192,
+      reasoning_mode: 'off' as const,
+      reasoning_effort: 'medium' as const,
+    }
+    let registered!: () => void
+    const pending = new Promise<void>((resolve) => {
+      registered = resolve
+    })
+    const backend = {
+      start: vi.fn().mockResolvedValue('http://127.0.0.1:1234'),
+      request: vi.fn(() => pending),
+    }
+    const initialization = initializeRuntime(backend, async () => [input], vi.fn())
+    const watch = vi.fn().mockResolvedValue(undefined)
+    const watching = watchInitializedRuntime(initialization, new AbortController().signal, watch)
+    await Promise.resolve()
+    expect(backend.request).toHaveBeenCalledWith({
+      path: '/api/models',
+      method: 'POST',
+      body: input,
+    })
+    expect(watch).not.toHaveBeenCalled()
+    registered()
+    await watching
+    expect(backend.start).toHaveBeenCalledOnce()
+    expect(watch).toHaveBeenCalledOnce()
+  })
+
+  it('keeps the startup timeout as the cause when terminating the process produces exit zero', async () => {
+    vi.useFakeTimers()
+    const child = runtimeProcess()
+    const backend = new Backend('fixture-api', 'fixture-directory')
+    const started = backend.start()
+    const rejected = expect(started).rejects.toThrow('did not become ready within 30 seconds')
+    await vi.advanceTimersByTimeAsync(30_000)
+    await rejected
+    expect(child.kill).toHaveBeenCalledOnce()
+    child.emit('exit', 0, null)
+    await expect(backend.request({ path: '/api/config', method: 'GET' })).rejects.toThrow(
+      'did not become ready within 30 seconds',
+    )
+    const onError = vi.fn()
+    await backend.watch('fixture-run', new AbortController().signal, vi.fn(), onError)
+    expect(onError).toHaveBeenCalledWith(expect.stringContaining('请重新启动 Open Harness'))
+    expect(onError).toHaveBeenCalledWith(expect.stringContaining('did not become ready'))
+    expect(spawn).toHaveBeenCalledOnce()
+  })
+
+  it('requires an app restart after a runtime that was ready exits unexpectedly', async () => {
+    const child = runtimeProcess()
+    const backend = new Backend('fixture-api', 'fixture-directory')
+    const started = backend.start()
+    child.stdout.write(JSON.stringify({ event: 'ready', address: '127.0.0.1:1234' }) + '\n')
+    await started
+    child.emit('exit', 0, null)
+    await expect(backend.request({ path: '/api/config', method: 'GET' })).rejects.toThrow(
+      'stopped (0). 请重新启动 Open Harness',
+    )
   })
 })

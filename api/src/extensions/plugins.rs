@@ -15,6 +15,17 @@ impl ExtensionHost {
                     if plugin.id.starts_with("builtin.") {
                         return Err(io::Error::other("builtin. 是内置插件保留标识"));
                     }
+                    if self.bundled_plugins.is_some()
+                        && matches!(
+                            plugin.id.as_str(),
+                            "browser-use" | "computer-use" | "chrome-use"
+                        )
+                        && !self.is_bundled_control(plugin)
+                    {
+                        return Err(io::Error::other(
+                            "此标识为内置电脑操作插件保留，请从插件设置安装",
+                        ));
+                    }
                     if plugin.mcp_servers.iter().any(|server| {
                         config
                             .mcp_servers
@@ -127,6 +138,7 @@ impl ExtensionHost {
             }
         });
         self.approvals.invalidate_servers(&affected);
+        self.controls.lock().unwrap().invalidate_servers(&affected);
         drop(plugins);
         drop(config);
         Ok(self.settings())

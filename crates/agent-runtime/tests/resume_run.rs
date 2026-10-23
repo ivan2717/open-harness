@@ -116,6 +116,7 @@ async fn every_interruption_boundary_can_resume_without_replaying_tools() {
             run.record(RunEvent::ToolCallSucceeded {
                 call_id: "write-1".into(),
                 output: "Committed once".into(),
+                images: Vec::new(),
             })
             .unwrap();
         }
@@ -123,6 +124,7 @@ async fn every_interruption_boundary_can_resume_without_replaying_tools() {
             run.record(RunEvent::ToolCallSucceeded {
                 call_id: "write-2".into(),
                 output: "Also committed".into(),
+                images: Vec::new(),
             })
             .unwrap();
         }
@@ -175,6 +177,7 @@ async fn every_interruption_boundary_can_resume_without_replaying_tools() {
                     call_id,
                     content,
                     is_error,
+                    ..
                 } => Some((call_id, content, is_error)),
                 _ => None,
             })
@@ -297,6 +300,7 @@ async fn recovery_survives_a_second_restart_and_preserves_existing_results() {
     run.record(RunEvent::ToolCallSucceeded {
         call_id: "write-1".into(),
         output: "Already written".into(),
+        images: Vec::new(),
     })
     .unwrap();
     let store = JsonlEventStore::new(&directory.0);

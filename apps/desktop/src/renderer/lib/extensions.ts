@@ -1,4 +1,5 @@
-import { queryOptions, useMutation, useQueryClient } from '@tanstack/react-query'
+import { queryOptions, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useEffect } from 'react'
 import type { ExtensionConfig, PluginSourceKind } from '../../shared/extensions'
 import { errorMessage } from './format'
 
@@ -8,6 +9,24 @@ export const extensionSettingsOptions = queryOptions({
   staleTime: 30_000,
   retry: 1,
 })
+
+export function useBundledPluginCatalog() {
+  const catalog = useQuery({
+    queryKey: ['bundled-plugins'],
+    queryFn: () => window.harness.bundledPlugins(),
+    staleTime: 30_000,
+    refetchOnWindowFocus: 'always',
+    retry: 1,
+  })
+  const { refetch } = catalog
+  useEffect(() => {
+    // Returning from macOS System Settings need not change visibilityState.
+    const refresh = () => void refetch()
+    window.addEventListener('focus', refresh)
+    return () => window.removeEventListener('focus', refresh)
+  }, [refetch])
+  return catalog
+}
 
 export function useSaveExtensions() {
   const client = useQueryClient()

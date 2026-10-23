@@ -53,6 +53,8 @@ pub struct ChatMessage {
     pub text: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub files: Vec<FileReferenceInfo>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<ToolImageInfo>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -69,12 +71,19 @@ impl ChatMessage {
             role: role.into(),
             text,
             files: Vec::new(),
+            images: Vec::new(),
             reasoning: None,
             tool_name: None,
             is_error: None,
             status: "complete".into(),
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolImageInfo {
+    pub sequence: u64,
+    pub mime_type: String,
 }
 
 /// Display metadata only; the durable user event owns the immutable text snapshot.
@@ -196,6 +205,8 @@ pub struct ConfigureModel {
     pub max_output_tokens: usize,
     pub reasoning_mode: String,
     pub reasoning_effort: String,
+    #[serde(default)]
+    pub supports_images: bool,
 }
 
 #[cfg(test)]

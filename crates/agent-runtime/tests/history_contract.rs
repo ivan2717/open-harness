@@ -268,9 +268,13 @@ impl ContextManager for ToolResultsContext {
                 .events
                 .iter()
                 .filter_map(|envelope| match &envelope.event {
-                    RunEvent::ToolCallSucceeded { call_id, output } => Some(
-                        ModelMessage::tool_result(call_id.clone(), output.clone(), false),
-                    ),
+                    RunEvent::ToolCallSucceeded {
+                        call_id, output, ..
+                    } => Some(ModelMessage::tool_result(
+                        call_id.clone(),
+                        output.clone(),
+                        false,
+                    )),
                     RunEvent::ToolCallFailed { call_id, message } => Some(
                         ModelMessage::tool_result(call_id.clone(), message.clone(), true),
                     ),
@@ -352,6 +356,6 @@ async fn runtime_rejects_oversized_history_response_before_persistence_or_model_
     );
     assert_eq!(requests[1].messages.len(), 1);
     assert!(matches!(requests[1].messages[0].content.as_slice(),
-        [ContentBlock::ToolResult { call_id, content, is_error: true }]
+        [ContentBlock::ToolResult { call_id, content, is_error: true , .. }]
             if call_id == "archive-call" && content.contains("exceeded")));
 }

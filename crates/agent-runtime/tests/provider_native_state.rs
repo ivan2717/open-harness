@@ -337,6 +337,7 @@ fn journal_tool_history(compacted: bool) -> AgentRun {
         run.record(RunEvent::ToolCallSucceeded {
             call_id: id.into(),
             output: format!("result {id}"),
+            images: Vec::new(),
         })
         .unwrap();
     }

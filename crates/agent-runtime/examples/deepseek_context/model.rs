@@ -216,6 +216,7 @@ impl Model for DeepSeekModel {
 
     fn capabilities(&self) -> agent_runtime::ModelCapabilities {
         agent_runtime::ModelCapabilities {
+            supports_images: false,
             reasoning: agent_runtime::ReasoningCapabilities {
                 options: vec![agent_runtime::ReasoningOption {
                     id: "high".into(),

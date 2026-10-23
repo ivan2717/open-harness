@@ -113,6 +113,7 @@ fn history(assistant: usize, tool: usize) -> ContextInput {
             RunEvent::ToolCallSucceeded {
                 call_id: "read".into(),
                 output: format!("head{}tail", "x".repeat(tool)),
+                images: Vec::new(),
             },
         ));
     }

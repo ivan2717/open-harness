@@ -560,10 +560,11 @@ pub async fn run_runtime_with_counter<M: Model + Clone, N: TokenCounter + Clone>
     });
     let history_search_located_output = first_output.is_some_and(|(sequence, _)| {
         run.events().iter().any(|event| match &event.event {
-            RunEvent::ToolCallSucceeded { call_id, output }
-                if calls.iter().any(|call| {
-                    call["call_id"] == *call_id && call["tool"] == SEARCH_RUN_HISTORY_TOOL
-                }) =>
+            RunEvent::ToolCallSucceeded {
+                call_id, output, ..
+            } if calls.iter().any(|call| {
+                call["call_id"] == *call_id && call["tool"] == SEARCH_RUN_HISTORY_TOOL
+            }) =>
             {
                 serde_json::from_str::<Value>(output)
                     .ok()
@@ -631,7 +632,9 @@ pub async fn run_runtime_with_counter<M: Model + Clone, N: TokenCounter + Clone>
             .all(|observation| !request_contains(&observation.request, ARCHIVE_PIN))
     });
     let pin_returned_by_history = run.events().iter().any(|event| match &event.event {
-        RunEvent::ToolCallSucceeded { call_id, output } => {
+        RunEvent::ToolCallSucceeded {
+            call_id, output, ..
+        } => {
             output.contains(ARCHIVE_PIN)
                 && calls.iter().any(|call| {
                     call["call_id"] == *call_id && call["tool"] == READ_RUN_HISTORY_TOOL

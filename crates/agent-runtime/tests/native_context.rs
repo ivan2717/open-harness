@@ -99,6 +99,7 @@ fn history() -> AgentRun {
     run.record(RunEvent::ToolCallSucceeded {
         call_id: "read-call".to_owned(),
         output: "file contents ".repeat(160),
+        images: Vec::new(),
     })
     .unwrap();
     run
@@ -223,6 +224,7 @@ async fn response_window_covers_tool_declarations_but_appends_tool_results_exact
     run.record(RunEvent::ToolCallSucceeded {
         call_id: "read-call".to_owned(),
         output: "contents".to_owned(),
+        images: Vec::new(),
     })
     .unwrap();
 
@@ -450,6 +452,7 @@ async fn server_compaction_does_not_insert_protected_messages_before_pending_too
     run.record(RunEvent::ToolCallSucceeded {
         call_id: "read-call".to_owned(),
         output: "contents".to_owned(),
+        images: Vec::new(),
     })
     .unwrap();
 

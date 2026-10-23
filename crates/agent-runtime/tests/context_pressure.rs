@@ -95,6 +95,7 @@ fn history(output: usize, assistant: usize) -> ContextInput {
                 RunEvent::ToolCallSucceeded {
                     call_id: "read-1".into(),
                     output: format!("head{}tail", "x".repeat(output)),
+                    images: Vec::new(),
                 },
             ),
             event(
@@ -222,6 +223,7 @@ async fn pressure_pruning_avoids_summary_and_replays_exactly_after_restart() {
         RunEvent::ToolCallSucceeded {
             call_id: "read-2".into(),
             output: "new".repeat(200),
+            images: Vec::new(),
         },
     ));
     let extended = reopened.prepare(input.as_ref()).await.unwrap();

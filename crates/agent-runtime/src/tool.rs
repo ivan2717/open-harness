@@ -48,4 +48,13 @@ pub trait ToolExecutor: Send + Sync {
     /// side-effecting work without their own cancellation and reconciliation.
     /// Already committed external effects cannot be undone by the runtime.
     fn execute(&self, call: ToolCall) -> impl Future<Output = Result<String, Self::Error>> + Send;
+
+    /// Structured observations, including screenshots. Existing text-only tools
+    /// remain compatible through the default bridge.
+    fn execute_output(
+        &self,
+        call: ToolCall,
+    ) -> impl Future<Output = Result<agent_core::ToolOutput, Self::Error>> + Send {
+        async move { self.execute(call).await.map(Into::into) }
+    }
 }

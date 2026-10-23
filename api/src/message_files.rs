@@ -4,6 +4,46 @@ use agent_core::{TextFileReference, agent::RunEvent};
 use agent_runtime::EventStore;
 
 impl AppState {
+    pub async fn message_image(
+        &self,
+        id: &str,
+        message_id: &str,
+        index: usize,
+    ) -> Result<agent_core::ModelImage, ServiceError> {
+        let entry = self.entry(id)?;
+        let detail = entry.snapshot.get();
+        let image = detail
+            .messages
+            .iter()
+            .find(|message| message.id == message_id && message.role == "tool")
+            .and_then(|message| message.images.get(index))
+            .ok_or(ServiceError::NotFound)?;
+        let stored = entry
+            .runtime
+            .event_store()
+            .inner
+            .load_range(
+                id,
+                image.sequence
+                    ..image
+                        .sequence
+                        .checked_add(1)
+                        .ok_or(ServiceError::NotFound)?,
+            )
+            .await
+            .map_err(ServiceError::internal)?
+            .ok_or(ServiceError::NotFound)?;
+        stored
+            .events
+            .iter()
+            .find_map(|event| match &event.event {
+                RunEvent::ToolCallSucceeded {
+                    call_id, images, ..
+                } if format!("tool-{call_id}") == message_id => images.get(index).cloned(),
+                _ => None,
+            })
+            .ok_or(ServiceError::NotFound)
+    }
     pub async fn message_file(
         &self,
         id: &str,

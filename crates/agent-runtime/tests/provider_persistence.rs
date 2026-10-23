@@ -327,6 +327,7 @@ async fn completed_tool_step_restores_state_without_reexecuting_the_tool() {
             run.record(RunEvent::ToolCallSucceeded {
                 call_id: "call-1".into(),
                 output: "stored value 1".into(),
+                images: Vec::new(),
             })
             .unwrap();
             for event in run.events() {

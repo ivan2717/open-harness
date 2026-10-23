@@ -221,6 +221,7 @@ async fn failed_candidate_keeps_actual_usage_when_the_raw_fallback_underestimate
     run.record(RunEvent::ToolCallSucceeded {
         call_id: "read-call".to_owned(),
         output: "r".repeat(100),
+        images: Vec::new(),
     })
     .unwrap();
 

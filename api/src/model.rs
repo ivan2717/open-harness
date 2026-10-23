@@ -117,6 +117,12 @@ impl ToolExecutor for ServiceTools {
             Self::Host(tools) => tools.execute(call).await,
         }
     }
+    async fn execute_output(&self, call: ToolCall) -> Result<agent_core::ToolOutput, Self::Error> {
+        match self {
+            Self::Demo(tools) => tools.execute_output(call).await,
+            Self::Host(tools) => tools.execute_output(call).await,
+        }
+    }
 }
 
 pub enum ServiceCompactor {
@@ -253,6 +259,7 @@ pub fn configure(input: ConfigureModel) -> Result<ConfiguredModel, ProviderError
         model: input.model,
         context_window: input.context_window,
         max_output_tokens: input.max_output_tokens,
+        supports_images: input.supports_images,
         reasoning,
     })?;
     Ok(ConfiguredModel { info, model })
@@ -263,6 +270,7 @@ mod tests {
     use super::*;
     fn input(key: &str) -> ConfigureModel {
         ConfigureModel {
+            supports_images: false,
             protocol: ProviderProtocol::Responses,
             base_url: "https://api.example.com/v1".into(),
             api_key: key.into(),

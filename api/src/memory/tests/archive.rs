@@ -53,6 +53,7 @@ fn command(events: &mut Vec<RunEventEnvelope>, call: &str, exit_code: i32, outpu
     append(
         events,
         RunEvent::ToolCallSucceeded {
+            images: vec![],
             call_id: call.into(),
             output: json!({"exit_code":exit_code,"output":output}).to_string(),
         },

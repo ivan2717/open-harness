@@ -24,6 +24,8 @@ pub enum ContentBlock {
         call_id: String,
         content: String,
         is_error: bool,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        images: Vec<crate::ModelImage>,
     },
 }
 
@@ -81,9 +83,16 @@ impl ModelMessage {
                 {
                     return Err(ModelProtocolError::InvalidBlockRole);
                 }
-                ContentBlock::ToolResult { call_id, .. } => {
+                ContentBlock::ToolResult {
+                    call_id, images, ..
+                } => {
                     if self.role != ModelRole::Tool || call_id.trim().is_empty() {
                         return Err(ModelProtocolError::InvalidBlockRole);
+                    }
+                    if images.len() > crate::MAX_TOOL_IMAGES
+                        || images.iter().any(|image| image.validate().is_err())
+                    {
+                        return Err(ModelProtocolError::InvalidImage);
                     }
                 }
                 _ if self.role == ModelRole::Tool => {
@@ -126,6 +135,7 @@ impl ModelMessage {
                 call_id,
                 content,
                 is_error,
+                images: Vec::new(),
             }],
             provider_state: None,
             context: None,
@@ -288,6 +298,7 @@ pub enum ModelProtocolError {
     MisplacedContext,
     InvalidBlockRole,
     InvalidToolCall,
+    InvalidImage,
     ConflictingFinishReason,
 }
 
@@ -300,6 +311,7 @@ impl std::fmt::Display for ModelProtocolError {
             Self::MisplacedContext => "historical context must retain user authority",
             Self::InvalidBlockRole => "content block is not valid for its message role",
             Self::InvalidToolCall => "tool call must have a nonempty id and name",
+            Self::InvalidImage => "invalid tool image",
             Self::ConflictingFinishReason => "tool calls conflict with the response finish reason",
         })
     }

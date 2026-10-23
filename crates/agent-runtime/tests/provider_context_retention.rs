@@ -44,6 +44,7 @@ fn append_step(run: &mut AgentRun, index: usize, scope: ProviderReplayScope) {
     run.record(RunEvent::ToolCallSucceeded {
         call_id: id,
         output: "x".repeat(2000),
+        images: Vec::new(),
     })
     .unwrap();
 }

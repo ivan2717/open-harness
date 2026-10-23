@@ -7,6 +7,10 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct ModelCapabilities {
+    /// Host-confirmed visual input support. A wire protocol alone does not
+    /// imply that the deployed model can interpret images.
+    #[serde(default)]
+    pub supports_images: bool,
     pub reasoning: ReasoningCapabilities,
     pub context: ContextCapabilities,
 }

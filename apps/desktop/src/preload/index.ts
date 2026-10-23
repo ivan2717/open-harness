@@ -41,8 +41,15 @@ const bridge: DesktopBridge = {
   runExtensions: (id) => invoke<RunExtensions>({ operation: 'runExtensions', id }),
   runMemory: (id) => invoke<RunMemory>({ operation: 'runMemory', id }),
   refreshRunSkills: (id) => invoke<RunExtensions>({ operation: 'refreshRunSkills', id }),
-  approveExtension: (id, approvalId, allow) =>
-    invoke<RunExtensions>({ operation: 'approveExtension', id, approvalId, allow }),
+  approveExtension: (id, approvalId, allow, session) =>
+    invoke<RunExtensions>({ operation: 'approveExtension', id, approvalId, allow, session }),
+  revokeControl: (id) => invoke<RunExtensions>({ operation: 'revokeControl', id }),
+  bundledPlugins: () => ipcRenderer.invoke(channels.bundledPlugins),
+  installBundledPlugin: (id) => ipcRenderer.invoke(channels.installBundledPlugin, id),
+  prepareBrowser: () => ipcRenderer.invoke(channels.prepareBrowser),
+  chromeConnectionStatus: () => ipcRenderer.invoke(channels.chromeConnectionStatus),
+  connectChrome: (mode = 'store') => ipcRenderer.invoke(channels.connectChrome, mode),
+  openComputerSettings: (permission) => ipcRenderer.invoke(channels.computerSettings, permission),
   openSkillsDirectory: () => ipcRenderer.invoke(channels.openSkillsDirectory) as Promise<void>,
   resolveResource: (reference) =>
     ipcRenderer.invoke(channels.resolveResource, reference) as Promise<ResolvedResource>,

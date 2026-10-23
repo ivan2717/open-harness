@@ -68,6 +68,7 @@ export function ModelSettings() {
       ...(contextOverride !== '' ? { context_window: Number(contextOverride) } : {}),
       ...(outputOverride !== '' ? { max_output_tokens: Number(outputOverride) } : {}),
       reasoning_mode: mode,
+      supports_images: data.get('supports_images') === 'on',
       reasoning_effort: String(
         data.get('reasoning_effort') ?? 'medium',
       ) as ConfigureModelInput['reasoning_effort'],
@@ -135,6 +136,11 @@ export function ModelSettings() {
               value={key}
               onChange={(event) => setKey(event.target.value)}
             />
+          </label>
+          <label className="model-capability-option">
+            <input type="checkbox" name="supports_images" />
+            此模型支持图片输入
+            <small>支持视觉的模型可查看操作截图；未开启时仍可读取网页和应用的结构化界面。</small>
           </label>
           <div className="model-form-row">
             <label>

@@ -94,6 +94,7 @@ where
             let preparation = control
                 .until_cancelled(|| {
                     self.context_manager.prepare(ContextInputRef {
+                        supports_images: capabilities.supports_images,
                         run_id: run.id(),
                         instructions: &agent.instructions,
                         events: run.events(),
@@ -125,6 +126,20 @@ where
             let prepared_event_count = run.events().len();
             let mut recovered_overflow = false;
             let (assembler, measurement, request_fixed, request_prefix, usage_baseline) = loop {
+                if !capabilities.supports_images {
+                    for message in &mut prepared.request.messages {
+                        for block in &mut message.content {
+                            if let crate::ContentBlock::ToolResult {
+                                content, images, ..
+                            } = block
+                                && !images.is_empty()
+                            {
+                                images.clear();
+                                content.push_str("\n[Image not sent: the configured model does not support visual input. Use structured UI observations; do not infer image contents.]");
+                            }
+                        }
+                    }
+                }
                 if let Err(source) = self.validate_model_request(&prepared.request, &capabilities) {
                     self.record_persisted(
                         run,
@@ -420,6 +435,7 @@ where
         metadata: Option<&'a ModelContextMetadata>,
     ) -> ContextInputRef<'a> {
         ContextInputRef {
+            supports_images: self.model.capabilities().supports_images,
             run_id: run.id(),
             instructions: &agent.instructions,
             events: run.events(),
@@ -482,6 +498,7 @@ where
             .until_cancelled(|| {
                 self.context_manager.observe_response(
                     ContextInputRef {
+                        supports_images: self.model.capabilities().supports_images,
                         run_id: run.id(),
                         instructions: &agent.instructions,
                         events: run.events(),
@@ -580,8 +597,15 @@ where
 
             match result {
                 Ok(output) => {
-                    self.record_persisted(run, RunEvent::ToolCallSucceeded { call_id, output })
-                        .await?;
+                    self.record_persisted(
+                        run,
+                        RunEvent::ToolCallSucceeded {
+                            call_id,
+                            output: output.text,
+                            images: output.images,
+                        },
+                    )
+                    .await?;
                 }
                 Err(message) => {
                     self.record_persisted(run, RunEvent::ToolCallFailed { call_id, message })
@@ -600,7 +624,7 @@ where
         call: ToolCall,
         tools: &[ToolDefinition],
         history_context: Option<HistoryContext>,
-    ) -> Result<String, String> {
+    ) -> Result<crate::ToolOutput, String> {
         if self.history_access.owns_tool(&call.name) {
             let context = history_context.ok_or_else(|| {
                 "history details are unavailable because this context has not omitted any events"
@@ -615,17 +639,22 @@ where
             if max_chars.is_some_and(|limit| output.chars().count() > limit) {
                 return Err("history provider exceeded the tool output character limit".to_owned());
             }
-            Ok(output)
+            Ok(output.into())
         } else if !tools.iter().any(|tool| tool.name == call.name) {
             Err(format!(
                 "tool {:?} is not available in this turn",
                 call.name
             ))
         } else {
-            self.tools
-                .execute(call)
+            let output = self
+                .tools
+                .execute_output(call)
                 .await
-                .map_err(|error| error.to_string())
+                .map_err(|error| error.to_string())?;
+            output.validate().map_err(|error| format!(
+                "Tool execution returned, but its image observation could not be delivered: {error}. The requested action may already have taken effect; inspect current state before retrying."
+            ))?;
+            Ok(output)
         }
     }
 

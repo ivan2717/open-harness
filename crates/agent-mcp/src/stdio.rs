@@ -1,4 +1,4 @@
-use std::{io, process::Stdio};
+use std::{io, process::Stdio, time::Duration};
 
 use rmcp::{
     RoleClient,
@@ -90,7 +90,22 @@ impl Transport<RoleClient> for StdioTransport {
         self.io.receive()
     }
     async fn close(&mut self) -> io::Result<()> {
+        // EOF lets the server close resources it owns, including browsers that
+        // deliberately run in a separate process group. Killing the MCP group
+        // immediately would orphan those resources before its cleanup can run.
         let _ = self.io.close().await;
+        if tokio::time::timeout(Duration::from_secs(1), self.child.wait())
+            .await
+            .is_err()
+        {
+            #[cfg(unix)]
+            if let Some(id) = self.child.id() {
+                // Signal only the server first so it can clean up its children.
+                unsafe { libc::kill(id as libc::pid_t, libc::SIGTERM) };
+            }
+            let _ = tokio::time::timeout(Duration::from_secs(4), self.child.wait()).await;
+        }
+        // Bounded fallback for hung peers and descendants left in our group.
         self.kill_group();
         let _ = self.child.kill().await;
         let _ = self.child.wait().await;

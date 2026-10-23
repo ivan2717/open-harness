@@ -241,10 +241,14 @@ fn legacy_messages(messages: &[crate::ModelMessage]) -> Option<Vec<LegacyMessage
                         call_id,
                         content,
                         is_error,
+                        images,
                     } = block
                     else {
                         return None;
                     };
+                    if !images.is_empty() {
+                        return None;
+                    }
                     legacy.push(if *is_error {
                         LegacyMessage::ToolError {
                             call_id,

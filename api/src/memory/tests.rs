@@ -232,6 +232,7 @@ async fn failures_do_not_repeat_on_the_same_input_and_recover_after_new_evidence
     append(
         &mut events,
         RunEvent::ToolCallSucceeded {
+            images: vec![],
             call_id: "read".into(),
             output: "New tool evidence".repeat(30),
         },
@@ -544,6 +545,7 @@ async fn compilation_excludes_reasoning_and_memory_echoes_but_keeps_failed_attem
     append(
         &mut events,
         RunEvent::ToolCallSucceeded {
+            images: vec![],
             call_id: "memory".into(),
             output: "MEMORY_ECHO".into(),
         },
@@ -564,6 +566,7 @@ async fn compilation_excludes_reasoning_and_memory_echoes_but_keeps_failed_attem
             &mut events,
             if name == agent_runtime::READ_RUN_HISTORY_TOOL {
                 RunEvent::ToolCallSucceeded {
+                    images: vec![],
                     call_id: name.into(),
                     output: "HISTORY_ECHO".into(),
                 }

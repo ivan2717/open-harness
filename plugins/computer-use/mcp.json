@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "computer": {
+      "command": "./launch.sh",
+      "env_vars": ["OPENHARNESS_NODE_BINARY", "ELECTRON_RUN_AS_NODE", "OPENHARNESS_COMPUTER_APP", "OPENHARNESS_COMPUTER_HELPER"]
+    }
+  }
+}

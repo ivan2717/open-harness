@@ -29,6 +29,7 @@ fn succeed(call_id: &str) -> RunEvent {
     RunEvent::ToolCallSucceeded {
         call_id: call_id.to_owned(),
         output: "contents".to_owned(),
+        images: Vec::new(),
     }
 }
 
@@ -89,6 +90,7 @@ fn events_are_ordered_and_grouped_by_step() {
     run.record(RunEvent::ToolCallSucceeded {
         call_id: "call-1".to_owned(),
         output: "[workspace]".to_owned(),
+        images: Vec::new(),
     })
     .unwrap();
 

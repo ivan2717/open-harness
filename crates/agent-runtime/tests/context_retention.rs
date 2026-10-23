@@ -86,6 +86,7 @@ fn append_tool_step(run: &mut AgentRun, label: &str) {
         run.record(RunEvent::ToolCallSucceeded {
             call_id: format!("{label}-{index}"),
             output: format!("evidence-{label}-{index}:{}", "z".repeat(550)),
+            images: Vec::new(),
         })
         .unwrap();
     }

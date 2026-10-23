@@ -273,9 +273,9 @@ fn visible_sources(events: &[RunEventEnvelope]) -> BTreeSet<u64> {
                     true
                 }
             }
-            RunEvent::ToolCallSucceeded { call_id, output } => {
-                allowed_calls.contains(call_id.as_str()) && !output.trim().is_empty()
-            }
+            RunEvent::ToolCallSucceeded {
+                call_id, output, ..
+            } => allowed_calls.contains(call_id.as_str()) && !output.trim().is_empty(),
             RunEvent::ToolCallFailed { call_id, message } => {
                 allowed_calls.contains(call_id.as_str()) && !message.trim().is_empty()
             }
@@ -423,5 +423,44 @@ pub(crate) fn fingerprint(value: &impl Serialize) -> io::Result<String> {
 }
 
 pub(crate) fn source_fingerprint(run_id: &str, events: &[RunEventEnvelope]) -> io::Result<String> {
-    fingerprint(&("open-harness/session-memory/source/v1", run_id, events))
+    let references = events
+        .iter()
+        .map(RunEventEnvelope::with_image_references)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(invalid)?;
+    fingerprint(&("open-harness/session-memory/source/v1", run_id, references))
+}
+
+#[cfg(test)]
+mod image_fingerprint_tests {
+    use super::*;
+    #[test]
+    fn source_identity_survives_releasing_inline_images() {
+        let image = agent_core::ModelImage::new("image/png", "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZcZkAAAAASUVORK5CYII=").unwrap();
+        let events = vec![RunEventEnvelope {
+            sequence: 1,
+            step: 1,
+            occurred_at: std::time::UNIX_EPOCH,
+            event: agent_core::agent::RunEvent::ToolCallSucceeded {
+                call_id: "c".into(),
+                output: "observed".into(),
+                images: vec![image],
+            },
+        }];
+        let references = vec![events[0].with_image_references().unwrap()];
+        assert_eq!(
+            source_fingerprint("run", &events).unwrap(),
+            source_fingerprint("run", &references).unwrap()
+        );
+        let mut references = references;
+        if let agent_core::agent::RunEvent::ToolCallSucceeded { images, .. } =
+            &mut references[0].event
+        {
+            images[0].data_base64 = format!("sha256:{}", "0".repeat(64));
+        }
+        assert_ne!(
+            source_fingerprint("run", &events).unwrap(),
+            source_fingerprint("run", &references).unwrap()
+        );
+    }
 }

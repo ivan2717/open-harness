@@ -87,6 +87,7 @@ fn run_with_structured_output(instruction: &str) -> AgentRun {
     run.record(RunEvent::ToolCallSucceeded {
         call_id: "archive-call".to_owned(),
         output: r#"{"text":"秘密档案"}"#.to_owned(),
+        images: Vec::new(),
     })
     .unwrap();
     run

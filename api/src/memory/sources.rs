@@ -195,9 +195,9 @@ pub(super) fn source_text(
             "tool_requested_not_completed",
             format!("{call_id}: {tool_name} {arguments}"),
         ),
-        RunEvent::ToolCallSucceeded { call_id, output }
-            if !excluded_calls.contains(call_id.as_str()) =>
-        {
+        RunEvent::ToolCallSucceeded {
+            call_id, output, ..
+        } if !excluded_calls.contains(call_id.as_str()) => {
             ("tool_succeeded", format!("{call_id}: {output}"))
         }
         RunEvent::ToolCallFailed { call_id, message }
@@ -313,6 +313,7 @@ mod tests {
             event(
                 2,
                 RunEvent::ToolCallSucceeded {
+                    images: vec![],
                     call_id: "lookup".into(),
                     output: "Old lookup copy. ".repeat(100),
                 },
@@ -386,6 +387,7 @@ mod tests {
             event(
                 2,
                 RunEvent::ToolCallSucceeded {
+                    images: vec![],
                     call_id: "recall".into(),
                     output: "MEMORY_ECHO".into(),
                 },

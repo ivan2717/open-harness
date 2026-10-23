@@ -126,6 +126,7 @@ fn record_tool_step(
     run.record(RunEvent::ToolCallSucceeded {
         call_id: id.into(),
         output: "inspected".into(),
+        images: Vec::new(),
     })
     .unwrap();
 }

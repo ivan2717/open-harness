@@ -155,10 +155,11 @@ fn sources<'a>(
                 source.text = format!("{call_id}: {tool_name} {arguments}");
                 source.attempted = true;
             }
-            RunEvent::ToolCallSucceeded { call_id, output }
-                if calls
-                    .get(call_id.as_str())
-                    .is_some_and(|name| *name != "session_memory") =>
+            RunEvent::ToolCallSucceeded {
+                call_id, output, ..
+            } if calls
+                .get(call_id.as_str())
+                .is_some_and(|name| *name != "session_memory") =>
             {
                 source.text = format!("{call_id}: {output}");
                 source.attempted = true;
@@ -470,6 +471,7 @@ mod tests {
                 RunEvent::ToolCallSucceeded {
                     call_id: "call".into(),
                     output: output.into(),
+                    images: Vec::new(),
                 },
             ]);
             assert!(
@@ -483,6 +485,7 @@ mod tests {
             RunEvent::ToolCallSucceeded {
                 call_id: "call".into(),
                 output: output.into(),
+                images: Vec::new(),
             },
         ]);
         assert!(
@@ -504,6 +507,7 @@ mod tests {
                 RunEvent::ToolCallSucceeded {
                     call_id: "call".into(),
                     output: output.into(),
+                    images: Vec::new(),
                 },
             ]);
             assert!(
@@ -519,6 +523,7 @@ mod tests {
             RunEvent::ToolCallSucceeded {
                 call_id: "call".into(),
                 output: r#"{"exit_code":0,"output":"17 passed"}"#.into(),
+                images: Vec::new(),
             },
             RunEvent::ToolCallRequested {
                 call_id: "retry".into(),
@@ -553,6 +558,7 @@ mod tests {
             RunEvent::ToolCallSucceeded {
                 call_id: "call".into(),
                 output: r#"{"exit_code":0,"output":"17 passed"}"#.into(),
+                images: Vec::new(),
             },
         ]);
         let old = item(WikiTaskStatus::Planned, 1, "17 passed");
@@ -625,10 +631,12 @@ mod tests {
             RunEvent::ToolCallSucceeded {
                 call_id: "call".into(),
                 output: "All tests passed".into(),
+                images: Vec::new(),
             },
             RunEvent::ToolCallSucceeded {
                 call_id: "missing".into(),
                 output: "All tests passed".into(),
+                images: Vec::new(),
             },
         ]);
         for sequence in 0..4 {

@@ -95,6 +95,7 @@ async fn main() -> Result<(), EvalError> {
         env::var(key_var)?
     };
     let model = HttpModel::new(ProviderConfig {
+        supports_images: false,
         protocol,
         base_url: base_url.into(),
         api_key,
@@ -201,6 +202,7 @@ fn input_ref<'a>(
     agent: &'a Agent,
 ) -> ContextInputRef<'a> {
     ContextInputRef {
+        supports_images: false,
         run_id: run.id(),
         instructions: &agent.instructions,
         events: run.events(),

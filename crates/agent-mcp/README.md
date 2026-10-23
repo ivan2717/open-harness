@@ -17,6 +17,14 @@ Configuration stores only environment references. Put credentials in environment
 
 `McpClient::new` validates configuration without connecting. The first operation opens a session and completes the handshake. Clones of the client share this session, and operations are serialized, so stateful tools such as browser navigation and screenshots retain server state between invocations. The host caches clients by configuration and invalidates them when configuration changes. `shutdown` explicitly closes the shared session; dropping the final client also closes it. Transport failures, malformed responses and cancelled operations invalidate the affected session; correlated tool RPC errors keep the healthy session, so correcting an invalid argument does not discard state. A later explicit operation may establish a new session; no failed invocation is replayed.
 
+Stdio shutdown first closes the input pipe and gives the server one second to
+release its resources. On Unix, a server still running receives `SIGTERM` and
+gets another four seconds before the owned process group is forcibly stopped.
+This allows servers such as Browser Use to close detached browser processes;
+those processes are outside the MCP server's process group. Abrupt host/runtime
+termination still uses the synchronous force-stop fallback, so normal application
+exit should await `shutdown`.
+
 For cache eviction, `is_idle` requires both a free session lock and no outstanding client clones, including handles that have not yet started their operation. Configuration changes use `revoke` to permanently invalidate all clones and cancel their underlying SDK sessions. A revoked handle cannot reconnect; the host must obtain a client for the current configuration.
 
 The default deadline is 60 seconds for the entire operation, including waiting for the session lock, handshake and pagination; hosts may set 10 ms–300 seconds using `with_timeout`. Cleanup has a separate two-second deadline. Each operation takes ownership of the active session until it completes, so dropping an in-flight future cancels the SDK service instead of leaving it cached. Stdio uses kill-on-drop, closes pipes, kills its dedicated process group on Unix and reaps its child. Non-Unix cleanup guarantees the direct child only. HTTP sends session DELETE when supported; cancellation cannot undo an operation already performed by a remote server.

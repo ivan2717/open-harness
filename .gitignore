@@ -7,7 +7,10 @@
 **/*.tsbuildinfo
 /apps/desktop/out/
 /apps/desktop/release/
+/apps/desktop/release-next/
 /apps/desktop/resources/bin/
+/apps/desktop/resources/plugins/
+/plugins/computer-use/bin/
 /apps/desktop/test-results/
 /apps/desktop/playwright-report/
 /data/

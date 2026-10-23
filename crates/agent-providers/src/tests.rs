@@ -8,6 +8,7 @@ use tokio::{
 
 fn config(protocol: ProviderProtocol, base_url: String) -> ProviderConfig {
     ProviderConfig {
+        supports_images: false,
         protocol,
         base_url,
         api_key: "secret-test-value".into(),
@@ -592,4 +593,135 @@ async fn messages_tool_json_settles_canonically_and_replays_error_results() {
     let body = model.encode(&next).unwrap();
     assert_eq!(body["messages"][2]["content"][0]["is_error"], true);
     task.await.unwrap();
+}
+
+fn screenshot_result(call_id: &str) -> ModelMessage {
+    let mut message =
+        ModelMessage::tool_result(call_id.into(), "Screenshot captured".into(), false);
+    if let ContentBlock::ToolResult { images, .. } = &mut message.content[0] {
+        images.push(agent_core::ModelImage::new("image/png", "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZcZkAAAAASUVORK5CYII=").unwrap());
+    }
+    message
+}
+
+#[test]
+fn multimodal_tool_results_use_each_protocols_image_contract() {
+    for protocol in [
+        ProviderProtocol::ChatCompletions,
+        ProviderProtocol::Responses,
+        ProviderProtocol::AnthropicMessages,
+    ] {
+        let mut cfg = config(protocol, "http://127.0.0.1:12345/v1".into());
+        cfg.supports_images = true;
+        let model = HttpModel::new(cfg).unwrap();
+        let mut req = request();
+        req.messages.push(screenshot_result("capture-1"));
+        req.messages.push(ModelMessage::tool_result(
+            "capture-2".into(),
+            "other tool".into(),
+            false,
+        ));
+        let encoded = model.encode(&req).unwrap();
+        match protocol {
+            ProviderProtocol::ChatCompletions => {
+                let messages = encoded["messages"].as_array().unwrap();
+                assert_eq!(messages[2]["role"], "tool");
+                assert_eq!(messages[3]["role"], "tool");
+                assert_eq!(messages[4]["role"], "user");
+                assert!(
+                    messages[4]["content"][0]["text"]
+                        .as_str()
+                        .unwrap()
+                        .contains("capture-1")
+                );
+                assert_eq!(messages[4]["content"][1]["type"], "image_url");
+                assert!(
+                    messages[4]["content"][1]["image_url"]["url"]
+                        .as_str()
+                        .unwrap()
+                        .starts_with("data:image/png;base64,")
+                );
+                assert!(!messages[2]["content"].as_str().unwrap().contains("base64"));
+            }
+            ProviderProtocol::Responses => {
+                assert_eq!(encoded["input"][1]["type"], "function_call_output");
+                assert_eq!(encoded["input"][1]["output"][1]["type"], "input_image");
+                assert!(
+                    encoded["input"][1]["output"][1]["image_url"]
+                        .as_str()
+                        .unwrap()
+                        .starts_with("data:image/png;base64,")
+                );
+            }
+            ProviderProtocol::AnthropicMessages => {
+                let output = &encoded["messages"][1]["content"][0];
+                assert_eq!(output["type"], "tool_result");
+                assert_eq!(output["content"][1]["type"], "image");
+                assert_eq!(output["content"][1]["source"]["type"], "base64");
+                assert_eq!(output["content"][1]["source"]["media_type"], "image/png");
+            }
+        }
+    }
+}
+
+#[test]
+fn image_input_requires_explicit_model_support_and_valid_image_data() {
+    for protocol in [
+        ProviderProtocol::ChatCompletions,
+        ProviderProtocol::Responses,
+        ProviderProtocol::AnthropicMessages,
+    ] {
+        let mut req = request();
+        req.messages.push(screenshot_result("capture"));
+        assert_eq!(
+            model(protocol).encode(&req).unwrap_err(),
+            ProviderError::ImagesUnsupported
+        );
+        if let ContentBlock::ToolResult { images, .. } = &mut req.messages[1].content[0] {
+            images[0].data_base64 = "not an image".into();
+        }
+        assert_eq!(
+            model(protocol).encode(&req).unwrap_err(),
+            ProviderError::InvalidRequest
+        );
+    }
+}
+
+#[tokio::test]
+async fn screenshots_are_sent_as_structured_images_over_http_for_all_three_protocols() {
+    for (protocol, response) in [
+        (
+            ProviderProtocol::ChatCompletions,
+            json!({"id":"c1","choices":[{"message":{"role":"assistant","content":"observed"},"finish_reason":"stop"}],"usage":{"prompt_tokens":20,"completion_tokens":1}}),
+        ),
+        (
+            ProviderProtocol::Responses,
+            json!({"id":"r1","status":"completed","output":[{"id":"m1","type":"message","role":"assistant","content":[{"type":"output_text","text":"observed"}]}],"usage":{"input_tokens":20,"output_tokens":1}}),
+        ),
+        (
+            ProviderProtocol::AnthropicMessages,
+            json!({"id":"m1","type":"message","role":"assistant","content":[{"type":"text","text":"observed"}],"stop_reason":"end_turn","usage":{"input_tokens":20,"output_tokens":1}}),
+        ),
+    ] {
+        let (url, server) = serve("200 OK", "application/json", vec![response.to_string()]).await;
+        let mut cfg = config(protocol, url);
+        cfg.supports_images = true;
+        let model = HttpModel::new(cfg).unwrap();
+        let mut req = request();
+        req.messages.push(screenshot_result("capture"));
+        assert_eq!(model.respond(req).await.unwrap().text(), "observed");
+        let sent = server.await.unwrap();
+        let body: Value = serde_json::from_str(sent.split_once("\r\n\r\n").unwrap().1).unwrap();
+        let image_type = match protocol {
+            ProviderProtocol::ChatCompletions => &body["messages"][3]["content"][1]["type"],
+            ProviderProtocol::Responses => &body["input"][1]["output"][1]["type"],
+            ProviderProtocol::AnthropicMessages => {
+                &body["messages"][1]["content"][0]["content"][1]["type"]
+            }
+        };
+        assert!(matches!(
+            image_type.as_str(),
+            Some("image_url" | "input_image" | "image")
+        ));
+    }
 }

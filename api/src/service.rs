@@ -114,7 +114,7 @@ impl AppState {
             let store = JsonlEventStore::new(state.inner.directory.join("events"));
             use agent_runtime::EventStore;
             let Some(stored) = store
-                .load(&detail.summary.id)
+                .load_for_runtime(&detail.summary.id)
                 .await
                 .map_err(io::Error::other)?
             else {
@@ -451,6 +451,8 @@ impl AppState {
         Ok(snapshot)
     }
     pub async fn cancel(&self, id: &str) -> Result<RunDetail, ServiceError> {
+        self.get(id)?;
+        self.inner.extensions.revoke_run(id);
         let _gate = self.inner.model_gate.lock().await;
         let entry = self.entry(id)?;
         let _operation = entry.operations.lock().await;

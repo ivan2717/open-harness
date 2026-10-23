@@ -33,6 +33,7 @@ pub(crate) fn router(state: AppState) -> Router {
         .route("/plugins/{id}/enabled", post(plugins::enable))
         .route("/plugins/{id}", delete(plugins::uninstall))
         .route("/runs/{id}/extensions", get(run_extensions))
+        .route("/runs/{id}/extensions/control", delete(revoke_control))
         .route("/runs/{id}/memory", get(run_memory))
         .route("/runs/{id}/extensions/refresh", post(refresh_run_skills))
         .route(
@@ -41,6 +42,10 @@ pub(crate) fn router(state: AppState) -> Router {
         )
         .route("/runs", get(list).post(create))
         .route("/runs/{id}", get(detail))
+        .route(
+            "/runs/{id}/messages/{message_id}/images/{index}",
+            get(message_image),
+        )
         .route(
             "/runs/{id}/messages/{message_id}/files/{index}",
             get(message_file),
@@ -85,6 +90,12 @@ async fn authorize(State(state): State<AppState>, request: Request, next: Next) 
 }
 async fn config(State(state): State<AppState>) -> Json<AppConfig> {
     Json(state.config())
+}
+async fn message_image(
+    State(state): State<AppState>,
+    Path((id, message, index)): Path<(String, String, usize)>,
+) -> Result<Json<agent_core::ModelImage>, ServiceError> {
+    state.message_image(&id, &message, index).await.map(Json)
 }
 
 async fn extension_settings(
@@ -140,11 +151,24 @@ async fn refresh_run_skills(
 async fn approve_extension(
     State(state): State<AppState>,
     Path((id, approval)): Path<(String, String)>,
-    Json(input): Json<ApprovalInput>,
+    Json(input): Json<ExtensionApprovalInput>,
 ) -> Result<Json<crate::extensions::RunExtensions>, ServiceError> {
     state
-        .approve_extension(&id, &approval, input.allow)
+        .approve_extension_scoped(&id, &approval, input.allow, input.session)
         .map(Json)
+}
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExtensionApprovalInput {
+    allow: bool,
+    #[serde(default)]
+    session: bool,
+}
+async fn revoke_control(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<crate::extensions::RunExtensions>, ServiceError> {
+    state.revoke_control(&id).await.map(Json)
 }
 async fn configure_model(
     State(state): State<AppState>,

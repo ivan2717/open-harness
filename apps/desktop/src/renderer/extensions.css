@@ -337,3 +337,29 @@
     justify-content: flex-end;
   }
 }
+
+.control-session {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid #e4e8df;
+  border-radius: 12px;
+  color: var(--color-muted);
+  font-size: 12px;
+}
+.control-session > span {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.control-session small,
+.model-capability-option small {
+  display: block;
+  font-size: 11px;
+  opacity: 0.75;
+}
+.model-capability-option input[type='checkbox'] {
+  width: auto;
+  margin-right: 8px;
+}

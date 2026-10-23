@@ -1,5 +1,8 @@
 //! Host-owned extensions. Model-visible tools never accept executable server configuration.
 mod approvals;
+mod control;
+#[cfg(test)]
+mod control_integration_tests;
 #[cfg(test)]
 mod plugin_tests;
 mod plugins;
@@ -13,13 +16,14 @@ use agent_skills::{
     SkillCatalog, SkillCatalogConfig, SkillDiagnostic, SkillInfo, SkillRoot, SkillScope,
 };
 pub use approvals::ExtensionApproval;
+pub use control::{ControlAccess, ControlScope};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet},
     fs, io,
     path::{Path, PathBuf},
     sync::{
-        Arc, RwLock,
+        Arc, Mutex, RwLock,
         atomic::{AtomicBool, Ordering},
     },
     time::Instant,
@@ -83,16 +87,19 @@ pub struct RunExtensions {
     pub skills: Vec<SkillInfo>,
     pub diagnostics: Vec<SkillDiagnostic>,
     pub approvals: Vec<ExtensionApproval>,
+    pub controls: Vec<ControlAccess>,
 }
 
 pub struct ExtensionHost {
     closed: AtomicBool,
     directory: PathBuf,
+    bundled_plugins: Option<PathBuf>,
     config: RwLock<ExtensionConfig>,
     plugins: RwLock<PluginStore>,
     catalogs: RwLock<HashMap<Option<PathBuf>, Arc<SkillCatalog>>>,
     clients: RwLock<HashMap<(String, String), CachedClient>>,
     pub approvals: Arc<approvals::ApprovalQueue>,
+    controls: Mutex<control::ControlRegistry>,
     pub(crate) memory: crate::memory::MemoryStore,
     pub(crate) memory_errors: RwLock<HashMap<String, String>>,
 }
@@ -103,6 +110,13 @@ struct CachedClient {
 
 impl ExtensionHost {
     pub fn open(directory: &Path) -> io::Result<Arc<Self>> {
+        Self::open_with_bundled(
+            directory,
+            std::env::var_os("OPENHARNESS_BUNDLED_PLUGINS_DIR").map(PathBuf::from),
+        )
+    }
+
+    fn open_with_bundled(directory: &Path, bundled: Option<PathBuf>) -> io::Result<Arc<Self>> {
         fs::create_dir_all(directory.join("skills"))?;
         let directory = fs::canonicalize(directory)?;
         let path = directory.join("extensions.json");
@@ -120,11 +134,13 @@ impl ExtensionHost {
         Ok(Arc::new(Self {
             closed: AtomicBool::new(false),
             directory,
+            bundled_plugins: bundled.and_then(|root| fs::canonicalize(root).ok()),
             config: RwLock::new(config),
             plugins: RwLock::new(plugins),
             catalogs: RwLock::default(),
             clients: RwLock::default(),
             approvals: Arc::default(),
+            controls: Mutex::default(),
             memory,
             memory_errors: RwLock::default(),
         }))
@@ -219,7 +235,7 @@ impl ExtensionHost {
     ) -> io::Result<Vec<agent_core::agent::RunEventEnvelope>> {
         use agent_runtime::EventStore;
         let stored = agent_runtime::JsonlEventStore::new(self.directory.join("events"))
-            .load(run)
+            .load_for_runtime(run)
             .await
             .map_err(io::Error::other)?;
         Ok(stored.map_or_else(Vec::new, |stored| stored.events))
@@ -281,6 +297,7 @@ impl ExtensionHost {
         // An approval refers to one concrete configuration. Changing configuration
         // invalidates affected requests instead of silently authorizing another server.
         self.approvals.invalidate_servers(&changed);
+        self.controls.lock().unwrap().invalidate_servers(&changed);
         drop(current);
         Ok(self.settings())
     }
@@ -318,6 +335,15 @@ impl ExtensionHost {
     }
 
     pub fn client(&self, run: &str, expected: &McpServerConfig) -> io::Result<McpClient> {
+        self.client_with_epoch(run, expected, None)
+    }
+
+    fn client_with_epoch(
+        &self,
+        run: &str,
+        expected: &McpServerConfig,
+        epoch: Option<u64>,
+    ) -> io::Result<McpClient> {
         let config = self.config.read().unwrap();
         let servers = self.effective_servers(&config);
         let server = servers
@@ -331,6 +357,10 @@ impl ExtensionHost {
                 "MCP configuration changed; request approval again",
             ));
         }
+        let controls = self.controls.lock().unwrap();
+        if let Some(epoch) = epoch {
+            controls.check_epoch(run, epoch)?;
+        }
         let mut clients = self.clients.write().unwrap();
         if self.closed.load(Ordering::Acquire) {
             return Err(io::Error::other("extension host is shutting down"));
@@ -343,7 +373,13 @@ impl ExtensionHost {
         if clients.len() >= 128 {
             let oldest = clients
                 .iter()
-                .filter(|(_, cached)| cached.client.is_idle())
+                .filter(|((run, server), cached)| {
+                    cached.client.is_idle()
+                        && !controls
+                            .list(run)
+                            .iter()
+                            .any(|access| access.server_id == *server)
+                })
                 .min_by_key(|(_, cached)| cached.last_used)
                 .map(|(key, _)| key.clone());
             if let Some(oldest) = oldest {
@@ -381,12 +417,87 @@ impl ExtensionHost {
         futures_util::future::join_all(clients.iter().map(|client| client.shutdown())).await;
     }
 
+    pub fn revoke_run(&self, run: &str) {
+        // Same order as authorization: control registry -> client cache.
+        let mut controls = self.controls.lock().unwrap();
+        controls.revoke_run(run);
+        self.approvals.clear_run(run);
+        self.clients.write().unwrap().retain(|(owner, _), cached| {
+            if owner == run {
+                cached.client.revoke();
+                false
+            } else {
+                true
+            }
+        });
+    }
+
+    fn control_plugin(&self, server: &str) -> Option<String> {
+        self.plugins
+            .read()
+            .unwrap()
+            .list()
+            .into_iter()
+            .find(|plugin| {
+                plugin.enabled
+                    && matches!(
+                        plugin.id.as_str(),
+                        "browser-use" | "computer-use" | "chrome-use"
+                    )
+                    && self.is_bundled_control(plugin)
+                    && plugin
+                        .mcp_servers
+                        .iter()
+                        .any(|entry| entry.id == server && entry.enabled)
+            })
+            .map(|plugin| plugin.id)
+    }
+
+    fn is_bundled_control(&self, plugin: &PluginInfo) -> bool {
+        if !matches!(
+            plugin.id.as_str(),
+            "browser-use" | "computer-use" | "chrome-use"
+        ) {
+            return false;
+        }
+        let Some(root) = &self.bundled_plugins else {
+            return false;
+        };
+        let expected = root.join(&plugin.id);
+        // Only the application's fixed package location may opt into scoped
+        // control. A third-party manifest name is never a trust credential.
+        expected.parent() == Some(root.as_path())
+            && fs::canonicalize(&expected).ok().as_ref() == Some(&expected)
+            && fs::canonicalize(&plugin.source_path).ok().as_ref() == Some(&expected)
+    }
+
+    fn release_failed_control(&self, run: &str, server: &str, grant_id: u64) {
+        let mut controls = self.controls.lock().unwrap();
+        // A different server may have advanced the run epoch while this
+        // selection was pending. Roll back this exact grant, but never revoke
+        // a replacement authorized after this operation was abandoned.
+        if !controls.owns_grant(run, server, grant_id) {
+            return;
+        }
+        // Revoke all outstanding handles before releasing the desktop lease.
+        if let Some(cached) = self
+            .clients
+            .write()
+            .unwrap()
+            .remove(&(run.into(), server.into()))
+        {
+            cached.client.revoke();
+        }
+        controls.release_server(run, server);
+    }
+
     pub fn run_state(&self, run: &str, project: Option<&Path>) -> RunExtensions {
         let catalog = self.catalog(project);
         RunExtensions {
             skills: catalog.skills().to_vec(),
             diagnostics: catalog.diagnostics().to_vec(),
             approvals: self.approvals.list(run),
+            controls: self.controls.lock().unwrap().list(run),
         }
     }
 }

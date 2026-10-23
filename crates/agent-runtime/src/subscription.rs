@@ -7,6 +7,8 @@ const DEFAULT_SUBSCRIPTION_CAPACITY: usize = 1024;
 pub struct RunEventNotification {
     pub run_id: String,
     pub agent_id: String,
+    /// Live image observations carry content IDs after durable persistence.
+    /// Use the event store's `load_range` for validated image pixels on demand.
     pub envelope: RunEventEnvelope,
 }
 

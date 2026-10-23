@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "browser": {
+      "command": "./launch.sh",
+      "env_vars": [
+        "OPENHARNESS_NODE_BINARY",
+        "ELECTRON_RUN_AS_NODE",
+        "OPENHARNESS_BROWSER_RUNTIME",
+        "PLAYWRIGHT_BROWSERS_PATH",
+        "DISPLAY",
+        "WAYLAND_DISPLAY",
+        "XDG_RUNTIME_DIR",
+        "XAUTHORITY"
+      ]
+    }
+  }
+}

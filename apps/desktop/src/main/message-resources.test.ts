@@ -17,6 +17,12 @@ describe('message presentation resources', () => {
   let run: RunDetail
   let store: MessageResourceStore
   let originalInput: string
+  let imageResult: unknown
+  let imageRequests: number
+  const png = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jq1sAAAAASUVORK5CYII=',
+    'base64',
+  )
 
   const reference = (source: string) => ({ runId: 'run-1', messageId: 'event-2', source })
   const backend = {
@@ -24,6 +30,11 @@ describe('message presentation resources', () => {
       if (path === '/api/runs/run-1') return run
       if (path === '/api/runs/run-1/messages/event-0/files/0')
         return { name: 'input.md', path: join(directory, 'input.md'), text: originalInput }
+      if (path === '/api/runs/run-1/messages/event-2/images/0') {
+        imageRequests += 1
+        if (imageResult instanceof Error) throw imageResult
+        return imageResult
+      }
       throw new Error('unknown request')
     },
   }
@@ -34,6 +45,8 @@ describe('message presentation resources', () => {
     cache = join(directory, 'cache')
     await mkdir(workspace)
     originalInput = '# Original input\n'
+    imageResult = { mime_type: 'image/png', data_base64: png.toString('base64') }
+    imageRequests = 0
     run = {
       id: 'run-1',
       workspace_path: workspace,
@@ -84,6 +97,137 @@ describe('message presentation resources', () => {
     await expect(
       store.resolve({ runId: 'run-1', messageId: 'event-0', fileIndex: 1 }),
     ).rejects.toThrow('不存在')
+  })
+
+  it('caches an admitted tool screenshot without requiring a workspace and restores it after restart', async () => {
+    run.workspace_path = undefined
+    run.messages[1] = {
+      id: 'event-2',
+      role: 'tool',
+      text: 'Screenshot observation',
+      status: 'complete',
+      images: [{ sequence: 2, mime_type: 'image/png' }],
+    }
+    const reference = { runId: 'run-1', messageId: 'event-2', imageIndex: 0 }
+    const [first, concurrent] = await Promise.all([
+      store.resolve(reference),
+      store.resolve(reference),
+    ])
+    expect(concurrent).toEqual(first)
+    expect(imageRequests).toBe(1)
+    expect(first).toMatchObject({
+      name: '截图-1.png',
+      kind: 'image',
+      mimeType: 'image/png',
+      size: png.length,
+    })
+    expect(first.sourcePath).toBeUndefined()
+    expect(await readFile(store.archivePath(first.id))).toEqual(png)
+    const response = await store.response(new Request(first.url))
+    expect(response.headers.get('content-type')).toBe('image/png')
+    expect(response.headers.get('x-content-type-options')).toBe('nosniff')
+    expect(Buffer.from(await response.arrayBuffer())).toEqual(png)
+
+    imageResult = new Error('The original image backend is now unavailable')
+    store = new MessageResourceStore(cache, backend)
+    expect((await store.response(new Request(first.url))).status).toBe(404)
+    expect(await store.resolve(reference)).toEqual(first)
+    expect(imageRequests).toBe(1)
+    expect((await store.response(new Request(first.url, { method: 'HEAD' }))).status).toBe(200)
+
+    // Cached bytes do not grant access after their conversation association is lost.
+    run.messages[1].images = []
+    await expect(store.resolve(reference)).rejects.toThrow('截图不存在')
+    expect(imageRequests).toBe(1)
+  })
+
+  it('rejects screenshot references not attached to a tool message before requesting image bytes', async () => {
+    const reference = { runId: 'run-1', messageId: 'event-2', imageIndex: 0 }
+    await expect(store.resolve(reference)).rejects.toThrow('截图不存在')
+    run.messages[1].images = [{ sequence: 2, mime_type: 'image/png' }]
+    await expect(store.resolve(reference)).rejects.toThrow('截图不存在')
+    run.messages[1].role = 'tool'
+    await expect(store.resolve({ ...reference, imageIndex: 1 })).rejects.toThrow('截图不存在')
+    await expect(store.resolve({ ...reference, messageId: 'event-missing' })).rejects.toThrow(
+      '消息不存在',
+    )
+    expect(imageRequests).toBe(0)
+  })
+
+  it('rejects active image types and oversized tool image payloads without poisoning the cache', async () => {
+    run.messages[1] = {
+      id: 'event-2',
+      role: 'tool',
+      text: '',
+      status: 'complete',
+      images: [{ sequence: 2, mime_type: 'image/png' }],
+    }
+    const reference = { runId: 'run-1', messageId: 'event-2', imageIndex: 0 }
+    for (const value of [
+      {
+        mime_type: 'image/svg+xml',
+        data_base64: Buffer.from('<svg><script>bad()</script></svg>').toString('base64'),
+      },
+      {
+        mime_type: 'text/html',
+        data_base64: Buffer.from('<script>bad()</script>').toString('base64'),
+      },
+      { mime_type: 'image/png', data_base64: 123 },
+      { mime_type: 'image/png', data_base64: 'A'.repeat(7 * 1024 * 1024 + 1) },
+    ]) {
+      imageResult = value
+      await expect(store.resolve(reference)).rejects.toThrow('截图格式或大小无效')
+    }
+    imageResult = {
+      mime_type: 'image/png',
+      data_base64: Buffer.alloc(5 * 1024 * 1024 + 1).toString('base64'),
+    }
+    await expect(store.resolve(reference)).rejects.toThrow('截图过大')
+    imageResult = { mime_type: 'image/png', data_base64: png.toString('base64') }
+    expect((await store.resolve(reference)).size).toBe(png.length)
+  })
+
+  it('bounds image indices and disallows mixing screenshot, attachment and file-link references', () => {
+    for (const imageIndex of [0, 3]) {
+      expect(resourceReference({ runId: 'run-1', messageId: 'event-2', imageIndex })).toEqual({
+        runId: 'run-1',
+        messageId: 'event-2',
+        imageIndex,
+      })
+    }
+    for (const imageIndex of [-1, 4, 0.5, null, '0', NaN, Infinity])
+      expect(() => resourceReference({ runId: 'run-1', messageId: 'event-2', imageIndex })).toThrow(
+        '截图引用无效',
+      )
+    for (const extra of [{ fileIndex: 0 }, { source: './image.png' }])
+      expect(() =>
+        resourceReference({ runId: 'run-1', messageId: 'event-2', imageIndex: 0, ...extra }),
+      ).toThrow('截图引用无效')
+  })
+
+  it('rejects empty or noncanonical base64 image responses and permits a later valid retry', async () => {
+    run.messages[1] = {
+      id: 'event-2',
+      role: 'tool',
+      text: '',
+      status: 'complete',
+      images: [{ sequence: 2, mime_type: 'image/png' }],
+    }
+    const reference = { runId: 'run-1', messageId: 'event-2', imageIndex: 0 }
+    const valid = png.toString('base64')
+    for (const data of [
+      '',
+      '!!!!',
+      ` ${valid}`,
+      `${valid}\n`,
+      valid.replace(/=+$/, ''),
+      `data:image/png;base64,${valid}`,
+    ]) {
+      imageResult = { mime_type: 'image/png', data_base64: data }
+      await expect(store.resolve(reference)).rejects.toThrow('截图编码无效')
+    }
+    imageResult = { mime_type: 'image/png', data_base64: valid }
+    expect((await store.resolve(reference)).size).toBe(png.length)
   })
 
   it('contains paths in the selected workspace and rejects escaping aliases', async () => {

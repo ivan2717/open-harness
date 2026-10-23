@@ -14,6 +14,12 @@ import { isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { mkdir } from 'node:fs/promises'
 import { Backend } from './backend'
+import { initializeRuntime, watchInitializedRuntime } from './runtime-startup'
+import { BundledPlugins } from './bundled-plugins'
+import { ChromeConnection } from './chrome-connection'
+import { execFile, spawn } from 'node:child_process'
+import { promisify } from 'node:util'
+import { createRequire } from 'node:module'
 import { installPluginFromDialog } from './plugin-install'
 import { WorkspaceSelection } from './workspace-selection'
 import {
@@ -46,6 +52,8 @@ const devUrl = !app.isPackaged ? process.env.ELECTRON_RENDERER_URL : undefined
 const subscriptions = new SubscriptionRegistry()
 let window: BrowserWindow | undefined
 let backend: Backend | undefined
+let bundledPlugins: BundledPlugins | undefined
+let chromeConnection: ChromeConnection | undefined
 let quitting = false
 let modelVault: ModelVault | undefined
 let modelsReady: Promise<void> = Promise.resolve()
@@ -83,6 +91,67 @@ function assertSender(event: IpcMainInvokeEvent | IpcMainEvent): void {
 }
 
 function installBridge(): void {
+  ipcMain.handle(channels.bundledPlugins, async (event) => {
+    assertSender(event)
+    return bundledPlugins!.list()
+  })
+  ipcMain.handle(channels.installBundledPlugin, async (event, id: unknown) => {
+    assertSender(event)
+    if (!backend) throw new Error('The local runtime is starting')
+    return bundledPlugins!.install(id, backend)
+  })
+  ipcMain.handle(channels.prepareBrowser, async (event) => {
+    assertSender(event)
+    return bundledPlugins!.prepareBrowser()
+  })
+  ipcMain.handle(channels.chromeConnectionStatus, async (event) => {
+    assertSender(event)
+    return chromeConnection!.status()
+  })
+  ipcMain.handle(channels.connectChrome, async (event, mode: unknown = 'store') => {
+    assertSender(event)
+    if (!backend) throw new Error('The local runtime is starting')
+    await chromeConnection!.connect(mode, {
+      enablePlugin: () => bundledPlugins!.enableChrome(backend!),
+      openDirectory: async (path) => {
+        const error = await shell.openPath(path)
+        if (error) throw new Error('无法打开扩展目录，请在开发者选项中查看目录路径。')
+      },
+      openChrome: async (url) => {
+        if (process.platform === 'darwin') {
+          await promisify(execFile)('/usr/bin/open', ['-a', 'Google Chrome', url], {
+            timeout: 10_000,
+          })
+        } else {
+          await new Promise<void>((resolve, reject) => {
+            const chrome = spawn('google-chrome', [url], { detached: true, stdio: 'ignore' })
+            chrome.once('error', reject)
+            chrome.once('spawn', () => {
+              chrome.unref()
+              resolve()
+            })
+          })
+        }
+      },
+    })
+  })
+  ipcMain.handle(channels.computerSettings, async (event, permission: unknown) => {
+    assertSender(event)
+    if (
+      process.platform !== 'darwin' ||
+      !['accessibility', 'screen-recording'].includes(String(permission))
+    )
+      throw new Error('无效的系统设置入口')
+    try {
+      // Invoked only by the explicit settings button, never by model tools or
+      // a background permission check.
+      await bundledPlugins!.requestComputerPermission(permission)
+    } finally {
+      await shell.openExternal(
+        `x-apple.systempreferences:com.apple.preference.security?${permission === 'accessibility' ? 'Privacy_Accessibility' : 'Privacy_ScreenCapture'}`,
+      )
+    }
+  })
   ipcMain.handle(
     channels.installPlugin,
     async (event, expectedId: unknown, sourceKind: unknown) => {
@@ -178,12 +247,15 @@ function installBridge(): void {
         subscriptions.stop(event.sender.id, token)
         return
       }
-      void backend.watch(
-        id,
-        controller.signal,
-        (snapshot) => send({ snapshot }),
-        (error) => send({ error }),
-      )
+      const runtime = backend
+      void watchInitializedRuntime(modelsReady, controller.signal, () =>
+        runtime.watch(
+          id,
+          controller.signal,
+          (snapshot) => send({ snapshot }),
+          (error) => send({ error }),
+        ),
+      ).catch(() => send({ error: '本地服务初始化失败。请重新启动 Open Harness。' }))
     } catch {
       /* Invalid or unauthorized subscriptions have no side effects. */
     }
@@ -254,7 +326,31 @@ if (!app.requestSingleInstanceLock()) {
     const binary = app.isPackaged
       ? join(process.resourcesPath, 'bin', binaryName)
       : join(targetDirectory, 'debug', binaryName)
-    backend = new Backend(binary, join(app.getPath('userData'), 'runtime'))
+    const pluginRoot = app.isPackaged
+      ? join(process.resourcesPath, 'plugins')
+      : join(workspace, 'plugins')
+    chromeConnection = new ChromeConnection({
+      root: pluginRoot,
+      executable: process.execPath,
+      userData: app.getPath('userData'),
+      home: app.getPath('home'),
+      platform: process.platform,
+    })
+    bundledPlugins = new BundledPlugins({
+      root: pluginRoot,
+      runtime: app.isPackaged
+        ? join(process.resourcesPath, 'browser-runtime', 'index.js')
+        : createRequire(__filename).resolve('playwright-core'),
+      executable: process.execPath,
+      browsers: process.env.PLAYWRIGHT_BROWSERS_PATH ?? join(app.getPath('userData'), 'browsers'),
+      platform: process.platform,
+      chrome: chromeConnection,
+    })
+    backend = new Backend(
+      binary,
+      join(app.getPath('userData'), 'runtime'),
+      bundledPlugins.environment,
+    )
     installMessageResourceBridge({
       directory: app.getPath('userData'),
       backend,
@@ -268,20 +364,13 @@ if (!app.requestSingleInstanceLock()) {
       encryptString: (value) => safeStorage.encryptString(value),
       decryptString: (value) => safeStorage.decryptString(value),
     })
-    modelsReady = (async () => {
-      try {
-        for (const input of await modelVault!.load()) {
-          try {
-            await backend!.request({ path: '/api/models', method: 'POST', body: input })
-          } catch {
-            modelConfigError = '部分模型配置未能恢复，可重新接入对应模型。'
-          }
-        }
-      } catch {
-        modelConfigError = '已保存的模型配置未能恢复。可在这里重新接入；本地会话记录仍然可用。'
-      }
-    })()
-    void backend.start().catch(() => undefined) // Bridge calls surface startup failures in the workbench.
+    modelsReady = initializeRuntime(
+      backend,
+      () => modelVault!.load(),
+      (message) => {
+        modelConfigError = message
+      },
+    ).catch(() => undefined) // Bridge calls surface the original startup failure.
     installBridge()
     createWindow()
     app.on('activate', () => {
@@ -295,6 +384,7 @@ if (!app.requestSingleInstanceLock()) {
     if (quitting) return
     event.preventDefault()
     quitting = true
+    bundledPlugins?.stop()
     subscriptions.stopAll()
     void (backend?.stop() ?? Promise.resolve()).finally(() => app.quit())
   })

@@ -158,6 +158,7 @@ async fn history_search_matches_original_text_without_json_escaping() {
     run.record(RunEvent::ToolCallSucceeded {
         call_id: "successful-call".to_owned(),
         output: output.to_owned(),
+        images: Vec::new(),
     })
     .unwrap();
     let success_sequence = run.events().last().unwrap().sequence;
@@ -263,6 +264,7 @@ async fn oversized_history_events_can_be_reassembled_from_bounded_chunks() {
     run.record(RunEvent::ToolCallSucceeded {
         call_id: "large-output".to_owned(),
         output: large_output.clone(),
+        images: Vec::new(),
     })
     .unwrap();
     let sequence = run.events().last().unwrap().sequence;
@@ -433,6 +435,7 @@ async fn excluded_derived_memory_is_not_searchable_or_readable_as_original_evide
     run.record(RunEvent::ToolCallSucceeded {
         call_id: "wiki".into(),
         output: "derived-only-marker is a generated Wiki claim".into(),
+        images: Vec::new(),
     })
     .unwrap();
     persist_run(&store, &run).await;
@@ -536,12 +539,14 @@ async fn a_narrow_history_read_looks_up_requests_to_filter_history_results() {
     run.record(RunEvent::ToolCallSucceeded {
         call_id: "regular".to_owned(),
         output: "Original evidence".to_owned(),
+        images: Vec::new(),
     })
     .unwrap();
     let first_result = run.events().last().unwrap().sequence;
     run.record(RunEvent::ToolCallSucceeded {
         call_id: "history".to_owned(),
         output: "An old history response must not appear recursively".to_owned(),
+        images: Vec::new(),
     })
     .unwrap();
     run.record(RunEvent::ToolCallFailed {
@@ -621,6 +626,7 @@ fn historical_run() -> AgentRun {
     run.record(RunEvent::ToolCallSucceeded {
         call_id: "regular-call".to_owned(),
         output: "archived contents".to_owned(),
+        images: Vec::new(),
     })
     .unwrap();
     run.begin_step().unwrap();

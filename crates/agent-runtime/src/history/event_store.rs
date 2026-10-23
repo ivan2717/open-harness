@@ -307,7 +307,9 @@ fn event_matches_query(event: &RunEvent, folded_query: &str) -> bool {
             tool_name,
             arguments,
         } => matches(call_id) || matches(tool_name) || matches(arguments),
-        RunEvent::ToolCallSucceeded { call_id, output } => matches(call_id) || matches(output),
+        RunEvent::ToolCallSucceeded {
+            call_id, output, ..
+        } => matches(call_id) || matches(output),
         RunEvent::ToolCallFailed { call_id, message } => matches(call_id) || matches(message),
         RunEvent::InputRequested { prompt } => matches(prompt),
         RunEvent::RunCompleted { answer } => matches(answer),

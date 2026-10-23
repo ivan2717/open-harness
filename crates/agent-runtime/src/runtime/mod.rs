@@ -190,7 +190,7 @@ where
         &self,
         run_id: &str,
     ) -> Result<Option<AgentRun>, AgentRuntimeError<M::Error>> {
-        let Some(stored) = self.event_store.load(run_id).await? else {
+        let Some(stored) = self.event_store.load_for_runtime(run_id).await? else {
             return Ok(None);
         };
 
@@ -367,7 +367,7 @@ where
     }
 
     async fn synchronize_run(&self, run: &AgentRun) -> Result<(), AgentRuntimeError<M::Error>> {
-        let Some(stored) = self.event_store.load(run.id()).await? else {
+        let Some(stored) = self.event_store.load_for_runtime(run.id()).await? else {
             for event in run.events() {
                 self.append_event(run.id(), run.agent_id(), event).await?;
                 self.publish(run, event.clone());
@@ -437,7 +437,12 @@ where
 
         self.append_event(run.id(), run.agent_id(), &event).await?;
         run.commit_prepared(candidate)?;
+        let has_images = matches!(&event.event, RunEvent::ToolCallSucceeded { images, .. } if !images.is_empty());
         self.publish(run, event);
+        if has_images {
+            // Persist first: a failed write must never discard the only copy.
+            run.release_historical_image_data();
+        }
 
         Ok(())
     }
@@ -455,6 +460,15 @@ where
     }
 
     fn publish(&self, run: &AgentRun, envelope: RunEventEnvelope) {
+        // Every caller publishes after persistence. Slow subscribers must not
+        // retain a queue of raster payloads; retrieve pixels by event sequence
+        // from the store when an archive preview is actually requested.
+        let envelope = if matches!(&envelope.event, RunEvent::ToolCallSucceeded { images, .. } if !images.is_empty())
+        {
+            envelope.with_image_references().unwrap_or(envelope)
+        } else {
+            envelope
+        };
         self.subscriptions.publish(RunEventNotification {
             run_id: run.id().to_owned(),
             agent_id: run.agent_id().to_owned(),

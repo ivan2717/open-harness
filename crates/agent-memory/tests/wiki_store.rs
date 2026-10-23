@@ -82,6 +82,7 @@ fn history() -> Vec<RunEventEnvelope> {
         RunEvent::ToolCallSucceeded {
             call_id: "read".into(),
             output: "The repository uses Rust and TypeScript.".into(),
+            images: Vec::new(),
         },
         RunEvent::InputReceived {
             content: "Keep all memory local.".into(),
@@ -955,6 +956,7 @@ fn source_queries_never_expose_reasoning_provider_state_or_memory_echoes() {
         RunEvent::ToolCallSucceeded {
             call_id: "memory".into(),
             output: "MEMORY_ECHO".into(),
+            images: Vec::new(),
         },
         RunEvent::ModelResponseReceived {
             content: String::new(),
@@ -1025,6 +1027,7 @@ fn provenance_rejects_missing_future_and_reasoning_or_memory_only_sources() {
             RunEvent::ToolCallSucceeded {
                 call_id: "memory".into(),
                 output: "Previous generated memory".into(),
+                images: Vec::new(),
             },
         ])
         .into_iter()
@@ -1092,6 +1095,7 @@ fn history_with_recall(tool_name: &str) -> Vec<RunEventEnvelope> {
             RunEvent::ToolCallSucceeded {
                 call_id: "recall".into(),
                 output: "The repository uses Rust and TypeScript.".into(),
+                images: Vec::new(),
             },
             RunEvent::ToolCallRequested {
                 call_id: "missing-recall".into(),
@@ -1110,6 +1114,7 @@ fn history_with_recall(tool_name: &str) -> Vec<RunEventEnvelope> {
             RunEvent::ToolCallSucceeded {
                 call_id: "read-new-source".into(),
                 output: "New original observation: all 42 records were verified.".into(),
+                images: Vec::new(),
             },
         ])
         .into_iter()

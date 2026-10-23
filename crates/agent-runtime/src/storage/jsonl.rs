@@ -87,6 +87,24 @@ impl EventStore for JsonlEventStore {
         self.load_range(run_id, 0..u64::MAX)
     }
 
+    fn load_for_runtime(
+        &self,
+        run_id: &str,
+    ) -> impl Future<Output = Result<Option<StoredRun>, EventStoreError>> + Send {
+        let directory = self.directory.clone();
+        let index = self.run_index(run_id);
+        let run_id = run_id.to_owned();
+        async move {
+            let index = index?;
+            tokio::task::spawn_blocking(move || {
+                let mut index = index.lock().map_err(|_| EventStoreError::LockPoisoned)?;
+                load_jsonl_range_with_images(&directory, &run_id, 0..u64::MAX, &mut index, false)
+            })
+            .await
+            .map_err(EventStoreError::Task)?
+        }
+    }
+
     fn load_range(
         &self,
         run_id: &str,
@@ -230,7 +248,7 @@ fn append_jsonl_event(
         schema_version: EVENT_SCHEMA_VERSION,
         run_id: run_id.to_owned(),
         agent_id: agent_id.to_owned(),
-        envelope: event.clone(),
+        envelope: super::images::externalize(&path, event)?,
     };
     let mut encoded = serde_json::to_vec(&record).map_err(EventStoreError::Serialization)?;
     encoded.push(b'\n');
@@ -407,7 +425,10 @@ fn read_indexed_event(
     {
         index.loaded_records += 1;
     }
-    Ok(decode_jsonl_record(path, run_id, sequence + 1, &line)?.envelope)
+    super::images::hydrate(
+        path,
+        decode_jsonl_record(path, run_id, sequence + 1, &line)?.envelope,
+    )
 }
 
 fn load_jsonl_range(
@@ -415,6 +436,16 @@ fn load_jsonl_range(
     run_id: &str,
     sequences: Range<u64>,
     index: &mut JsonlRunIndex,
+) -> Result<Option<StoredRun>, EventStoreError> {
+    load_jsonl_range_with_images(directory, run_id, sequences, index, true)
+}
+
+fn load_jsonl_range_with_images(
+    directory: &Path,
+    run_id: &str,
+    sequences: Range<u64>,
+    index: &mut JsonlRunIndex,
+    all_images: bool,
 ) -> Result<Option<StoredRun>, EventStoreError> {
     let path = jsonl_path(directory, run_id);
     refresh_jsonl_index(&path, run_id, index)?;
@@ -442,6 +473,21 @@ fn load_jsonl_range(
             }
         }
     }
+    let latest = events.iter().rposition(|event| {
+        matches!(&event.event,
+        RunEvent::ToolCallSucceeded { images, .. } if !images.is_empty())
+    });
+    let events = events
+        .into_iter()
+        .enumerate()
+        .map(|(position, event)| {
+            if all_images || Some(position) == latest {
+                super::images::hydrate(&path, event)
+            } else {
+                super::images::retain_reference(&path, event)
+            }
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     Ok(Some(StoredRun {
         run_id: run_id.to_owned(),
         agent_id: agent_id.clone(),
@@ -552,6 +598,7 @@ mod tests {
                     20 => RunEvent::ToolCallSucceeded {
                         call_id: "call-5".to_owned(),
                         output: "x".repeat(64 * 1024),
+                        images: Vec::new(),
                     },
                     _ => RunEvent::ModelResponseReceived {
                         response: None,

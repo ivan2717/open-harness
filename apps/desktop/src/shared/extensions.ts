@@ -69,12 +69,49 @@ export interface ExtensionApproval {
   server_name: string
   operation: string
   arguments: unknown
+  session_scope?: ControlScope
+}
+export type ControlScope =
+  | { kind: 'browser' }
+  | { kind: 'application'; bundle_id: string; pid: number }
+  | { kind: 'chrome_tab'; tab_id: number; origin: string }
+  | { kind: 'chrome_new_tab'; origin: string }
+export interface ControlAccess {
+  server_id: string
+  server_name: string
+  scope: ControlScope
+  remembered: boolean
+}
+export interface BundledPlugin {
+  id: 'browser-use' | 'computer-use' | 'chrome-use'
+  name: string
+  description: string
+  available: boolean
+  reason?: string
+  browserReady?: boolean
+  chrome?: {
+    configured: boolean
+    connected: boolean
+    allowNewTabs?: boolean
+    storeUrl: string | null
+    installationError?: string
+    extensionPath: string
+    error?: string
+  }
+  permissions?: {
+    /** Null means detection failed; false means macOS explicitly denied access. */
+    accessibility: boolean | null
+    screenRecording: boolean | null
+    helperPath: string
+    error?: string
+  }
 }
 
 export interface RunExtensions {
   skills: SkillInfo[]
   diagnostics: { path: string; message: string }[]
   approvals: ExtensionApproval[]
+  controls?: ControlAccess[]
 }
 
 export interface McpCatalog {

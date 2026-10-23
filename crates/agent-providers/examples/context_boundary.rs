@@ -77,6 +77,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     };
     let model_id = std::env::var("MODEL_ID").unwrap_or_else(|_| default_model.into());
     let model = HttpModel::new(ProviderConfig {
+        supports_images: false,
         protocol,
         base_url: std::env::var("API_BASE_URL").unwrap_or_else(|_| default_base.into()),
         api_key: std::env::var(key_env)

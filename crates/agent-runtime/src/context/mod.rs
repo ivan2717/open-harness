@@ -51,6 +51,9 @@ use std::{error::Error, fmt, future::Future};
 /// information that the model may need to recover.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContextInput {
+    /// Whether this receiving model can interpret images. Runtime callers bind
+    /// this from ModelCapabilities before budgeting or compaction planning.
+    pub supports_images: bool,
     pub run_id: String,
     pub instructions: String,
     pub events: Vec<RunEventEnvelope>,
@@ -75,6 +78,7 @@ impl ContextInput {
         tools: Vec<ToolDefinition>,
     ) -> Self {
         Self {
+            supports_images: true,
             run_id: run_id.into(),
             instructions: instructions.into(),
             events,
@@ -100,8 +104,14 @@ impl ContextInput {
         self
     }
 
+    pub fn with_image_input(mut self, supported: bool) -> Self {
+        self.supports_images = supported;
+        self
+    }
+
     pub fn as_ref(&self) -> ContextInputRef<'_> {
         ContextInputRef {
+            supports_images: self.supports_images,
             run_id: &self.run_id,
             instructions: &self.instructions,
             events: &self.events,
@@ -118,6 +128,7 @@ impl ContextInput {
 /// This avoids cloning the entire durable history before selecting that tail.
 #[derive(Clone, Copy)]
 pub struct ContextInputRef<'a> {
+    pub supports_images: bool,
     pub run_id: &'a str,
     pub instructions: &'a str,
     pub events: &'a [RunEventEnvelope],
@@ -133,6 +144,7 @@ impl fmt::Debug for ContextInputRef<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("ContextInputRef")
+            .field("supports_images", &self.supports_images)
             .field("run_id", &self.run_id)
             .field("instructions", &self.instructions)
             .field("events", &self.events)
@@ -163,6 +175,7 @@ impl<'a> ContextInputRef<'a> {
     /// when borrowing it; projector references are not stored in owned snapshots.
     pub fn into_owned(self) -> ContextInput {
         ContextInput {
+            supports_images: self.supports_images,
             run_id: self.run_id.to_owned(),
             instructions: self.instructions.to_owned(),
             events: self.events.to_vec(),

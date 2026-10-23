@@ -199,6 +199,13 @@ impl AgentRun {
         &self.agent_id
     }
 
+    /// Release archived image bytes only after the event store has committed
+    /// them. Event identity and revisions are unchanged: references identify
+    /// the same image content and are resolved by the owning event store.
+    pub fn release_historical_image_data(&mut self) -> usize {
+        release_historical_image_data(&mut self.events)
+    }
+
     pub fn status(&self) -> RunStatus {
         self.status
     }
@@ -599,6 +606,58 @@ pub struct RunEventEnvelope {
     pub event: RunEvent,
 }
 
+impl RunEventEnvelope {
+    /// Stable integrity representation independent of whether image bytes are
+    /// resident in memory. Text-only event serialization remains unchanged.
+    pub fn with_image_references(&self) -> Result<Self, crate::ImageError> {
+        let event = match &self.event {
+            RunEvent::ToolCallSucceeded {
+                call_id,
+                output,
+                images,
+            } => RunEvent::ToolCallSucceeded {
+                call_id: call_id.clone(),
+                output: output.clone(),
+                images: images
+                    .iter()
+                    .map(crate::ModelImage::as_reference)
+                    .collect::<Result<_, _>>()?,
+            },
+            other => other.clone(),
+        };
+        Ok(Self {
+            sequence: self.sequence,
+            step: self.step,
+            occurred_at: self.occurred_at,
+            event,
+        })
+    }
+}
+
+/// Keep the newest image-bearing result available for the next model request.
+/// Archive readers can still retrieve older raster bytes from the event store.
+pub fn release_historical_image_data(events: &mut [RunEventEnvelope]) -> usize {
+    let Some(latest) = events.iter().rposition(|event| {
+        matches!(&event.event, RunEvent::ToolCallSucceeded { images, .. } if !images.is_empty())
+    }) else {
+        return 0;
+    };
+    let mut released = 0;
+    for event in &mut events[..latest] {
+        if let RunEvent::ToolCallSucceeded { images, .. } = &mut event.event {
+            for image in images {
+                if image.reference_id().is_none()
+                    && let Ok(reference) = image.as_reference()
+                {
+                    released += image.data_base64.len();
+                    *image = reference;
+                }
+            }
+        }
+    }
+    released
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum RunEvent {
@@ -631,6 +690,8 @@ pub enum RunEvent {
     ToolCallSucceeded {
         call_id: String,
         output: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        images: Vec<crate::ModelImage>,
     },
     ToolCallFailed {
         call_id: String,
@@ -680,6 +741,14 @@ impl RunEvent {
     /// Display/history projection. Canonical storage retains the opaque state.
     pub fn without_provider_state(&self) -> Self {
         let mut event = self.clone();
+        // Historical text projections must not serialize image bytes into a
+        // summary, search response or another model's text input.
+        if let Self::ToolCallSucceeded { images, output, .. } = &mut event
+            && !images.is_empty()
+        {
+            output.push_str("\n[Historical image observation omitted; observe the current interface again when needed.]");
+            images.clear();
+        }
         if let Self::ModelResponseReceived {
             response,
             provider_state,

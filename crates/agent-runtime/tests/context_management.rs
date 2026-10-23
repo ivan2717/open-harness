@@ -156,6 +156,7 @@ fn append_context_step(run: &mut AgentRun, marker: &str) {
     run.record(RunEvent::ToolCallSucceeded {
         call_id: format!("{marker}-call"),
         output: format!("{marker}-output-{}", "o".repeat(90)),
+        images: Vec::new(),
     })
     .unwrap();
 }
@@ -421,6 +422,7 @@ async fn the_hard_limit_can_emergency_compact_the_latest_completed_step() {
         run.record(RunEvent::ToolCallSucceeded {
             call_id: format!("latest-{index}"),
             output: "z".repeat(90),
+            images: Vec::new(),
         })
         .unwrap();
     }
@@ -556,6 +558,7 @@ async fn soft_compaction_falls_back_when_deferred_tools_push_it_over_the_hard_li
         run.record(RunEvent::ToolCallSucceeded {
             call_id: format!("call-{index}"),
             output: String::new(),
+            images: Vec::new(),
         })
         .unwrap();
     }
@@ -690,6 +693,7 @@ async fn clipped_tail_details_remain_available_through_history_access() {
     run.record(RunEvent::ToolCallSucceeded {
         call_id: "large-result".to_owned(),
         output: full_output.clone(),
+        images: Vec::new(),
     })
     .unwrap();
 
@@ -989,12 +993,12 @@ async fn runtime_history_tool_calls_use_the_checkpoint_and_remain_ordinary_run_e
 
     assert!(run.events().iter().any(|envelope| matches!(
         &envelope.event,
-        RunEvent::ToolCallSucceeded { call_id, output }
+        RunEvent::ToolCallSucceeded { call_id, output, .. }
             if call_id == "search-history" && output.contains("runtime-history-needle")
     )));
     assert!(run.events().iter().any(|envelope| matches!(
         &envelope.event,
-        RunEvent::ToolCallSucceeded { call_id, output }
+        RunEvent::ToolCallSucceeded { call_id, output, .. }
             if call_id == "read-history"
                 && serde_json::from_str::<serde_json::Value>(output).unwrap()["from_sequence"] == 0
     )));
@@ -1044,6 +1048,7 @@ async fn saved_history_responses_repage_without_skipping_text_when_context_budge
         run.record(RunEvent::ToolCallSucceeded {
             call_id: "original-read".to_owned(),
             output: original_output.clone(),
+            images: Vec::new(),
         })
         .unwrap();
         persist_run(&store, &run).await;
@@ -1116,6 +1121,7 @@ async fn saved_history_responses_repage_without_skipping_text_when_context_budge
             run.record(RunEvent::ToolCallSucceeded {
                 call_id: call.id.clone(),
                 output,
+                images: Vec::new(),
             })
             .unwrap();
             let input = context_input(&run);

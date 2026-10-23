@@ -655,6 +655,7 @@ async fn assert_tool_call_lookups(store: &impl EventStore) {
         RunEvent::ToolCallSucceeded {
             call_id: "duplicate".to_owned(),
             output: "large unrelated output".repeat(1_000),
+            images: Vec::new(),
         },
         RunEvent::ToolCallRequested {
             call_id: "second".to_owned(),
@@ -664,6 +665,7 @@ async fn assert_tool_call_lookups(store: &impl EventStore) {
         RunEvent::ToolCallSucceeded {
             call_id: "second".to_owned(),
             output: "another large output".repeat(1_000),
+            images: Vec::new(),
         },
         RunEvent::ToolCallRequested {
             call_id: "duplicate".to_owned(),

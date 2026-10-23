@@ -28,7 +28,8 @@ pub const MAX_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
 const MAX_CATALOG_ITEMS: usize = 512;
 const MAX_CATALOG_PAGES: usize = 32;
 const MAX_CATALOG_BYTES: usize = 4 * 1024 * 1024;
-const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
+// Stdio peers get 1s after EOF and 4s after SIGTERM to release owned resources.
+const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(6);
 type Session = RunningService<RoleClient, ClientConfig>;
 pub type Result<T> = std::result::Result<T, McpError>;
 

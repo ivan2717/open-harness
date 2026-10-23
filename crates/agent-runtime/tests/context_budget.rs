@@ -299,6 +299,7 @@ async fn the_manager_batches_for_the_summary_model_instead_of_the_larger_main_mo
         run.record(RunEvent::ToolCallSucceeded {
             call_id,
             output: "Found the relevant section.".to_owned(),
+            images: Vec::new(),
         })
         .unwrap();
     }
@@ -385,6 +386,7 @@ async fn an_accepted_checkpoint_above_target_waits_for_growth_before_compacting_
         run.record(RunEvent::ToolCallSucceeded {
             call_id,
             output: "ok".to_owned(),
+            images: Vec::new(),
         })
         .unwrap();
     }

@@ -172,6 +172,7 @@ fn every_canonical_call_must_be_declared_before_any_result() {
             RunEvent::ToolCallSucceeded {
                 call_id: "first".into(),
                 output: "file contents".into(),
+                images: Vec::new(),
             }
         };
         assert_rejected_live_and_on_restore(
@@ -184,6 +185,7 @@ fn every_canonical_call_must_be_declared_before_any_result() {
         run.record(RunEvent::ToolCallSucceeded {
             call_id: "second".into(),
             output: "second file".into(),
+            images: Vec::new(),
         })
         .unwrap();
         run.record(result).unwrap();
@@ -277,7 +279,8 @@ fn content_blocks_cannot_change_message_roles_or_tool_identity() {
             vec![ContentBlock::ToolResult {
                 call_id: "first".into(),
                 content: "contents".into(),
-                is_error: false
+                is_error: false,
+                images: Vec::new(),
             }],
             None
         )
@@ -385,6 +388,7 @@ fn legacy_responses_without_canonical_blocks_still_round_trip_and_restore() {
     run.record(RunEvent::ToolCallSucceeded {
         call_id: "first".into(),
         output: "contents".into(),
+        images: Vec::new(),
     })
     .unwrap();
     run.begin_step().unwrap();

@@ -187,6 +187,47 @@ async fn dropping_last_client_stops_idle_session() {
 }
 
 #[tokio::test]
+async fn shutdown_drop_and_cancel_allow_server_to_reap_detached_resources() {
+    struct DetachedChild(Option<i32>);
+    impl Drop for DetachedChild {
+        fn drop(&mut self) {
+            // A failing regression must not itself leak the detached fixture.
+            if let Some(pid) = self.0 {
+                unsafe { libc::kill(pid, libc::SIGKILL) };
+            }
+        }
+    }
+
+    for mode in ["cleanup-close", "cleanup-drop", "cleanup-cancel"] {
+        let path = pid_file(mode);
+        let child_path = PathBuf::from(format!("{}.child", path.display()));
+        let marker = PathBuf::from(format!("{}.cleaned", path.display()));
+        let client = client("detached_cleanup", Some(&path));
+        client.test_connection().await.unwrap();
+        let server_pid = read_pid(&path).await;
+        let detached_pid = read_pid(&child_path).await;
+        let mut detached = DetachedChild(Some(detached_pid));
+        if mode == "cleanup-close" {
+            client.shutdown().await;
+        } else if mode == "cleanup-cancel" {
+            let active = client.clone();
+            let task = tokio::spawn(async move { active.call_tool("hang", Map::new()).await });
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            task.abort();
+            let _ = task.await;
+        }
+        drop(client);
+        assert_stopped(server_pid).await;
+        assert_stopped(detached_pid).await;
+        detached.0 = None;
+        assert_eq!(std::fs::read_to_string(&marker).unwrap(), "closed");
+        for file in [path, child_path, marker] {
+            std::fs::remove_file(file).unwrap();
+        }
+    }
+}
+
+#[tokio::test]
 async fn revocation_blocks_old_handles_and_cancels_running_calls() {
     let path = pid_file("revoked-before-launch");
     let client = client("normal", Some(&path));
