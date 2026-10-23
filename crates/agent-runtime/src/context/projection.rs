@@ -14,7 +14,7 @@ pub(super) fn build_compacted_request(
     include_deferred_tools: bool,
     preserve_all_users: bool,
 ) -> ModelRequest {
-    let mut messages = Vec::new();
+    let mut messages = input.derived_messages.to_vec();
     if let Some(checkpoint) = checkpoint.filter(|checkpoint| !checkpoint.summary.is_empty()) {
         messages.extend(user_messages(
             protected_user_events(input, preserve_all_users)
@@ -66,15 +66,23 @@ fn protected_user_events(input: ContextInputRef<'_>, preserve_all: bool) -> Vec<
     }
 }
 
-/// The latest user input (or all inputs when opted in), fixed instructions, and tools.
-/// A summary is never allowed to make these inputs disappear to satisfy a limit.
+/// Derived context, the latest user input (or all inputs when opted in), fixed
+/// instructions, and tools. Compaction cannot discard them to satisfy a limit.
 pub(super) fn protected_request(
     input: ContextInputRef<'_>,
     preserve_all_users: bool,
 ) -> ModelRequest {
     ModelRequest {
         instructions: input.instructions.to_owned(),
-        messages: user_messages(protected_user_events(input, preserve_all_users)).collect(),
+        messages: input
+            .derived_messages
+            .iter()
+            .cloned()
+            .chain(user_messages(protected_user_events(
+                input,
+                preserve_all_users,
+            )))
+            .collect(),
         tools: input.tools.to_vec(),
         max_output_tokens: None,
         provider_context: None,

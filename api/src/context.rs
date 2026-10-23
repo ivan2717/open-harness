@@ -18,6 +18,14 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+#[path = "context_memory.rs"]
+mod memory_hook;
+use memory_hook::MemoryCompactionHook;
+
+#[cfg(test)]
+#[path = "context_memory_tests.rs"]
+mod memory_tests;
+
 pub fn policy() -> ContextPolicy {
     ContextPolicy::builder()
         .model_context_window(WINDOW_TOKENS)
@@ -206,6 +214,7 @@ impl ContextCheckpointStore for DiskCheckpoints {
 pub struct ObservedContext<C = DemoCompactor> {
     inner: CompactingContextManager<C, DiskCheckpoints, ApproximateTokenCounter>,
     snapshot: Snapshot,
+    memory: Option<Arc<crate::memory::WikiMemory>>,
 }
 impl ObservedContext {
     #[cfg(test)]
@@ -228,7 +237,33 @@ impl<C: ContextCompactor> ObservedContext<C> {
                 ApproximateTokenCounter::default(),
             ),
             snapshot,
+            memory: None,
         })
+    }
+
+    pub fn with_memory(mut self, memory: Arc<crate::memory::WikiMemory>) -> Self {
+        self.memory = Some(memory);
+        self
+    }
+
+    fn derived_messages(&self, input: ContextInputRef<'_>) -> Vec<agent_runtime::ModelMessage> {
+        let mut messages = input.derived_messages.to_vec();
+        if let Some(memory) = &self.memory {
+            messages.extend(memory.messages(input));
+        }
+        messages
+    }
+
+    pub fn abort_memory_background(&self) {
+        if let Some(memory) = &self.memory {
+            memory.abort_background();
+        }
+    }
+
+    pub async fn stop_memory_background(&self) {
+        if let Some(memory) = &self.memory {
+            memory.stop_background().await;
+        }
     }
 
     fn record_measurement(
@@ -265,6 +300,24 @@ impl<C: ContextCompactor> ObservedContext<C> {
         })
     }
 }
+
+// Wiki notes are optional input. A failed attempt to fit/summarize them may
+// retry the original projection once, while protocol and journal integrity
+// failures must remain visible to the caller.
+fn can_omit_wiki<C, S>(error: &agent_runtime::CompactingContextError<C, S>) -> bool {
+    use agent_runtime::CompactingContextError;
+    matches!(
+        error,
+        CompactingContextError::Compactor(_)
+            | CompactingContextError::EmptySummary { .. }
+            | CompactingContextError::NoEventsToCompact
+            | CompactingContextError::CompactionInputTokenLimitExceeded { .. }
+            | CompactingContextError::CompactionDidNotReduceTokens { .. }
+            | CompactingContextError::InputTokenLimitExceeded { .. }
+            | CompactingContextError::ProtectedContextTokenLimitExceeded { .. }
+    )
+}
+
 impl<C: ContextCompactor> ContextManager for ObservedContext<C> {
     type Error = io::Error;
     fn max_tool_output_chars(&self) -> Option<usize> {
@@ -291,11 +344,18 @@ impl<C: ContextCompactor> ContextManager for ObservedContext<C> {
         &self,
         input: ContextInputRef<'_>,
     ) -> Result<Option<PreparedContext>, Self::Error> {
-        let prepared = self
-            .inner
-            .compact_now(input)
-            .await
-            .map_err(io::Error::other)?;
+        let derived = self.derived_messages(input);
+        let hook = MemoryCompactionHook::new(self.memory.as_ref(), input, &derived);
+        let enriched = input.with_derived_messages(&derived);
+        let prepared = self.inner.compact_now_with_hook(enriched, &hook).await;
+        let prepared = match prepared {
+            Err(error) if hook.injected_memory() && can_omit_wiki(&error) => {
+                hook.omit_memory();
+                self.inner.compact_now_with_hook(input, &hook).await
+            }
+            result => result,
+        }
+        .map_err(io::Error::other)?;
         if let Some(prepared) = &prepared {
             self.record_measurement(input, &prepared.request)?;
         }
@@ -309,25 +369,58 @@ impl<C: ContextCompactor> ContextManager for ObservedContext<C> {
         self.inner
             .observe_response(input, output)
             .await
-            .map_err(io::Error::other)
+            .map_err(io::Error::other)?;
+        if output.response.calls().is_empty()
+            && let Some(memory) = &self.memory
+        {
+            memory.schedule(input, crate::memory::UpdateReason::Response);
+        }
+        Ok(())
     }
     async fn recover_overflow(
         &self,
         input: ContextInputRef<'_>,
         rejected: &ModelRequest,
     ) -> Result<Option<PreparedContext>, Self::Error> {
+        let derived = self.derived_messages(input);
+        let hook = MemoryCompactionHook::new(self.memory.as_ref(), input, &derived);
         let prepared = self
             .inner
-            .recover_overflow(input, rejected)
-            .await
-            .map_err(io::Error::other)?;
+            .recover_overflow_with_hook(input.with_derived_messages(&derived), rejected, &hook)
+            .await;
+        let prepared = match prepared {
+            Err(error) if hook.injected_memory() && can_omit_wiki(&error) => {
+                hook.omit_memory();
+                self.inner
+                    .recover_overflow_with_hook(input, rejected, &hook)
+                    .await
+            }
+            result => result,
+        }
+        .map_err(io::Error::other)?;
         if let Some(prepared) = &prepared {
             self.record_measurement(input, &prepared.request)?;
         }
         Ok(prepared)
     }
     async fn prepare(&self, input: ContextInputRef<'_>) -> Result<PreparedContext, Self::Error> {
-        let prepared = self.inner.prepare(input).await.map_err(io::Error::other)?;
+        if let Some(memory) = &self.memory {
+            memory.schedule(input, crate::memory::UpdateReason::Progress);
+        }
+        let derived = self.derived_messages(input);
+        let hook = MemoryCompactionHook::new(self.memory.as_ref(), input, &derived);
+        let prepared = self
+            .inner
+            .prepare_with_hook(input.with_derived_messages(&derived), &hook)
+            .await;
+        let prepared = match prepared {
+            Err(error) if hook.injected_memory() && can_omit_wiki(&error) => {
+                hook.omit_memory();
+                self.inner.prepare_with_hook(input, &hook).await
+            }
+            result => result,
+        }
+        .map_err(io::Error::other)?;
         self.record_measurement(input, &prepared.request)?;
         Ok(prepared)
     }
@@ -338,6 +431,198 @@ mod tests {
     use super::*;
     use crate::contracts::{RunDetail, RunStatus, RunSummary};
     use agent_runtime::{ContextInput, ModelContextMetadata, ModelResponse, ModelUsage};
+    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+
+    static NEXT_FALLBACK_TEST: AtomicU64 = AtomicU64::new(0);
+
+    struct FallbackDirectory(PathBuf);
+    impl FallbackDirectory {
+        fn new() -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "open-harness-wiki-fallback-{}-{}",
+                std::process::id(),
+                NEXT_FALLBACK_TEST.fetch_add(1, Ordering::Relaxed)
+            ));
+            fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+    }
+    impl Drop for FallbackDirectory {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    struct UnavailableCompactor(Arc<AtomicUsize>);
+    impl ContextCompactor for UnavailableCompactor {
+        type Error = io::Error;
+        fn estimate_input_tokens(
+            &self,
+            _: Option<&ContextSummary>,
+            _: &[RunEventEnvelope],
+            _: &dyn TokenCounter,
+        ) -> io::Result<usize> {
+            Ok(0)
+        }
+        async fn compact(
+            &self,
+            _: Option<ContextSummary>,
+            _: Vec<RunEventEnvelope>,
+        ) -> io::Result<ContextSummary> {
+            self.0.fetch_add(1, Ordering::Relaxed);
+            Err(io::Error::other("summary service unavailable"))
+        }
+    }
+
+    fn fallback_context(
+        directory: &FallbackDirectory,
+        assistant_chars: usize,
+    ) -> (
+        ObservedContext<UnavailableCompactor>,
+        ContextInput,
+        Arc<AtomicUsize>,
+    ) {
+        let mut run = agent_core::agent::AgentRun::new("fallback", "agent", "Continue the task");
+        run.begin_step().unwrap();
+        run.record(RunEvent::ModelResponseReceived {
+            response: None,
+            provider_continuation: None,
+            provider_state: None,
+            token_usage: None,
+            content: "x".repeat(assistant_chars),
+        })
+        .unwrap();
+        let input = ContextInput::new("fallback", "", run.events().to_vec(), vec![])
+            .with_derived_messages(vec![agent_runtime::ModelMessage::summary(
+                "caller-context".into(),
+                "Required caller context".into(),
+            )]);
+        let host = crate::extensions::ExtensionHost::open(&directory.0.join("host")).unwrap();
+        host.memory
+            .apply(
+                "fallback",
+                &input.events,
+                input.events.last().unwrap().sequence,
+                agent_memory::WikiUpdate {
+                    overview: "Optional historical wiki notes. ".repeat(60),
+                    pages: vec![],
+                    tasks: vec![],
+                },
+            )
+            .unwrap();
+        let memory = Arc::new(crate::memory::WikiMemory::new(
+            host,
+            crate::model::ServiceModel::Unavailable,
+        ));
+        let snapshot = Snapshot::new(
+            RunDetail {
+                summary: RunSummary {
+                    compacting: false,
+                    id: "fallback".into(),
+                    revision: 0,
+                    title: "fallback".into(),
+                    prompt: "Continue the task".into(),
+                    status: RunStatus::Running,
+                    model_id: "test".into(),
+                    workspace_path: None,
+                    permission_mode: Default::default(),
+                    created_at: String::new(),
+                    updated_at: String::new(),
+                },
+                messages: vec![],
+                events: vec![],
+                context: None,
+                error: None,
+            },
+            directory.0.join("snapshot.json"),
+        )
+        .unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let manager = ObservedContext::with_compactor(
+            directory.0.join("checkpoints.json"),
+            snapshot,
+            ContextPolicy::builder()
+                .input_token_limit(1_200)
+                .compaction_threshold(1_100)
+                .recent_tail_tokens(1)
+                .estimation_margin_percent(0)
+                .build()
+                .unwrap(),
+            UnavailableCompactor(calls.clone()),
+        )
+        .unwrap()
+        .with_memory(memory);
+        (manager, input, calls)
+    }
+
+    #[tokio::test]
+    async fn optional_wiki_can_be_omitted_when_it_alone_requires_a_failing_compaction() {
+        let directory = FallbackDirectory::new();
+        // Even the lean archive locator can push an almost-full request past
+        // the hard limit. Omitting it must preserve the original caller input.
+        let (manager, input, calls) = fallback_context(&directory, 4_000);
+        let original = manager.inner.prepare(input.as_ref()).await.unwrap();
+        assert_eq!(calls.load(Ordering::Relaxed), 0);
+
+        let prepared = manager.prepare(input.as_ref()).await.unwrap();
+
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+        assert_eq!(prepared.request, original.request);
+        assert_eq!(prepared.request.messages[0], input.derived_messages[0]);
+        assert!(
+            prepared
+                .request
+                .messages
+                .iter()
+                .all(|message| !message.text().contains("Optional historical wiki notes"))
+        );
+        assert!(
+            manager
+                .inner
+                .checkpoint_store()
+                .latest(input.run_id.clone())
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn wiki_fallback_keeps_original_failures_and_does_not_retry_without_extra_memory() {
+        for has_wiki in [true, false] {
+            let directory = FallbackDirectory::new();
+            let (mut manager, input, calls) = fallback_context(&directory, 10_000);
+            if !has_wiki {
+                manager.memory = None;
+            }
+            let source = input.events.clone();
+
+            let error = manager.prepare(input.as_ref()).await.unwrap_err();
+
+            assert!(error.to_string().contains("summary service unavailable"));
+            assert_eq!(calls.load(Ordering::Relaxed), if has_wiki { 2 } else { 1 });
+            assert_eq!(input.events, source);
+        }
+    }
+
+    #[tokio::test]
+    async fn wiki_fallback_preserves_explicit_compaction_and_overflow_recovery_requirements() {
+        for manual in [true, false] {
+            let directory = FallbackDirectory::new();
+            let (manager, input, calls) = fallback_context(&directory, 3_600);
+            let original = manager.inner.prepare(input.as_ref()).await.unwrap();
+            let error = if manual {
+                manager.compact_now(input.as_ref()).await.unwrap_err()
+            } else {
+                manager
+                    .recover_overflow(input.as_ref(), &original.request)
+                    .await
+                    .unwrap_err()
+            };
+            assert!(error.to_string().contains("summary service unavailable"));
+            assert_eq!(calls.load(Ordering::Relaxed), 2);
+        }
+    }
 
     #[tokio::test]
     async fn observed_context_forwards_usage_and_publishes_the_decision_measurement() {

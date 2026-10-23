@@ -1,15 +1,16 @@
 use super::checkpoint::{
     checkpoint_id, event_prefix_fingerprint, validate_checkpoint, validate_event_order,
 };
+use super::preparation::NoCompactionPreparation;
 use super::projection::{
     ToolOutputProjection, build_compacted_request, events_after, projected_omission,
     protected_request, select_compaction_boundary, uncompacted_context,
 };
 use super::usage::ContextUsageTracker;
 use super::{
-    CompactingContextError, ContextCheckpoint, ContextCheckpointStore, ContextCompactor,
-    ContextInputRef, ContextManager, ContextPolicy, ContextPruning, ContextSummary,
-    PreparedContext, TokenCounter,
+    CompactingContextError, CompactionPreparationHook, ContextCheckpoint, ContextCheckpointStore,
+    ContextCompactor, ContextInputRef, ContextManager, ContextPolicy, ContextPruning,
+    ContextSummary, PreparedContext, TokenCounter,
 };
 use crate::{ModelContextMetadata, ModelOutput, ModelRequest};
 use agent_core::agent::RunEventEnvelope;
@@ -166,14 +167,122 @@ where
             .decision_input_tokens
     }
 
-    async fn prepare_context(
+    /// Recover a provider overflow, preparing optional host context before
+    /// each selected summary boundary. Pending preparation cannot block recovery.
+    pub async fn recover_overflow_with_hook<H: CompactionPreparationHook>(
+        &self,
+        input: ContextInputRef<'_>,
+        rejected: &ModelRequest,
+        hook: &H,
+    ) -> Result<Option<PreparedContext>, CompactingContextError<C::Error, K::Error>> {
+        let policy = self
+            .policy
+            .resolve(input.model_metadata)
+            .map_err(CompactingContextError::Policy)?;
+        let prepared = self
+            .prepare_context(input, policy, true, false, hook)
+            .await?;
+        // Compare with the same local counter: the provider baseline cannot
+        // measure a rewritten prefix. Never retry merely because it changed.
+        if self.token_counter.count_tokens(&prepared.request)
+            >= self.token_counter.count_tokens(rejected)
+        {
+            return Ok(None);
+        }
+        self.usage.record_request(
+            input.run_id,
+            input.model_metadata,
+            &prepared.request,
+            &self.token_counter,
+        );
+        Ok(Some(prepared))
+    }
+
+    /// Explicit compaction with host preparation. A pending optional memory
+    /// update does not prevent this user-requested operation.
+    pub async fn compact_now_with_hook<H: CompactionPreparationHook>(
+        &self,
+        input: ContextInputRef<'_>,
+        hook: &H,
+    ) -> Result<Option<PreparedContext>, CompactingContextError<C::Error, K::Error>> {
+        let policy = self
+            .policy
+            .resolve(input.model_metadata)
+            .map_err(CompactingContextError::Policy)?;
+        let previous = self
+            .checkpoint_store
+            .latest(input.run_id.to_owned())
+            .await
+            .map_err(CompactingContextError::CheckpointStore)?;
+        let prepared = match self.prepare_context(input, policy, false, true, hook).await {
+            Err(CompactingContextError::CompactionDidNotReduceTokens { .. }) => return Ok(None),
+            result => result?,
+        };
+        let current = self
+            .checkpoint_store
+            .latest(input.run_id.to_owned())
+            .await
+            .map_err(CompactingContextError::CheckpointStore)?;
+        if previous.as_ref().map(|checkpoint| &checkpoint.id)
+            == current.as_ref().map(|checkpoint| &checkpoint.id)
+        {
+            return Ok(None);
+        }
+        self.usage.record_request(
+            input.run_id,
+            input.model_metadata,
+            &prepared.request,
+            &self.token_counter,
+        );
+        Ok(Some(prepared))
+    }
+
+    /// Prepare model context, invoking the hook only when summary compaction
+    /// is needed. Pending preparation may defer compaction while input fits.
+    pub async fn prepare_with_hook<H: CompactionPreparationHook>(
+        &self,
+        input: ContextInputRef<'_>,
+        hook: &H,
+    ) -> Result<PreparedContext, CompactingContextError<C::Error, K::Error>> {
+        let policy = self
+            .policy
+            .resolve(input.model_metadata)
+            .map_err(CompactingContextError::Policy)?;
+        let prepared = self
+            .prepare_context(input, policy, false, false, hook)
+            .await?;
+        self.usage.record_request(
+            input.run_id,
+            input.model_metadata,
+            &prepared.request,
+            &self.token_counter,
+        );
+        Ok(prepared)
+    }
+
+    async fn prepare_context<H: CompactionPreparationHook>(
         &self,
         input: ContextInputRef<'_>,
         policy: ContextPolicy,
         force_compaction: bool,
         manual: bool,
+        hook: &H,
     ) -> Result<PreparedContext, CompactingContextError<C::Error, K::Error>> {
         validate_event_order(input.events)?;
+        // Even below the compaction threshold, inserting mutable derived data
+        // could change the prefix covered by signed provider replay state.
+        if !input.derived_messages.is_empty()
+            && input.events.iter().any(|event| {
+                matches!(
+                    &event.event,
+                    agent_core::agent::RunEvent::ModelResponseReceived {
+                        provider_state: Some(state), ..
+                    } if state.scope == crate::ProviderReplayScope::Prefix
+                )
+            })
+        {
+            return Err(CompactingContextError::DerivedContextWithPrefixBoundState);
+        }
         let mut protected = protected_request(input, policy.preserve_all_user_messages());
         protected.max_output_tokens = policy.output_token_limit();
         let mut protected_tokens = self.token_counter.count_tokens(&protected);
@@ -343,8 +452,6 @@ where
         }
         let compaction_is_required =
             force_compaction || initial_tokens > policy.input_token_limit();
-        let can_fallback = ((!compaction_is_required && !manual) || pruning_progress)
-            && initial_tokens <= policy.input_token_limit();
         if compaction_is_required && protected_tokens > policy.input_token_limit() {
             protected_tokens = self.decision_tokens(input, &protected);
         }
@@ -355,7 +462,7 @@ where
             });
         }
         let mut fixed = protected.clone();
-        fixed.messages.clear();
+        fixed.messages = input.derived_messages.to_vec();
         fixed.tools = initial_request.tools.clone();
         let recent_tail_tokens = policy.recent_tail_tokens_for_message_budget(
             policy
@@ -383,7 +490,15 @@ where
             });
         };
 
-        let through_sequence = input.events[compact_through_index].sequence;
+        // The boundary is now real. Pure pruning and below-threshold requests
+        // have already returned, so optional host work cannot delay those paths.
+        let original_input = input;
+        let mut summary = previous
+            .as_ref()
+            .filter(|checkpoint| !checkpoint.summary.is_empty())
+            .map(|checkpoint| checkpoint.summary.clone());
+        let mut summarized_through = previous_through;
+        let mut first_segment = true;
         let mut summary_projection = ToolOutputProjection::restored(
             input,
             previous
@@ -391,61 +506,97 @@ where
                 .and_then(|checkpoint| checkpoint.pruning.as_ref()),
         );
         summary_projection.enable_pruning(policy.max_tool_output_chars());
-        let prefix_tail = events_after(&input.events[..=compact_through_index], previous_through);
-        let mut projected_prefix = build_compacted_request(
-            input,
-            previous.as_ref(),
-            prefix_tail,
-            &projection,
-            initial_omitted.is_some(),
-            policy.preserve_all_user_messages(),
-        );
-        projected_prefix.max_output_tokens = policy.output_token_limit();
-        let newly_compacted = input
-            .events
-            .iter()
-            .filter(|event| {
-                previous_through.is_none_or(|sequence| event.sequence > sequence)
-                    && event.sequence <= through_sequence
-            })
-            // The durable event remains untouched. The compaction request is
-            // itself model context, so bound large tool payloads there too.
-            .map(|event| summary_projection.clipped_event(event))
-            .collect();
-        let mut summary = match self
-            .compact_bounded(
-                policy,
-                previous
-                    .as_ref()
-                    .filter(|checkpoint| !checkpoint.summary.is_empty())
-                    .map(|checkpoint| checkpoint.summary.clone()),
-                newly_compacted,
-                Some((input.model_metadata.cloned(), projected_prefix)),
-            )
-            .await
-        {
-            Ok(summary) => summary,
-            Err(_) if can_fallback => {
-                return Ok(PreparedContext {
-                    request: initial_request,
-                    omitted_history: initial_omitted,
-                });
-            }
-            Err(error) => return Err(error),
-        };
-
-        if summary.is_empty() {
-            if can_fallback {
-                return Ok(PreparedContext {
-                    request: initial_request,
-                    omitted_history: initial_omitted,
-                });
-            }
-            return Err(CompactingContextError::EmptySummary { through_sequence });
-        }
 
         loop {
             let through_sequence = input.events[compact_through_index].sequence;
+            let preparation = hook
+                .before_compaction(original_input, through_sequence)
+                .await;
+            let input = original_input.with_derived_messages(&preparation.derived_messages);
+
+            // Refresh every request affected by host notes, including fallbacks
+            // and fixed input. A newly saved memory must not be invisible to this
+            // request or bypass its token budget.
+            protected = protected_request(input, policy.preserve_all_user_messages());
+            protected.max_output_tokens = policy.output_token_limit();
+            protected_tokens = self.token_counter.count_tokens(&protected);
+            if protected_tokens > policy.input_token_limit() {
+                protected_tokens = self.decision_tokens(input, &protected);
+            }
+            if protected_tokens > policy.input_token_limit() {
+                return Err(CompactingContextError::ProtectedContextTokenLimitExceeded {
+                    estimated_tokens: protected_tokens,
+                    input_token_limit: policy.input_token_limit(),
+                });
+            }
+            initial_request = build_compacted_request(
+                input,
+                previous.as_ref(),
+                initial_tail,
+                &projection,
+                initial_omitted.is_some(),
+                policy.preserve_all_user_messages(),
+            );
+            initial_request.max_output_tokens = policy.output_token_limit();
+            initial_tokens = self.decision_tokens(input, &initial_request);
+            let compaction_is_required =
+                force_compaction || initial_tokens > policy.input_token_limit();
+            let can_fallback = ((!compaction_is_required && !manual) || pruning_progress)
+                && initial_tokens <= policy.input_token_limit();
+            if !preparation.ready && !manual && !compaction_is_required {
+                return Ok(PreparedContext {
+                    request: initial_request,
+                    omitted_history: initial_omitted,
+                });
+            }
+
+            let projected = if first_segment {
+                let prefix_tail =
+                    events_after(&input.events[..=compact_through_index], previous_through);
+                let mut request = build_compacted_request(
+                    input,
+                    previous.as_ref(),
+                    prefix_tail,
+                    &projection,
+                    initial_omitted.is_some(),
+                    policy.preserve_all_user_messages(),
+                );
+                request.max_output_tokens = policy.output_token_limit();
+                Some((input.model_metadata.cloned(), request))
+            } else {
+                None
+            };
+            let newly_compacted = input
+                .events
+                .iter()
+                .filter(|event| {
+                    summarized_through.is_none_or(|sequence| event.sequence > sequence)
+                        && event.sequence <= through_sequence
+                })
+                // The hook above sees canonical events. Only the independent
+                // summary request gets a bounded tool-output projection.
+                .map(|event| {
+                    if first_segment {
+                        summary_projection.clipped_event(event)
+                    } else {
+                        projection.clipped_event(event)
+                    }
+                })
+                .collect();
+            let next_summary = match self
+                .compact_bounded(policy, summary.take(), newly_compacted, projected)
+                .await
+            {
+                Ok(summary) => summary,
+                Err(_) if can_fallback => {
+                    return Ok(PreparedContext {
+                        request: initial_request,
+                        omitted_history: initial_omitted,
+                    });
+                }
+                Err(error) => return Err(error),
+            };
+            summary = Some(next_summary.clone());
             let source_fingerprint =
                 event_prefix_fingerprint(&input.events[..=compact_through_index])
                     .map_err(CompactingContextError::Fingerprint)?;
@@ -457,7 +608,7 @@ where
                 source_fingerprint,
                 before_tokens: initial_tokens,
                 after_tokens: 0,
-                summary: summary.clone(),
+                summary: next_summary,
                 pruning: previous
                     .as_ref()
                     .and_then(|checkpoint| checkpoint.pruning.clone())
@@ -500,14 +651,19 @@ where
                 // recent steps where possible. Only hard-limit recovery may
                 // fold the newest step. The latest user input is reinserted
                 // verbatim even when that emergency path is necessary.
-                let tail_request = build_compacted_request(
-                    input,
+                let mut tail_request = build_compacted_request(
+                    input.with_derived_messages(&[]),
                     None,
                     tail,
                     &projection,
                     false,
                     policy.preserve_all_user_messages(),
                 );
+                // Boundary selection measures event messages only. Fixed
+                // instructions, schemas and refreshed host notes consume
+                // budget but cannot be retained as additional event history.
+                tail_request.instructions.clear();
+                tail_request.tools.clear();
                 let tail_tokens = self.token_counter.count_tokens(&tail_request);
                 let tail_budget =
                     tail_tokens.saturating_sub(after_tokens - policy.compaction_target());
@@ -519,24 +675,11 @@ where
                     &self.token_counter,
                     after_tokens > policy.input_token_limit() || manual,
                 ) {
-                    let remaining_events = input.events[compact_through_index + 1..=next_index]
-                        .iter()
-                        .map(|event| projection.clipped_event(event))
-                        .collect();
-                    summary = match self
-                        .compact_bounded(policy, Some(summary), remaining_events, None)
-                        .await
-                    {
-                        Ok(summary) => summary,
-                        Err(_) if can_fallback => {
-                            return Ok(PreparedContext {
-                                request: initial_request,
-                                omitted_history: initial_omitted,
-                            });
-                        }
-                        Err(error) => return Err(error),
-                    };
+                    // The next iteration checks coverage of the expanded
+                    // canonical boundary before consuming any additional text.
+                    summarized_through = Some(through_sequence);
                     compact_through_index = next_index;
+                    first_segment = false;
                     continue;
                 }
             }
@@ -661,61 +804,16 @@ where
         input: ContextInputRef<'_>,
         rejected: &ModelRequest,
     ) -> Result<Option<PreparedContext>, Self::Error> {
-        let policy = self
-            .policy
-            .resolve(input.model_metadata)
-            .map_err(CompactingContextError::Policy)?;
-        let prepared = self.prepare_context(input, policy, true, false).await?;
-        // Compare with the same local counter: the provider baseline cannot
-        // measure a rewritten prefix. Never retry merely because it changed.
-        if self.token_counter.count_tokens(&prepared.request)
-            >= self.token_counter.count_tokens(rejected)
-        {
-            return Ok(None);
-        }
-        self.usage.record_request(
-            input.run_id,
-            input.model_metadata,
-            &prepared.request,
-            &self.token_counter,
-        );
-        Ok(Some(prepared))
+        self.recover_overflow_with_hook(input, rejected, &NoCompactionPreparation)
+            .await
     }
 
     async fn compact_now(
         &self,
         input: ContextInputRef<'_>,
     ) -> Result<Option<PreparedContext>, Self::Error> {
-        let policy = self
-            .policy
-            .resolve(input.model_metadata)
-            .map_err(CompactingContextError::Policy)?;
-        let previous = self
-            .checkpoint_store
-            .latest(input.run_id.to_owned())
+        self.compact_now_with_hook(input, &NoCompactionPreparation)
             .await
-            .map_err(CompactingContextError::CheckpointStore)?;
-        let prepared = match self.prepare_context(input, policy, false, true).await {
-            Err(CompactingContextError::CompactionDidNotReduceTokens { .. }) => return Ok(None),
-            result => result?,
-        };
-        let current = self
-            .checkpoint_store
-            .latest(input.run_id.to_owned())
-            .await
-            .map_err(CompactingContextError::CheckpointStore)?;
-        if previous.as_ref().map(|checkpoint| &checkpoint.id)
-            == current.as_ref().map(|checkpoint| &checkpoint.id)
-        {
-            return Ok(None);
-        }
-        self.usage.record_request(
-            input.run_id,
-            input.model_metadata,
-            &prepared.request,
-            &self.token_counter,
-        );
-        Ok(Some(prepared))
     }
 
     async fn observe_response(
@@ -729,17 +827,7 @@ where
     }
 
     async fn prepare(&self, input: ContextInputRef<'_>) -> Result<PreparedContext, Self::Error> {
-        let policy = self
-            .policy
-            .resolve(input.model_metadata)
-            .map_err(CompactingContextError::Policy)?;
-        let prepared = self.prepare_context(input, policy, false, false).await?;
-        self.usage.record_request(
-            input.run_id,
-            input.model_metadata,
-            &prepared.request,
-            &self.token_counter,
-        );
-        Ok(prepared)
+        self.prepare_with_hook(input, &NoCompactionPreparation)
+            .await
     }
 }

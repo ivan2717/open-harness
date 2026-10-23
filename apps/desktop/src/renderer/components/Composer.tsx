@@ -8,7 +8,9 @@ import { InlineError } from './Feedback'
 import { ProjectPicker } from './ProjectPicker'
 import { FileReferences } from './FileReferences'
 import { useFileReferences } from '../lib/use-file-references'
-import { AttachFilesButton } from './AttachFilesButton'
+import { ComposerAddMenu } from './ComposerAddMenu'
+import { SkillPickerDialog } from './SkillPickerDialog'
+import { insertSkillMention } from '../lib/skill-mention'
 
 interface ComposerProps {
   draftKey: string
@@ -24,6 +26,8 @@ interface ComposerProps {
   stopping?: boolean
   disabled?: boolean
   submitDisabledReason?: string
+  autoFocus?: boolean
+  runId?: string
 }
 
 export function Composer({
@@ -40,6 +44,8 @@ export function Composer({
   stopping,
   disabled,
   submitDisabledReason,
+  autoFocus,
+  runId,
 }: ComposerProps) {
   const draft = useUiStore((state) => state.drafts[draftKey] ?? '')
   const setDraft = useUiStore((state) => state.setDraft)
@@ -52,6 +58,8 @@ export function Composer({
   const references = useFileReferences(draftKey)
   const dragDepth = useRef(0)
   const [dragging, setDragging] = useState(false)
+  const [skillsOpen, setSkillsOpen] = useState(false)
+  const skillCursor = useRef({ start: 0, end: 0 })
   const canSubmit =
     Boolean(draft.trim() || references.files.length) &&
     !pending &&
@@ -201,6 +209,7 @@ export function Composer({
         />
         <textarea
           ref={textarea}
+          autoFocus={autoFocus}
           rows={2}
           value={draft}
           disabled={disabled || running}
@@ -224,10 +233,17 @@ export function Composer({
           aria-label="任务描述"
         />
         <div className="composer-footer">
-          <AttachFilesButton
+          <ComposerAddMenu
             disabled={filesDisabled}
             pending={references.pending}
-            onClick={() => void references.importReferences(() => window.harness.chooseFiles())}
+            onFiles={() => void references.importReferences(() => window.harness.chooseFiles())}
+            onSkills={() => {
+              skillCursor.current = {
+                start: textarea.current?.selectionStart ?? draft.length,
+                end: textarea.current?.selectionEnd ?? draft.length,
+              }
+              setSkillsOpen(true)
+            }}
           />
           <div className="composer-footer-right">
             <ComposerModel
@@ -271,6 +287,27 @@ export function Composer({
       </div>
       {references.error && <InlineError message={references.error} />}
       {projectError && <InlineError message={projectError} />}
+      {skillsOpen && !filesDisabled && (
+        <SkillPickerDialog
+          runId={runId}
+          workspacePath={project?.path}
+          onClose={() => setSkillsOpen(false)}
+          onChoose={(skill) => {
+            const { text, cursor } = insertSkillMention(
+              useUiStore.getState().drafts[draftKey] ?? '',
+              skill.id,
+              skillCursor.current.start,
+              skillCursor.current.end,
+            )
+            setDraft(draftKey, text)
+            setSkillsOpen(false)
+            requestAnimationFrame(() => {
+              textarea.current?.focus()
+              textarea.current?.setSelectionRange(cursor, cursor)
+            })
+          }}
+        />
+      )}
     </div>
   )
 }

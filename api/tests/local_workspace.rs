@@ -114,8 +114,8 @@ async fn respond(
     let call = match index {
         0 => Some(("read_file", json!({"path":"answer.txt"}))),
         1 => Some((
-            "edit_file",
-            json!({"path":"answer.txt","old_text":"answer = 41","new_text":"answer = 42"}),
+            "apply_patch",
+            json!({"patch":"*** Begin Patch\n*** Update File: answer.txt\n@@\n user's existing edit\n-answer = 41\n+answer = 42\n*** End Patch"}),
         )),
         _ => None,
     };
@@ -179,13 +179,25 @@ async fn real_provider_transport_edits_reviews_restores_and_conditionally_revert
         review.changes[0].before.as_deref(),
         Some("user's existing edit\nanswer = 41\n")
     );
-    assert!(
-        fixture.requests.lock().unwrap()[0]["tools"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|tool| tool["function"]["name"] == "edit_file")
-    );
+    let mut tool_names: Vec<String> = fixture.requests.lock().unwrap()[0]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|tool| tool["function"]["name"].as_str().unwrap().to_owned())
+        .collect();
+    tool_names.sort();
+    let mut expected_tools = vec![
+        "apply_patch",
+        "list_files",
+        "read_file",
+        "search_files",
+        "session_memory",
+    ];
+    if review.sandbox_available {
+        expected_tools.push("run_command");
+    }
+    expected_tools.sort();
+    assert_eq!(tool_names, expected_tools);
     let first_instructions = fixture.requests.lock().unwrap()[0]["messages"][0].clone();
     assert!(
         first_instructions

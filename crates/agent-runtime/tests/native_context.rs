@@ -125,6 +125,52 @@ fn pending_tool() -> AgentRun {
 }
 
 #[tokio::test]
+async fn derived_context_is_rejected_before_native_window_mutation() {
+    let manager = manager(3_000, 3_000, window(40));
+    let run = history();
+    let input = input(&run).with_derived_messages(vec![ModelMessage::summary(
+        "wiki:revision".into(),
+        "Historical notes".into(),
+    )]);
+    let rejected = ModelRequest {
+        instructions: String::new(),
+        messages: Vec::new(),
+        tools: Vec::new(),
+        max_output_tokens: None,
+        provider_context: Some(window(40)),
+    };
+    assert!(matches!(
+        manager.prepare(input.as_ref()).await,
+        Err(NativeContextError::DerivedContextUnsupported)
+    ));
+    assert!(matches!(
+        manager.recover_overflow(input.as_ref(), &rejected).await,
+        Err(NativeContextError::DerivedContextUnsupported)
+    ));
+    assert!(matches!(
+        manager.compact_now(input.as_ref()).await,
+        Err(NativeContextError::DerivedContextUnsupported)
+    ));
+    let output = ModelOutput {
+        provider_context: Some(window(40)),
+        ..ModelResponse::final_answer("Done".into()).into()
+    };
+    assert!(matches!(
+        manager.observe_response(input.as_ref(), &output).await,
+        Err(NativeContextError::DerivedContextUnsupported)
+    ));
+    assert!(manager.compactor().requests.lock().unwrap().is_empty());
+    assert!(
+        manager
+            .checkpoint_store()
+            .latest(run.id().into())
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[tokio::test]
 async fn native_compaction_preserves_the_entire_ordered_window_and_protects_user_inputs() {
     let native = window(40);
     let manager = manager(3_000, 3_000, native.clone());

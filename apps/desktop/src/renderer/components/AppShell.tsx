@@ -1,30 +1,27 @@
 import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Link, Outlet, useLocation, useNavigate } from '@tanstack/react-router'
-import {
-  Command,
-  PanelLeftClose,
-  PanelLeftOpen,
-  Plus,
-  Search,
-  Settings2,
-  WifiOff,
-} from 'lucide-react'
-import { configOptions, runsOptions } from '../lib/queries'
-import { dateTime } from '../lib/format'
-import { RunActivity } from './RunActivity'
+import { Outlet, useLocation, useMatch, useNavigate } from '@tanstack/react-router'
+import { PanelLeftClose, PanelLeftOpen } from 'lucide-react'
+import { configOptions } from '../lib/queries'
+import { ChatSidebar } from './ChatSidebar'
+import { NavigationRail } from './NavigationRail'
+import { useUiStore } from '../state/ui-store'
 
 export function AppShell() {
   const location = useLocation()
   const navigate = useNavigate()
-  const runs = useQuery(runsOptions)
+  const runMatch = useMatch({ from: '/runs/$runId', shouldThrow: false })
+  const runId = runMatch?.params.runId
   const config = useQuery(configOptions)
-  const [search, setSearch] = useState('')
   const [sidebarOpen, setSidebarOpen] = useState(true)
-  const shownRuns = (runs.data ?? []).filter((run) =>
-    `${run.title} ${run.prompt}`.toLocaleLowerCase().includes(search.toLocaleLowerCase()),
-  )
+  const [lastRunId, setLastRunId] = useState<string | null>(null)
+  const isChat = location.pathname === '/' || Boolean(runMatch)
   const isMac = window.harness?.platform === 'darwin'
+
+  useEffect(() => {
+    if (runId) setLastRunId(runId)
+    else if (location.pathname === '/') setLastRunId(null)
+  }, [runId, location.pathname])
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -35,6 +32,7 @@ export function AppShell() {
         !event.shiftKey
       ) {
         event.preventDefault()
+        useUiStore.getState().setProject(null)
         void navigate({ to: '/' })
       }
     }
@@ -45,13 +43,16 @@ export function AppShell() {
   return (
     <div className="desktop-shell">
       <div className={`titlebar ${isMac ? 'titlebar-mac' : ''}`}>
-        <button
-          className="icon-button no-drag"
-          aria-label={sidebarOpen ? '收起侧边栏' : '展开侧边栏'}
-          onClick={() => setSidebarOpen(!sidebarOpen)}
-        >
-          {sidebarOpen ? <PanelLeftClose size={16} /> : <PanelLeftOpen size={16} />}
-        </button>
+        {isChat && (
+          <button
+            className="icon-button no-drag"
+            aria-label={sidebarOpen ? '收起侧边栏' : '展开侧边栏'}
+            aria-expanded={sidebarOpen}
+            onClick={() => setSidebarOpen(!sidebarOpen)}
+          >
+            {sidebarOpen ? <PanelLeftClose size={16} /> : <PanelLeftOpen size={16} />}
+          </button>
+        )}
         <span className="titlebar-name">Open Harness</span>
         {config.isError && (
           <span className="titlebar-local" role="status">
@@ -61,69 +62,8 @@ export function AppShell() {
         )}
       </div>
       <div className="desktop-body">
-        {sidebarOpen && (
-          <aside className="sidebar" aria-label="会话导航">
-            <Link to="/" className={`new-run ${location.pathname === '/' ? 'is-active' : ''}`}>
-              <Plus size={16} />
-              <span>新建会话</span>
-              <span className="keycap">{isMac ? <Command size={10} /> : 'Ctrl'} N</span>
-            </Link>
-            <label className="search-field">
-              <Search size={14} />
-              <input
-                value={search}
-                onChange={(event) => setSearch(event.target.value)}
-                placeholder="搜索会话"
-                aria-label="搜索会话"
-              />
-            </label>
-            <div className="sidebar-section-heading">
-              <span>最近会话</span>
-              <span>{runs.data?.length ?? 0}</span>
-            </div>
-            <nav className="run-list">
-              {runs.isPending && <div className="sidebar-empty">正在读取会话…</div>}
-              {runs.isError && (
-                <div className="sidebar-empty">
-                  <WifiOff size={18} />
-                  <span>会话加载失败</span>
-                  <button onClick={() => void runs.refetch()}>重新加载</button>
-                </div>
-              )}
-              {!runs.isPending && !runs.isError && !shownRuns.length && (
-                <div className="sidebar-empty">
-                  <span>{search ? '没有匹配的会话' : '暂无会话'}</span>
-                </div>
-              )}
-              {shownRuns.map((run) => (
-                <Link
-                  key={run.id}
-                  to="/runs/$runId"
-                  params={{ runId: run.id }}
-                  className={`run-link ${location.pathname === `/runs/${encodeURIComponent(run.id)}` ? 'is-active' : ''}`}
-                >
-                  <RunActivity active={run.status === 'running' || Boolean(run.compacting)} />
-                  <span className="min-w-0 flex-1">
-                    <span className="run-link-title">{run.title || run.prompt}</span>
-                    <span className="run-link-meta">{dateTime(run.updated_at)}</span>
-                  </span>
-                </Link>
-              ))}
-            </nav>
-            <div className="sidebar-bottom">
-              <Link
-                to="/settings"
-                className={`settings-link ${location.pathname === '/settings' ? 'is-active' : ''}`}
-              >
-                <Settings2 size={16} />
-                工作区设置
-                <span className="ml-auto text-[11px] text-muted">
-                  v{config.data?.version ?? '—'}
-                </span>
-              </Link>
-            </div>
-          </aside>
-        )}
+        <NavigationRail pathname={location.pathname} runId={isChat ? (runId ?? null) : lastRunId} />
+        <ChatSidebar visible={isChat && sidebarOpen} pathname={location.pathname} />
         <main className="workspace">
           <Outlet />
         </main>

@@ -53,6 +53,9 @@ pub trait NativeContextCompactor: Send + Sync {
     ) -> impl Future<Output = Result<ProviderContextWindow, Self::Error>> + Send;
 }
 
+/// Preserves provider-native windows and their continuation ordering. External
+/// derived messages require a portable manager: their safe insertion cannot be
+/// inferred from an opaque provider window, particularly across pending tools.
 #[derive(Debug, Clone)]
 pub struct NativeContextManager<C, K, N> {
     policy: ContextPolicy,
@@ -413,6 +416,9 @@ impl<C: NativeContextCompactor, K: NativeContextCheckpointStore, N: TokenCounter
         policy: ContextPolicy,
         force_compaction: bool,
     ) -> Result<PreparedContext, NativeContextError<C::Error, K::Error>> {
+        if !input.derived_messages.is_empty() {
+            return Err(NativeContextError::DerivedContextUnsupported);
+        }
         if input
             .events
             .windows(2)
@@ -571,11 +577,24 @@ impl<C: NativeContextCompactor, K: NativeContextCheckpointStore, N: TokenCounter
         Ok(prepared)
     }
 
+    async fn compact_now(
+        &self,
+        input: ContextInputRef<'_>,
+    ) -> Result<Option<PreparedContext>, Self::Error> {
+        if !input.derived_messages.is_empty() {
+            return Err(NativeContextError::DerivedContextUnsupported);
+        }
+        Ok(None)
+    }
+
     async fn observe_response(
         &self,
         input: ContextInputRef<'_>,
         output: &ModelOutput,
     ) -> Result<(), Self::Error> {
+        if !input.derived_messages.is_empty() {
+            return Err(NativeContextError::DerivedContextUnsupported);
+        }
         self.usage
             .observe_response(input.run_id, input.model_metadata, output);
         let policy = self

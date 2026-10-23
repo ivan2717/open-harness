@@ -7,6 +7,8 @@ edition.workspace = true
 agent-core.workspace = true
 agent-local = { path = "../crates/agent-local" }
 agent-mcp = { path = "../crates/agent-mcp" }
+agent-memory = { path = "../crates/agent-memory" }
+agent-plugins = { path = "../crates/agent-plugins" }
 agent-skills = { path = "../crates/agent-skills" }
 agent-providers = { path = "../crates/agent-providers" }
 agent-runtime = { path = "../crates/agent-runtime" }

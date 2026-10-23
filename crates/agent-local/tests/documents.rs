@@ -100,7 +100,7 @@ async fn readonly_project_can_review_resume_and_handbook_without_commands() {
         .iter()
         .map(|tool| tool.name.as_str())
         .collect();
-    assert!(names.contains(&"read_document") && names.contains(&"search_document"));
+    assert_eq!(names, ["list_files", "read_file", "search_files"]);
     assert!(
         !names.contains(&"run_command")
             && !names.contains(&"write_file")
@@ -113,11 +113,11 @@ async fn readonly_project_can_review_resume_and_handbook_without_commands() {
             .unwrap(),
     )
     .unwrap();
-    assert_eq!(list["entries"][0]["reader"], "read_document");
+    assert_eq!(list["entries"][0]["reader"], "read_file");
     for name in ["handbook.docx", "resume.pdf"] {
         let data: Value = serde_json::from_str(
             &tools
-                .execute(call("read_document", json!({"path":name})))
+                .execute(call("read_file", json!({"path":name})))
                 .await
                 .unwrap(),
         )
@@ -127,7 +127,7 @@ async fn readonly_project_can_review_resume_and_handbook_without_commands() {
     let found: Value = serde_json::from_str(
         &tools
             .execute(call(
-                "search_document",
+                "search_files",
                 json!({"path":"resume.pdf","query":"Distributed"}),
             ))
             .await
@@ -152,12 +152,12 @@ async fn readonly_project_can_review_resume_and_handbook_without_commands() {
         json!({"path":"handbook.docx","offset":usize::MAX}),
         json!({"path":"handbook.docx","offset":-1}),
     ] {
-        assert!(tools.execute(call("read_document", args)).await.is_err());
+        assert!(tools.execute(call("read_file", args)).await.is_err());
     }
     let found: Value = serde_json::from_str(
         &tools
             .execute(call(
-                "search_document",
+                "search_files",
                 json!({"path":"resume.pdf","query":"Rust","offset":usize::MAX}),
             ))
             .await
@@ -169,7 +169,7 @@ async fn readonly_project_can_review_resume_and_handbook_without_commands() {
     assert!(
         tools
             .execute(call(
-                "search_document",
+                "search_files",
                 json!({"path":"resume.pdf","query":"Rust","offset":-1})
             ))
             .await
@@ -186,15 +186,14 @@ async fn readonly_project_can_review_resume_and_handbook_without_commands() {
     let mut actual = String::new();
     loop {
         let page: Value =
-            serde_json::from_str(&tools.execute(call("read_document", args)).await.unwrap())
-                .unwrap();
+            serde_json::from_str(&tools.execute(call("read_file", args)).await.unwrap()).unwrap();
         for chunk in page["chunks"].as_array().unwrap() {
             actual.push_str(chunk["text"].as_str().unwrap());
         }
         if page["next_cursor"].is_null() {
             break;
         }
-        args = json!({"path":"long.docx","unit":page["next_cursor"]["unit"],"offset":page["next_cursor"]["offset"]});
+        args = json!({"path":"long.docx","cursor":page["next_cursor"]});
     }
     assert_eq!(actual, text);
     // Search pagination must preserve all matches and report a complete last page.
@@ -209,7 +208,7 @@ async fn readonly_project_can_review_resume_and_handbook_without_commands() {
     let first: Value = serde_json::from_str(
         &tools
             .execute(call(
-                "search_document",
+                "search_files",
                 json!({"path":"matches.docx","query":"Rust"}),
             ))
             .await
@@ -221,7 +220,7 @@ async fn readonly_project_can_review_resume_and_handbook_without_commands() {
     let last: Value = serde_json::from_str(
         &tools
             .execute(call(
-                "search_document",
+                "search_files",
                 json!({"path":"matches.docx","query":"Rust","offset":first["next_offset"]}),
             ))
             .await
@@ -247,7 +246,7 @@ async fn readonly_project_can_review_resume_and_handbook_without_commands() {
     assert!(page["next_offset"].is_null());
     assert!(
         tools
-            .execute(call("read_document", json!({"path":"../resume.pdf"})))
+            .execute(call("read_file", json!({"path":"../resume.pdf"})))
             .await
             .is_err()
     );

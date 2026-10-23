@@ -42,14 +42,17 @@ const server = createServer(async (request, response) => {
     if (count === 0) call = ['read_file', { path: 'note.txt' }]
     if (count === 1)
       call = [
-        'write_file',
-        { path: 'note.txt', content: `${original}Agent addition.\n`, expected_content: original },
+        'apply_patch',
+        {
+          patch:
+            '*** Begin Patch\n*** Update File: note.txt\n@@\n User changes already here.\n+Agent addition.\n*** End Patch',
+        },
       ]
     if (count === 2) call = ['run_command', { command: "printf 'LOCAL_OK\\n'", timeout_seconds: 5 }]
   } else if (user === 'READ_ONLY_WORK' && count === 0) {
     call = [
-      'write_file',
-      { path: 'blocked.txt', content: 'must not exist', expected_content: null },
+      'apply_patch',
+      { patch: '*** Begin Patch\n*** Add File: blocked.txt\n+must not exist\n*** End Patch' },
     ]
   } else if (user === 'DENY_COMMAND' && count === 0) {
     call = ['run_command', { command: 'printf denied > denied.txt', timeout_seconds: 5 }]
@@ -145,6 +148,8 @@ async function crashOwnedBackend() {
 }
 try {
   let page = await launch()
+  // This fixture asserts the five project tools; memory has its own E2E suite.
+  await page.evaluate(() => window.harness.setPluginEnabled('builtin.llm-wiki', false))
   await expect(page.getByLabel('选择模型')).toHaveCount(0)
   await expect(page.getByRole('link', { name: '添加模型', exact: true })).toBeVisible()
   await expect(page.getByText(/Local demo/)).toHaveCount(0)
@@ -189,9 +194,7 @@ try {
   await page.getByRole('menuitem', { name: '移除项目', exact: true }).click()
   await expect(page.getByRole('button', { name: '选择项目', exact: true })).toBeVisible()
   await expect(page.getByRole('button', { name: '项目权限', exact: true })).toHaveCount(0)
-  await expect(page.getByRole('textbox', { name: '任务描述', exact: true })).toHaveValue(
-    'E2E_LOCAL_WORK',
-  )
+  await expect(page.getByRole('textbox', { name: '任务描述', exact: true })).toHaveValue('')
   await page.getByRole('button', { name: '选择项目', exact: true }).click()
   await expect(page.getByRole('button', { name: '项目权限', exact: true })).toContainText('只读')
   await page.getByRole('button', { name: '项目权限', exact: true }).click()
@@ -212,7 +215,7 @@ try {
 
   await page.getByRole('link', { name: '添加模型', exact: true }).click()
   await expect(page.getByRole('heading', { name: '接入模型', exact: true })).toBeVisible()
-  await page.getByRole('link', { name: '返回任务', exact: true }).click()
+  await page.getByRole('link', { name: '会话', exact: true }).click()
   await expect(page.getByRole('button', { name: '项目权限', exact: true })).toContainText(
     '允许修改',
   )
@@ -239,7 +242,7 @@ try {
     ),
   }
   assert(configured.model, 'the configured fixture must appear in the model picker')
-  await page.getByRole('link', { name: '返回任务', exact: true }).click()
+  await page.getByRole('link', { name: '会话', exact: true }).click()
   await expect(page.getByRole('button', { name: '选择模型', exact: true })).toContainText(
     configured.model.name,
   )
@@ -255,6 +258,7 @@ try {
   await page.getByRole('button', { name: '选择模型', exact: true }).click()
   await page.getByRole('menuitem', { name: /添加.*管理模型/ }).click()
   await expect(page.locator('.settings-model').filter({ hasText: /Local demo/ })).toHaveCount(0)
+  await page.getByRole('link', { name: '设置', exact: true }).click()
   await page.getByText('开发调试', { exact: true }).click()
   await page.getByRole('button', { name: '运行上下文演示', exact: true }).click()
   await expect.poll(() => page.evaluate(() => window.location.hash)).toContain('/runs/')
@@ -265,12 +269,15 @@ try {
   )
   await page.evaluate((id) => window.harness.cancelRun(id), demoId)
   await page.getByRole('link', { name: /新建会话/ }).click()
+  await expect(page.getByRole('button', { name: '选择项目', exact: true })).toBeVisible()
+  await expect(page.getByRole('textbox', { name: '任务描述', exact: true })).toHaveValue('')
+  await page.getByRole('button', { name: '在 project 中新建会话', exact: true }).click()
   await expect(page.getByRole('button', { name: '选择模型', exact: true })).toContainText(
     configured.model.name,
   )
-  await expect(page.getByRole('button', { name: '项目权限', exact: true })).toContainText(
-    '允许修改',
-  )
+  await expect(page.getByRole('button', { name: '项目权限', exact: true })).toContainText('只读')
+  await page.getByRole('button', { name: '项目权限', exact: true }).click()
+  await page.getByRole('menuitemradio', { name: /允许修改/ }).click()
   await expect(
     page.locator('.composer-context-bar').getByRole('button', { name: '项目', exact: true }),
   ).toHaveAttribute('title', root)
@@ -351,6 +358,19 @@ try {
   await page.screenshot({ path: join(artifacts, 'desktop-workspace-approval.png') })
   await page.getByRole('button', { name: '允许本次', exact: true }).click()
   await settled(page, id)
+  const workRequests = calls.filter(
+    (body) =>
+      body.messages.filter((message) => message.role === 'user').at(-1)?.content ===
+      'E2E_LOCAL_WORK',
+  )
+  assert.deepEqual(
+    workRequests[0].tools.map((tool) => tool.function.name).sort(),
+    ['apply_patch', 'list_files', 'read_file', 'run_command', 'search_files'],
+    'only the five available local tools are sent to the provider',
+  )
+  for (const request of workRequests) {
+    assert.deepEqual(request.tools, workRequests[0].tools, 'one turn uses one tool snapshot')
+  }
   await expect(page.getByRole('button', { name: '项目权限', exact: true })).toHaveCount(0)
   await expect(page.getByRole('button', { name: '选择模型', exact: true })).toHaveCount(0)
   await expect(page.getByRole('button', { name: '项目', exact: true })).toHaveCount(0)
@@ -500,10 +520,10 @@ try {
     await expect
       .poll(() => application.evaluate(() => globalThis.__openharnessDelayedCreateTest.ready))
       .toBe(true)
-    await page.getByRole('link', { name: /^工作区设置/ }).click()
-    await expect(page.getByRole('heading', { name: '接入模型', exact: true })).toBeVisible()
+    await page.getByRole('link', { name: '设置', exact: true }).click()
+    await expect(page.getByRole('heading', { name: '界面偏好', exact: true })).toBeVisible()
     await expect(page.locator('.developer-tools button')).toBeDisabled()
-    await page.getByRole('link', { name: '返回任务', exact: true }).click()
+    await page.getByRole('link', { name: '会话', exact: true }).click()
     for (const name of ['开始运行', '项目', '项目权限', '选择模型']) {
       await expect(page.getByRole('button', { name, exact: true })).toBeDisabled()
     }
@@ -512,11 +532,11 @@ try {
     await expect(description).toHaveValue(prompt)
     await description.press('Enter')
     if (editDraft) await description.fill(nextDraft)
-    await page.getByRole('link', { name: /^工作区设置/ }).click()
+    await page.getByRole('link', { name: '设置', exact: true }).click()
     await application.evaluate(() => globalThis.__openharnessDelayedCreateTest.release())
     await expect(page.locator('.developer-tools button')).toHaveText('运行上下文演示')
     await expect(page.locator('.developer-tools button')).toBeEnabled()
-    await expect(page.getByRole('heading', { name: '接入模型', exact: true })).toBeVisible()
+    await expect(page.getByRole('heading', { name: '界面偏好', exact: true })).toBeVisible()
     assert.equal(await page.evaluate(() => window.location.hash), '#/settings')
     const delayed = await application.evaluate(() => {
       const gate = globalThis.__openharnessDelayedCreateTest
@@ -528,14 +548,18 @@ try {
     assert.equal(delayed.run.prompt, prompt)
     assert.equal(delayed.run.workspace_path, root)
     await settled(page, delayed.run.id)
-    await page.getByRole('link', { name: '返回任务', exact: true }).click()
+    await page.getByRole('link', { name: '会话', exact: true }).click()
+    await expect(page.getByRole('textbox', { name: '任务描述', exact: true })).toHaveValue('')
+    await expect(page.getByRole('button', { name: '选择项目', exact: true })).toBeEnabled()
+    await expect(page.getByRole('button', { name: '开始运行', exact: true })).toBeDisabled()
+    await page.getByRole('button', { name: '在 project 中新建会话', exact: true }).click()
     await expect(page.getByRole('textbox', { name: '任务描述', exact: true })).toHaveValue(
       editDraft ? nextDraft : '',
     )
-    await expect(page.getByRole('button', { name: '选择项目', exact: true })).toBeEnabled()
     const send = page.getByRole('button', { name: '开始运行', exact: true })
     if (editDraft) await expect(send).toBeEnabled()
     else await expect(send).toBeDisabled()
+    await page.getByRole('link', { name: /新建会话/ }).click()
   }
   assert.deepEqual(errors, [])
   assert.equal(review.commands.at(-1).exit_code, 0, JSON.stringify(review.commands))

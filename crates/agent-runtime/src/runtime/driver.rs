@@ -6,7 +6,7 @@ use crate::{
     ContextInputRef, ContextManager, EventStore, HistoryAccess, HistoryContext, Model,
     ModelCapabilities, ModelContextMetadata, ModelFinishReason, ModelOutput, ModelRequest,
     ModelStreamAssembler, ModelStreamEvent, ModelStreamSink, ReplayRequirement, ToolCall,
-    ToolExecutor,
+    ToolDefinition, ToolExecutor,
 };
 
 use super::{AgentRuntime, AgentRuntimeError, execution::RunControl};
@@ -52,7 +52,8 @@ where
         let control = &execution.control;
         self.synchronize_run(run).await?;
         self.ensure_safe_execution_entry(run)?;
-        self.validate_tool_definitions()?;
+        let tools = self.tools.snapshot_definitions();
+        self.validate_tool_definitions(&tools)?;
 
         let capabilities = self.model.capabilities();
         capabilities
@@ -96,7 +97,8 @@ where
                         run_id: run.id(),
                         instructions: &agent.instructions,
                         events: run.events(),
-                        tools: self.tools.definitions(),
+                        derived_messages: &[],
+                        tools: &tools,
                         deferred_tools: self.history_access.definitions(),
                         tool_output_projector: Some(&self.history_access),
                         model_metadata: accounting_metadata.as_ref(),
@@ -145,7 +147,7 @@ where
                     .context_manager
                     .request_usage_baseline(accounting_metadata.as_ref(), &prepared.request);
                 let measurement = self.context_manager.measure_request(
-                    self.context_input(agent, run, accounting_metadata.as_ref()),
+                    self.context_input(agent, run, &tools, accounting_metadata.as_ref()),
                     &prepared.request,
                 );
                 if !recovered_overflow {
@@ -185,8 +187,12 @@ where
                 if !recovered_overflow && !emitted && self.model.is_context_overflow(&source) {
                     let recovery = control
                         .until_cancelled(|| {
-                            let mut input =
-                                self.context_input(agent, run, accounting_metadata.as_ref());
+                            let mut input = self.context_input(
+                                agent,
+                                run,
+                                &tools,
+                                accounting_metadata.as_ref(),
+                            );
                             // The in-flight request marker is not settled
                             // history and must never enter a checkpoint.
                             input.events = &input.events[..prepared_event_count];
@@ -364,7 +370,7 @@ where
                         agent,
                         run,
                         control,
-                        response.response.calls(),
+                        &tools,
                         history_context,
                         &response,
                     )
@@ -372,7 +378,7 @@ where
                 }
                 ModelFinishReason::Stop | ModelFinishReason::InputRequired => {
                     if !self
-                        .observe_model_output(agent, run, control, &response)
+                        .observe_model_output(agent, run, control, &tools, &response)
                         .await?
                     {
                         return Ok(run.status());
@@ -410,13 +416,15 @@ where
         &'a self,
         agent: &'a Agent,
         run: &'a AgentRun,
+        tools: &'a [ToolDefinition],
         metadata: Option<&'a ModelContextMetadata>,
     ) -> ContextInputRef<'a> {
         ContextInputRef {
             run_id: run.id(),
             instructions: &agent.instructions,
             events: run.events(),
-            tools: self.tools.definitions(),
+            derived_messages: &[],
+            tools,
             deferred_tools: self.history_access.definitions(),
             tool_output_projector: Some(&self.history_access),
             model_metadata: metadata,
@@ -466,6 +474,7 @@ where
         agent: &Agent,
         run: &mut AgentRun,
         control: &RunControl,
+        tools: &[ToolDefinition],
         output: &ModelOutput,
     ) -> Result<bool, AgentRuntimeError<M::Error>> {
         let accounting_metadata = self.accounting_metadata();
@@ -476,7 +485,8 @@ where
                         run_id: run.id(),
                         instructions: &agent.instructions,
                         events: run.events(),
-                        tools: self.tools.definitions(),
+                        derived_messages: &[],
+                        tools,
                         deferred_tools: self.history_access.definitions(),
                         tool_output_projector: Some(&self.history_access),
                         model_metadata: accounting_metadata.as_ref(),
@@ -507,10 +517,11 @@ where
         agent: &Agent,
         run: &mut AgentRun,
         control: &RunControl,
-        calls: Vec<ToolCall>,
+        tools: &[ToolDefinition],
         history_context: Option<HistoryContext>,
         output: &ModelOutput,
     ) -> Result<(), AgentRuntimeError<M::Error>> {
+        let calls = output.response.calls();
         if calls.is_empty() {
             self.record_persisted(
                 run,
@@ -551,7 +562,7 @@ where
             .await?;
         }
         if !self
-            .observe_model_output(agent, run, control, output)
+            .observe_model_output(agent, run, control, tools, output)
             .await?
         {
             return Ok(());
@@ -560,7 +571,7 @@ where
         for call in calls {
             let call_id = call.id.clone();
             let result = control
-                .until_cancelled(|| self.execute_tool(call, history_context.clone()))
+                .until_cancelled(|| self.execute_tool(call, tools, history_context.clone()))
                 .await;
             let Some(result) = result else {
                 self.finish_cancellation(run).await?;
@@ -587,6 +598,7 @@ where
     async fn execute_tool(
         &self,
         call: ToolCall,
+        tools: &[ToolDefinition],
         history_context: Option<HistoryContext>,
     ) -> Result<String, String> {
         if self.history_access.owns_tool(&call.name) {
@@ -604,6 +616,11 @@ where
                 return Err("history provider exceeded the tool output character limit".to_owned());
             }
             Ok(output)
+        } else if !tools.iter().any(|tool| tool.name == call.name) {
+            Err(format!(
+                "tool {:?} is not available in this turn",
+                call.name
+            ))
         } else {
             self.tools
                 .execute(call)
@@ -620,14 +637,12 @@ where
         Ok(RunStatus::Cancelled)
     }
 
-    fn validate_tool_definitions(&self) -> Result<(), AgentRuntimeError<M::Error>> {
+    pub(super) fn validate_tool_definitions(
+        &self,
+        tools: &[ToolDefinition],
+    ) -> Result<(), AgentRuntimeError<M::Error>> {
         let mut names = HashSet::new();
-        for definition in self
-            .tools
-            .definitions()
-            .iter()
-            .chain(self.history_access.definitions())
-        {
+        for definition in tools.iter().chain(self.history_access.definitions()) {
             if !names.insert(definition.name.as_str()) {
                 return Err(AgentRuntimeError::DuplicateToolName {
                     name: definition.name.clone(),

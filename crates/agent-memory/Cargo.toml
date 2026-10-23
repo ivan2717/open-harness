@@ -1,0 +1,14 @@
+[package]
+name = "agent-memory"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+agent-core.workspace = true
+agent-runtime = { path = "../agent-runtime" }
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.10.9"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.189"

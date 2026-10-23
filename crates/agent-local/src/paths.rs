@@ -169,12 +169,11 @@ pub(crate) fn read_text(path: &Path, limit: usize) -> io::Result<String> {
     let bytes = read_bytes(path, limit)?;
     if bytes.contains(&0) {
         return Err(io::Error::other(
-            "binary file; use read_document for PDF, DOCX, XLSX or PPTX",
+            "unsupported binary file; read_file supports UTF-8, PDF, DOCX, XLSX and PPTX",
         ));
     }
-    String::from_utf8(bytes).map_err(|_| {
-        io::Error::other("not a UTF-8 text file; use read_document for supported documents")
-    })
+    String::from_utf8(bytes)
+        .map_err(|_| io::Error::other("not a supported UTF-8 text file or document"))
 }
 
 /// The smaller edit/review bound is independent from the paginated read limit.

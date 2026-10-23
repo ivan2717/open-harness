@@ -33,6 +33,14 @@ pub trait ToolExecutor: Send + Sync {
 
     fn definitions(&self) -> &[ToolDefinition];
 
+    /// Captures the tools available for one execution turn. Dynamic executors
+    /// may refresh configuration here; the runtime keeps this snapshot stable
+    /// throughout model requests, context accounting, and tool dispatch.
+    /// Execution must still enforce current permissions after revocation.
+    fn snapshot_definitions(&self) -> Vec<ToolDefinition> {
+        self.definitions().to_vec()
+    }
+
     /// Executes one call. The runtime drops this future when cancellation wins.
     ///
     /// Implementations must make dropping the future stop any locally owned

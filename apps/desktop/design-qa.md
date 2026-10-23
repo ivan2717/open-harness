@@ -164,12 +164,28 @@ errors; references do not expand project access permissions.
 The macOS application was repackaged and reopened; native UI inspection confirmed
 the new attachment control and preservation of all five existing conversations.
 
-The attachment button now uses a circular plus with a custom “添加文件” tooltip
+The attachment button now uses a circular plus with a custom “添加文件或使用技能” tooltip
 that also explains drag-and-drop and the platform's paste shortcut. The tooltip
 appears on hover or keyboard focus and is rendered outside the composer's clipped
 container. Native macOS inspection verified the visible tooltip, Escape dismissal,
 and opening/cancelling the file picker. Type checking and the desktop build passed;
 the packaged app was updated and reopened.
+
+## Skill selection follow-up
+
+Skill selection now lives in **＋ → 使用技能**. The composer has no permanent
+skill-management row; global/project skill switches are under **插件 → 技能**.
+The searchable picker inserts an exact skill mention into the current draft,
+including plugin namespaces, without changing configuration or starting a run.
+Actual skill loads remain visible in the conversation, with failures and partial
+reads labeled separately. MCP approvals remain available near the composer.
+The plus menu and picker were visually checked. Desktop unit tests (106), the
+skill-catalog API tests, and the Extensions, Files, Plugins, Navigation and Rich
+messages Electron suites passed. The Extensions suite also passed against the
+packaged macOS app using isolated data and local fixtures.
+
+Screenshots: `test-results/desktop-composer-add-menu.png` and
+`test-results/desktop-skill-picker.png`.
 
 ## Rich messages and output resources follow-up
 
@@ -246,3 +262,102 @@ existing conversations loaded, the configured model remained available, and
 Settings displayed the new tool-service and skill controls. MCP connection tests
 have a dedicated 70-second desktop deadline covering the service's 60-second
 deadline; ordinary API requests retain their 30-second limit.
+
+## Compact tool definitions
+
+Project tools now share `read_file`/`search_files` for text and document content,
+and `apply_patch` for file creation, editing and deletion. Read-only projects send
+three local tool definitions; write-enabled projects send four plus `run_command`
+when a system sandbox is available. Skills and MCP definitions are absent when
+their respective capabilities are disabled. No new interface controls are needed.
+
+The updated Electron extension suite passed against the real Rust API and local
+model/MCP fixtures. It inspects provider requests for one existing conversation:
+three tools with all extensions disabled, thirteen after enabling Skills and MCP
+on the next input, and three again after disabling them and resuming. Complete
+tool definitions remain unchanged throughout each tested turn. Read-only PDF/DOCX
+extraction, lazy Skill loading, stateful MCP calls, approvals, denial, cancellation
+and restart persistence still pass.
+
+The workspace Electron suite passed using `apply_patch`, preserving pre-existing
+content, read-only write rejection, review/undo, command approval, backend recovery
+and process cleanup. Both suites use isolated temporary application data and local
+fixture providers. All 77 desktop unit tests, TypeScript checks, production build
+and formatting passed; no paid model API or existing user profile was used.
+
+## Plugin management
+
+The extension settings now start with a compact plugin list. Each row groups
+its version, enable switch, update and uninstall controls. Skills, MCP connection
+checks and package provenance expand on demand. Folder/ZIP import uses the
+native picker; the renderer never supplies a filesystem import path. Independent
+Skills and manually configured MCP services retain their existing sections.
+
+Verified `tests/e2e/plugins.mjs` in a real Electron window with isolated data:
+folder install, namespaced Skills alongside an identical personal name, no MCP
+connection during installation, explicit HTTP MCP discovery, package and Skill
+switches, ZIP update, cancellation, mismatched-identity update failure preserving
+the installed version, restart persistence, and uninstall preserving independent
+extensions. The normal and failed-update screenshots are
+`test-results/desktop-plugins-settings.png` and
+`test-results/desktop-plugins-update-error.png`; both were visually inspected.
+
+## Persistent navigation rail
+
+Reference: the user's Codex navigation screenshot
+`codex-clipboard-dff6dc00-09c9-4d34-8927-ea0f0cab6e87.png`.
+
+A narrow rail keeps conversations, extensions and models at the left,
+with settings at the bottom. The existing light palette is retained. Icons have
+hover and keyboard-focus labels, and the active section is exposed through
+`aria-current`. Conversation history is a separate collapsible panel, shown only
+on conversation pages. Returning through the conversation icon restores the
+last conversation or new-task page and its draft.
+
+Management views use the full remaining width. Models own provider setup;
+extensions separate plugins, personal Skills and MCP services; settings contain
+general preferences, local data information and the collapsed developer demo.
+Projects now live inside the conversation sidebar, following the hierarchy in
+the user's updated Codex screenshots and the
+[official project/chat documentation](https://learn.chatgpt.com/docs/projects).
+The sidebar separates general chats from expandable project groups. A project
+row opens its chats in place and provides a new-chat action; it no longer navigates
+to a separate management page. The old `/projects` URL returns to conversations.
+Search reveals matching chats even when their project was collapsed.
+
+Empty selected projects are remembered, identical names remain separate by full
+path, and each chat appears once. General tasks and different projects each own
+their draft and unsent file references. The project-row new-chat action opens and
+focuses that project's draft directly, including after app restart. The main
+process remembers directories selected through the native picker and recognizes
+older projects from trusted runtime history; renderer metadata cannot authorize
+an arbitrary folder. New project tasks still use read-only access.
+
+The navigation Electron suite passed against both the development build and the
+newly packaged macOS app, using isolated temporary data and a loopback model fixture.
+It verifies every rail entry, active state, pointer/keyboard hints, extension
+classification links and reload, collapsed history, per-conversation drafts,
+return to the last conversation, native folder selection and cancellation, and
+1000px layout without horizontal overflow. The project hierarchy revision also
+checks separate general/project drafts and file references, identical project
+names, empty-project persistence, search inside collapsed groups, current-project
+expansion, Cmd/Ctrl+N, cancelled/failed pickers, and project reopening without a picker
+after restart. The project-new-chat regression also verifies composer focus,
+empty-project reopening, legacy history migration, rejected forged sidebar entries,
+and staying on the user's chosen page while a project lookup completes.
+Screenshots are
+`test-results/desktop-navigation-home.png`,
+`test-results/desktop-navigation-extensions.png`,
+`test-results/desktop-navigation-projects.png`, and
+`test-results/desktop-navigation-compact.png`; all were visually inspected.
+
+The updated baseline, model, workspace, file-reference, MCP/Skills and plugin
+Electron regression suites also passed. They exercise the real Rust backend
+with isolated application data and local fixtures; no provider API was used.
+
+The project hierarchy revision passed navigation, baseline, workspace and
+file-reference Electron suites. The final macOS package passed the complete
+navigation suite again, including the already-selected collapsed project case.
+All used isolated profiles and local fixture providers, with no external model
+requests. Workspace tests additionally verify an edited draft surviving delayed
+creation remains with its project instead of appearing in a general new chat.

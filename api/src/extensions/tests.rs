@@ -157,21 +157,22 @@ async fn readonly_composite_exposes_document_and_extension_tools_without_mutatin
     )
     .unwrap();
     let host = ExtensionHost::open(&dir.0.join("state")).unwrap();
+    host.save(config()).unwrap();
+    skill(
+        &dir.0.join("state/skills"),
+        "review",
+        "Review project files.",
+    );
     let tools = ExtensionTools::new(host, "run-a".into(), Some(project), Some(local));
     let names: Vec<_> = tools
         .definitions()
         .iter()
         .map(|d| d.name.as_str())
         .collect();
-    for name in [
-        "read_document",
-        "search_document",
-        "load_skill",
-        "call_mcp_tool",
-    ] {
+    for name in ["read_file", "search_files", "load_skill", "call_mcp_tool"] {
         assert!(names.contains(&name));
     }
-    for name in ["run_command", "write_file", "edit_file"] {
+    for name in ["run_command", "apply_patch", "write_file", "edit_file"] {
         assert!(!names.contains(&name));
     }
     assert!(
@@ -244,4 +245,126 @@ async fn unrelated_skill_changes_preserve_pending_mcp_approvals() {
     assert_eq!(host.approvals.list("run-a")[0].id, view.id);
     host.approvals.decide("run-a", &view.id, false).unwrap();
     assert!(task.await.unwrap().is_err());
+}
+
+#[test]
+fn default_memory_is_the_only_tool_without_extensions_and_can_be_disabled() {
+    let dir = Directory::new();
+    let host = ExtensionHost::open(&dir.0).unwrap();
+    let tools = ExtensionTools::new(host.clone(), "run-a".into(), None, None);
+    assert_eq!(tools.definitions(), &[agent_memory::tool_definition()]);
+    assert_eq!(
+        tools.snapshot_definitions(),
+        [agent_memory::tool_definition()]
+    );
+
+    skill(&dir.0.join("skills"), "review", "Review instructions.");
+    let mut disabled = config();
+    disabled.mcp_servers[0].enabled = false;
+    disabled.llm_wiki_enabled = false;
+    disabled.disabled_skill_ids.push("review".into());
+    host.save(disabled).unwrap();
+    assert!(tools.snapshot_definitions().is_empty());
+    assert!(
+        ExtensionTools::new(host, "run-b".into(), None, None)
+            .definitions()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn new_snapshots_refresh_enabled_capabilities_without_mutating_earlier_snapshots() {
+    let dir = Directory::new();
+    let project = dir.0.join("project");
+    fs::create_dir_all(&project).unwrap();
+    let project = fs::canonicalize(project).unwrap();
+    let host = ExtensionHost::open(&dir.0.join("state")).unwrap();
+    let tools = crate::model::ServiceTools::Host(ExtensionTools::new(
+        host.clone(),
+        "run-a".into(),
+        Some(project.clone()),
+        None,
+    ));
+    let initial = tools.snapshot_definitions();
+    assert_eq!(initial, [agent_memory::tool_definition()]);
+
+    skill(
+        &project.join(".agents/skills"),
+        "review",
+        "PRIVATE WORKFLOW BODY",
+    );
+    let skills = tools.snapshot_definitions();
+    let names: Vec<_> = skills.iter().map(|tool| tool.name.as_str()).collect();
+    assert_eq!(
+        names,
+        [
+            "list_skills",
+            "load_skill",
+            "read_skill_resource",
+            "session_memory"
+        ]
+    );
+    assert!(
+        !serde_json::to_string(&skills)
+            .unwrap()
+            .contains("PRIVATE WORKFLOW BODY")
+    );
+    assert!(
+        tools
+            .execute(call("load_skill", json!({"id":"review"})))
+            .await
+            .unwrap()
+            .contains("PRIVATE WORKFLOW BODY")
+    );
+
+    let mut enabled = host.save(config()).unwrap().config;
+    let with_mcp = tools.snapshot_definitions();
+    assert_eq!(with_mcp.len(), 11);
+    for name in [
+        "list_mcp_servers",
+        "list_mcp_tools",
+        "call_mcp_tool",
+        "list_mcp_resources",
+        "read_mcp_resource",
+        "list_mcp_prompts",
+        "get_mcp_prompt",
+    ] {
+        assert!(with_mcp.iter().any(|tool| tool.name == name));
+    }
+    // Neither taking snapshots nor enabling the nonexistent MCP executable
+    // opens a transport. Existing model requests keep their owned schema list.
+    assert!(host.clients.read().unwrap().is_empty());
+    assert_eq!(initial, [agent_memory::tool_definition()]);
+    assert_eq!(skills.len(), 4);
+    assert_eq!(tools.definitions(), &[agent_memory::tool_definition()]);
+
+    enabled.disabled_skill_ids.push("review".into());
+    enabled.mcp_servers[0].enabled = false;
+    host.save(enabled).unwrap();
+    assert_eq!(
+        tools.snapshot_definitions(),
+        [agent_memory::tool_definition()]
+    );
+    assert_eq!(with_mcp.len(), 11);
+    // Hiding definitions is not the permission check: an old snapshot cannot
+    // invoke a skill/server that was disabled after its model request began.
+    assert!(
+        tools
+            .execute(call("load_skill", json!({"id":"review"})))
+            .await
+            .is_err()
+    );
+    assert!(
+        tools
+            .execute(call(
+                "call_mcp_tool",
+                json!({
+                    "server_id":"fixture", "name":"write", "arguments":{}
+                })
+            ))
+            .await
+            .is_err()
+    );
+    assert!(host.approvals.list("run-a").is_empty());
+    assert!(host.clients.read().unwrap().is_empty());
 }

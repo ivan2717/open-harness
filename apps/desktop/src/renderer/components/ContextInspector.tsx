@@ -1,6 +1,7 @@
-import type { ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import {
   ArrowDown,
+  BookOpen,
   Check,
   ChevronRight,
   CircleDashed,
@@ -13,6 +14,7 @@ import {
 import type { ContextSnapshot, RunDetail } from '../../shared/contracts'
 import { compactNumber, dateTime, number, time } from '../lib/format'
 import { useUiStore } from '../state/ui-store'
+import { MemoryInspector } from './MemoryInspector'
 
 function Metric({ label, value, note }: { label: string; value: string; note?: string }) {
   return (
@@ -176,6 +178,18 @@ export function ContextInspector({
   const tab = useUiStore((state) => state.inspectorTab)
   const setTab = useUiStore((state) => state.setInspectorTab)
   const close = useUiStore((state) => state.setInspectorOpen)
+  const [sourceSequence, setSourceSequence] = useState<number | null>(null)
+  useEffect(() => {
+    if (tab !== 'timeline' || sourceSequence === null) return
+    const item = document.getElementById(`timeline-event-${sourceSequence}`)
+    if (item) {
+      const detail = item.querySelector('details')
+      if (detail) detail.open = true
+      item.scrollIntoView({ block: 'center' })
+      item.focus({ preventScroll: true })
+    }
+    setSourceSequence(null)
+  }, [tab, sourceSequence])
   return (
     <aside className="inspector" aria-label="运行检查器">
       <div className="inspector-header">
@@ -207,12 +221,23 @@ export function ContextInspector({
           <Clock3 size={13} />
           时间线{Boolean(run?.events.length) && <span>{run?.events.length}</span>}
         </button>
+        <button
+          id="memory-tab"
+          role="tab"
+          aria-controls="memory-panel"
+          aria-selected={tab === 'memory'}
+          className={tab === 'memory' ? 'is-active' : ''}
+          onClick={() => setTab('memory')}
+        >
+          <BookOpen size={13} />
+          记忆
+        </button>
       </div>
       <div
         className="inspector-scroll"
         role="tabpanel"
-        id={tab === 'context' ? 'context-panel' : 'timeline-panel'}
-        aria-labelledby={tab === 'context' ? 'context-tab' : 'timeline-tab'}
+        id={`${tab}-panel`}
+        aria-labelledby={`${tab}-tab`}
       >
         {tab === 'context' ? (
           run?.context ? (
@@ -246,10 +271,18 @@ export function ContextInspector({
               </section>
             </>
           )
+        ) : tab === 'memory' ? (
+          <MemoryInspector
+            run={run}
+            onSource={(sequence) => {
+              setSourceSequence(sequence)
+              setTab('timeline')
+            }}
+          />
         ) : run?.events.length ? (
           <ol className="timeline">
             {run.events.map((event) => (
-              <li key={event.sequence}>
+              <li key={event.sequence} id={`timeline-event-${event.sequence}`} tabIndex={-1}>
                 <span className="timeline-dot" />
                 <div className="timeline-heading">
                   <strong>{event.label}</strong>

@@ -2,7 +2,7 @@ import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import type { PermissionMode, TextFileReference } from '../../shared/contracts'
 
-export type InspectorTab = 'context' | 'timeline'
+export type InspectorTab = 'context' | 'timeline' | 'memory'
 
 export interface ProjectSelection {
   path: string
@@ -18,6 +18,7 @@ interface UiState {
   draftFiles: Record<string, DraftFileReference[]>
   fileImports: Record<string, boolean>
   project: ProjectSelection | null
+  projectPaths: string[]
   selectedModel: string
   inspectorOpen: boolean
   inspectorTab: InspectorTab
@@ -40,9 +41,11 @@ export const useUiStore = create<UiState>()(
       // copied into localStorage. Sent snapshots belong to the durable run log.
       draftFiles: {},
       fileImports: {},
-      // Keep the selection across settings navigation, but never persist a
-      // directory grant beyond the current desktop session.
+      // Keep the draft selection across navigation; the main process validates
+      // saved projects when they are reopened after an app restart.
       project: null,
+      // Remember sidebar entries, not filesystem grants or permission modes.
+      projectPaths: [],
       selectedModel: '',
       inspectorOpen: false,
       inspectorTab: 'context',
@@ -70,7 +73,14 @@ export const useUiStore = create<UiState>()(
           else delete fileImports[key]
           return { fileImports }
         }),
-      setProject: (project) => set({ project }),
+      setProject: (project) =>
+        set((state) => ({
+          project,
+          projectPaths:
+            project && !state.projectPaths.includes(project.path)
+              ? [...state.projectPaths, project.path]
+              : state.projectPaths,
+        })),
       setSelectedModel: (selectedModel) => set({ selectedModel }),
       setInspectorOpen: (inspectorOpen) => set({ inspectorOpen }),
       setInspectorTab: (inspectorTab) => set({ inspectorTab }),
@@ -78,8 +88,9 @@ export const useUiStore = create<UiState>()(
     {
       name: 'open-harness-workspace',
       version: 1,
-      partialize: ({ drafts, selectedModel, inspectorOpen, inspectorTab }) => ({
+      partialize: ({ drafts, projectPaths, selectedModel, inspectorOpen, inspectorTab }) => ({
         drafts,
+        projectPaths,
         selectedModel,
         inspectorOpen,
         inspectorTab,

@@ -1,11 +1,17 @@
 //! Host-owned extensions. Model-visible tools never accept executable server configuration.
 mod approvals;
 #[cfg(test)]
+mod plugin_tests;
+mod plugins;
+#[cfg(test)]
 mod tests;
 mod tools;
 
 use agent_mcp::{McpCatalog, McpClient, McpServerConfig};
-use agent_skills::{SkillCatalog, SkillCatalogConfig, SkillDiagnostic, SkillInfo};
+use agent_plugins::{PluginInfo, PluginStore};
+use agent_skills::{
+    SkillCatalog, SkillCatalogConfig, SkillDiagnostic, SkillInfo, SkillRoot, SkillScope,
+};
 pub use approvals::ExtensionApproval;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -20,7 +26,7 @@ use std::{
 };
 pub use tools::ExtensionTools;
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExtensionConfig {
     #[serde(default)]
@@ -29,12 +35,45 @@ pub struct ExtensionConfig {
     pub mcp_servers: Vec<McpServerConfig>,
     #[serde(default)]
     pub disabled_skill_ids: Vec<String>,
+    #[serde(default = "enabled_by_default")]
+    pub llm_wiki_enabled: bool,
+}
+
+fn enabled_by_default() -> bool {
+    true
+}
+
+impl Default for ExtensionConfig {
+    fn default() -> Self {
+        Self {
+            revision: 0,
+            mcp_servers: Vec::new(),
+            disabled_skill_ids: Vec::new(),
+            llm_wiki_enabled: true,
+        }
+    }
+}
+
+#[derive(Serialize)]
+pub struct BuiltinPluginInfo {
+    pub id: &'static str,
+    pub name: &'static str,
+    pub description: &'static str,
+    pub enabled: bool,
 }
 
 #[derive(Serialize)]
 pub struct ExtensionSettings {
     pub config: ExtensionConfig,
     pub skills_directory: String,
+    pub skills: Vec<SkillInfo>,
+    pub diagnostics: Vec<SkillDiagnostic>,
+    pub plugins: Vec<PluginInfo>,
+    pub builtin_plugins: Vec<BuiltinPluginInfo>,
+}
+
+#[derive(Serialize)]
+pub struct SkillCatalogView {
     pub skills: Vec<SkillInfo>,
     pub diagnostics: Vec<SkillDiagnostic>,
 }
@@ -50,9 +89,12 @@ pub struct ExtensionHost {
     closed: AtomicBool,
     directory: PathBuf,
     config: RwLock<ExtensionConfig>,
+    plugins: RwLock<PluginStore>,
     catalogs: RwLock<HashMap<Option<PathBuf>, Arc<SkillCatalog>>>,
     clients: RwLock<HashMap<(String, String), CachedClient>>,
     pub approvals: Arc<approvals::ApprovalQueue>,
+    pub(crate) memory: crate::memory::MemoryStore,
+    pub(crate) memory_errors: RwLock<HashMap<String, String>>,
 }
 struct CachedClient {
     client: McpClient,
@@ -73,13 +115,18 @@ impl ExtensionHost {
             ExtensionConfig::default()
         };
         validate(&config)?;
+        let plugins = PluginStore::open(&directory.join("plugins"))?;
+        let memory = crate::memory::MemoryStore::new(directory.join("memories"));
         Ok(Arc::new(Self {
             closed: AtomicBool::new(false),
             directory,
             config: RwLock::new(config),
+            plugins: RwLock::new(plugins),
             catalogs: RwLock::default(),
             clients: RwLock::default(),
             approvals: Arc::default(),
+            memory,
+            memory_errors: RwLock::default(),
         }))
     }
 
@@ -97,6 +144,15 @@ impl ExtensionHost {
         let settings = self.config.read().unwrap();
         let mut config = SkillCatalogConfig::for_workspace(self.directory.join("skills"), project);
         config.disabled_skill_ids = settings.disabled_skill_ids.clone();
+        config
+            .roots
+            .extend(self.plugins.read().unwrap().skill_roots().into_iter().map(
+                |(namespace, path)| SkillRoot {
+                    path,
+                    scope: SkillScope::Additional,
+                    namespace: Some(namespace),
+                },
+            ));
         let catalog = Arc::new(SkillCatalog::discover(config));
         let mut catalogs = self.catalogs.write().unwrap();
         // Bound memory retained for inactive project catalogs.
@@ -109,12 +165,64 @@ impl ExtensionHost {
 
     pub fn settings(&self) -> ExtensionSettings {
         let catalog = self.catalog(None);
+        let config = self.config.read().unwrap().clone();
+        let memory_enabled = config.llm_wiki_enabled;
         ExtensionSettings {
-            config: self.config.read().unwrap().clone(),
+            config,
             skills_directory: self.directory.join("skills").to_string_lossy().into_owned(),
             skills: catalog.skills().to_vec(),
             diagnostics: catalog.diagnostics().to_vec(),
+            plugins: self.plugins.read().unwrap().list(),
+            builtin_plugins: vec![BuiltinPluginInfo {
+                id: crate::memory::PLUGIN_ID,
+                name: "LLM Wiki",
+                description: "为长会话保存决策原因、失败经验和结果依据，按需回查。仅用于当前会话；自动整理使用当前模型，会产生额外用量。",
+                enabled: memory_enabled,
+            }],
         }
+    }
+
+    pub(crate) fn memory_enabled(&self) -> bool {
+        !self.closed.load(Ordering::Acquire) && self.config.read().unwrap().llm_wiki_enabled
+    }
+
+    pub(crate) fn memory_generation(&self) -> Option<u64> {
+        let config = self.config.read().unwrap();
+        (config.llm_wiki_enabled && !self.closed.load(Ordering::Acquire)).then_some(config.revision)
+    }
+
+    // Serialize with disabling the plugin, so an in-flight compilation cannot
+    // publish a new revision after the user has turned memory off.
+    pub(crate) fn commit_memory(
+        &self,
+        generation: u64,
+        run: &str,
+        events: &[agent_core::agent::RunEventEnvelope],
+        through: u64,
+        cursor: agent_memory::WikiSourceCursor,
+        update: agent_memory::WikiUpdate,
+    ) -> io::Result<()> {
+        let config = self.config.read().unwrap();
+        if config.llm_wiki_enabled
+            && config.revision == generation
+            && !self.closed.load(Ordering::Acquire)
+        {
+            self.memory
+                .apply_progress(run, events, through, cursor, update)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn memory_events(
+        &self,
+        run: &str,
+    ) -> io::Result<Vec<agent_core::agent::RunEventEnvelope>> {
+        use agent_runtime::EventStore;
+        let stored = agent_runtime::JsonlEventStore::new(self.directory.join("events"))
+            .load(run)
+            .await
+            .map_err(io::Error::other)?;
+        Ok(stored.map_or_else(Vec::new, |stored| stored.events))
     }
 
     pub fn save(&self, mut config: ExtensionConfig) -> io::Result<ExtensionSettings> {
@@ -124,6 +232,23 @@ impl ExtensionHost {
             return Err(io::Error::new(
                 io::ErrorKind::WouldBlock,
                 "扩展配置已更新，请刷新后重试",
+            ));
+        }
+        let plugin_ids: HashSet<_> = self
+            .plugins
+            .read()
+            .unwrap()
+            .list()
+            .into_iter()
+            .flat_map(|plugin| plugin.mcp_servers.into_iter().map(|server| server.id))
+            .collect();
+        if config
+            .mcp_servers
+            .iter()
+            .any(|server| plugin_ids.contains(&server.id))
+        {
+            return Err(io::Error::other(
+                "MCP 服务标识与已安装插件冲突，请选择其他标识",
             ));
         }
         config.revision = current
@@ -161,13 +286,19 @@ impl ExtensionHost {
     }
 
     pub fn servers(&self) -> Vec<McpServerConfig> {
-        self.config
-            .read()
-            .unwrap()
+        let config = self.config.read().unwrap();
+        self.effective_servers(&config)
+    }
+
+    // Lock ordering: config -> plugins -> catalogs/clients. Holding config while
+    // resolving a client prevents a plugin mutation from racing client creation.
+    fn effective_servers(&self, config: &ExtensionConfig) -> Vec<McpServerConfig> {
+        config
             .mcp_servers
             .iter()
             .filter(|server| server.enabled)
             .cloned()
+            .chain(self.plugins.read().unwrap().servers())
             .collect()
     }
 
@@ -188,8 +319,8 @@ impl ExtensionHost {
 
     pub fn client(&self, run: &str, expected: &McpServerConfig) -> io::Result<McpClient> {
         let config = self.config.read().unwrap();
-        let server = config
-            .mcp_servers
+        let servers = self.effective_servers(&config);
+        let server = servers
             .iter()
             .find(|server| server.id == expected.id && server.enabled)
             .ok_or_else(|| io::Error::other("MCP server is disabled"))?;
@@ -283,7 +414,7 @@ fn validate(config: &ExtensionConfig) -> io::Result<()> {
     if config
         .disabled_skill_ids
         .iter()
-        .any(|id| id.is_empty() || id.chars().count() > 64)
+        .any(|id| id.is_empty() || id.chars().count() > 129)
     {
         return Err(io::Error::other("Invalid disabled skill identifier"));
     }

@@ -5,8 +5,16 @@ use std::{collections::BTreeMap, fs, io, path::Path};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct SavedFile {
     pub before: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before_permissions: Option<SavedPermissions>,
     pub after: Option<String>,
     pub owned: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct SavedPermissions {
+    pub readonly: bool,
+    pub unix_mode: Option<u32>,
 }
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -151,6 +159,7 @@ impl Journal {
                     saved.owned = false;
                 })
                 .or_insert(SavedFile {
+                    before_permissions: None,
                     before: previous,
                     after: current,
                     owned: false,

@@ -38,12 +38,18 @@ where
                 run_id: run.id().into(),
             });
         }
+        let tools = self.tools.snapshot_definitions();
+        self.validate_tool_definitions(&tools)?;
         let metadata = self.accounting_metadata();
         let result = execution
             .control
             .until_cancelled(|| {
-                self.context_manager
-                    .compact_now(self.context_input(agent, run, metadata.as_ref()))
+                self.context_manager.compact_now(self.context_input(
+                    agent,
+                    run,
+                    &tools,
+                    metadata.as_ref(),
+                ))
             })
             .await
             .ok_or(AgentRuntimeError::CompactionCancelled)?;

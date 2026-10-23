@@ -4,7 +4,7 @@ mod office;
 mod pdf;
 
 use crate::{files::parse, paths};
-use agent_runtime::{ToolCall, ToolDefinition};
+use agent_runtime::ToolCall;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::{io, path::Path};
@@ -13,6 +13,9 @@ pub const MAX_DOCUMENT_BYTES: usize = 32 * 1024 * 1024;
 pub(super) const TEXT_LIMIT: usize = 8 * 1024 * 1024;
 pub(super) const UNIT_LIMIT: usize = 20_000;
 const CHUNK_CHARS: usize = 6000;
+// Leave room for the envelope, path and extraction warnings. JSON escaping and
+// source locations count toward this bound, not only extracted characters.
+const PAGE_BYTES: usize = 48 * 1024;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct DocumentUnit {
@@ -75,12 +78,6 @@ pub fn extract_document(name: &str, bytes: &[u8]) -> io::Result<ExtractedDocumen
     }).map_err(|_| io::Error::other("document parser rejected malformed content; re-export this document"))?
 }
 
-pub(crate) fn definitions() -> Vec<ToolDefinition> {
-    vec![
-        ToolDefinition { name:"read_document".into(), description:"Read PDF, DOCX, XLSX or PPTX in read-only mode without running commands. Returns bounded text with page/paragraph/slide/sheet locations. Start with unit=1, offset=0; pass next_cursor fields to continue. Unit numbers are 1-based; offsets count characters. Does not perform OCR or execute macros/formulas.".into(), input_schema:json!({"type":"object","properties":{"path":{"type":"string"},"unit":{"type":"integer","minimum":1},"offset":{"type":"integer","minimum":0}},"required":["path"],"additionalProperties":false}).to_string() },
-        ToolDefinition { name:"search_document".into(), description:"Search literal text inside a PDF, DOCX, XLSX or PPTX. Returns bounded excerpts and page/paragraph/slide/sheet locations. offset paginates matching lines. Search is case-sensitive; text extraction cannot search image-only scans.".into(), input_schema:json!({"type":"object","properties":{"path":{"type":"string"},"query":{"type":"string"},"offset":{"type":"integer","minimum":0}},"required":["path","query"],"additionalProperties":false}).to_string() },
-    ]
-}
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ReadInput {
@@ -108,70 +105,104 @@ fn load(root: &Path, path: &str) -> io::Result<ExtractedDocument> {
 pub(crate) fn call(root: &Path, call: &ToolCall) -> io::Result<String> {
     if call.name == "read_document" {
         let input: ReadInput = parse(&call.arguments)?;
-        let document = load(root, &input.path)?;
-        if input.unit == 0 || input.unit > document.units.len().max(1) {
-            return Err(io::Error::other("unit is outside this document"));
-        }
-        let unit_length = document
-            .units
-            .get(input.unit - 1)
-            .map_or(0, |unit| unit.text.chars().count());
-        if input.offset > unit_length {
-            return Err(io::Error::other(
-                "offset is outside this document unit; use the returned next_cursor",
-            ));
-        }
-        let mut chunks = vec![];
-        let mut budget = CHUNK_CHARS;
-        let mut next = None;
-        for (index, unit) in document.units.iter().enumerate().skip(input.unit - 1) {
-            let offset = if index == input.unit - 1 {
-                input.offset
-            } else {
-                0
-            };
-            let mut chars = unit.text.chars().skip(offset).peekable();
-            let text: String = chars.by_ref().take(budget).collect();
-            let count = text.chars().count();
-            budget -= count;
-            chunks
-                .push(json!({"unit":index+1,"location":unit.location,"offset":offset,"text":text}));
-            if chars.peek().is_some() {
-                next = Some(json!({"unit":index+1,"offset":offset+count}));
-                break;
-            }
-            if budget == 0 || chunks.len() == 32 {
-                if index + 1 < document.units.len() {
-                    next = Some(json!({"unit":index+2,"offset":0}));
-                }
-                break;
-            }
-        }
-        Ok(json!({"path":input.path,"format":document.format,"unit_count":document.units.len(),"chunks":chunks,"next_cursor":next,"warnings":document.warnings}).to_string())
+        read(root, &input.path, input.unit, input.offset)
     } else {
         let input: SearchInput = parse(&call.arguments)?;
-        if input.query.is_empty() || input.query.len() > 1024 {
-            return Err(io::Error::other("query must contain 1 to 1024 bytes"));
-        }
-        let document = load(root, &input.path)?;
-        let query = &input.query;
-        let matches: Vec<_> = document
-            .units
-            .iter()
-            .enumerate()
-            .flat_map(|(index, unit)| {
-                unit.text
-                    .lines()
-                    .enumerate()
-                    .filter_map(move |(line, text)| {
-                        text.contains(query).then_some((index, unit, line, text))
-                    })
-            })
-            .skip(input.offset)
-            .take(51)
-            .collect();
-        let next = (matches.len() > 50).then(|| input.offset + 50);
-        let matches:Vec<_> = matches.into_iter().take(50).map(|(index,unit,line,text)|json!({"unit":index+1,"location":unit.location,"line":line+1,"text":paths::bounded(text,512)})).collect();
-        Ok(json!({"path":input.path,"format":document.format,"matches":matches,"next_offset":next,"warnings":document.warnings}).to_string())
+        search(root, &input.path, &input.query, input.offset)
     }
+}
+
+pub(crate) fn read(root: &Path, path: &str, unit: usize, offset: usize) -> io::Result<String> {
+    let input = ReadInput {
+        path: path.into(),
+        unit,
+        offset,
+    };
+    let document = load(root, &input.path)?;
+    if input.unit == 0 || input.unit > document.units.len().max(1) {
+        return Err(io::Error::other("unit is outside this document"));
+    }
+    let unit_length = document
+        .units
+        .get(input.unit - 1)
+        .map_or(0, |unit| unit.text.chars().count());
+    if input.offset > unit_length {
+        return Err(io::Error::other(
+            "offset is outside this document unit; use the returned next_cursor",
+        ));
+    }
+    let mut chunks = vec![];
+    let mut budget = CHUNK_CHARS;
+    let mut page_bytes = 0;
+    let mut next = None;
+    for (index, unit) in document.units.iter().enumerate().skip(input.unit - 1) {
+        let offset = if index == input.unit - 1 {
+            input.offset
+        } else {
+            0
+        };
+        let mut chars = unit.text.chars().skip(offset).peekable();
+        let text: String = chars.by_ref().take(budget).collect();
+        let count = text.chars().count();
+        let chunk = json!({"unit":index+1,"location":paths::bounded(&unit.location,1024),"offset":offset,"text":text});
+        let bytes = chunk.to_string().len() + 1;
+        if page_bytes + bytes > PAGE_BYTES {
+            next = Some(json!({"unit":index+1,"offset":offset}));
+            break;
+        }
+        page_bytes += bytes;
+        budget -= count;
+        chunks.push(chunk);
+        if chars.peek().is_some() {
+            next = Some(json!({"unit":index+1,"offset":offset+count}));
+            break;
+        }
+        if budget == 0 || chunks.len() == 32 {
+            if index + 1 < document.units.len() {
+                next = Some(json!({"unit":index+2,"offset":0}));
+            }
+            break;
+        }
+    }
+    Ok(json!({"path":input.path,"format":document.format,"unit_count":document.units.len(),"chunks":chunks,"next_cursor":next,"warnings":document.warnings}).to_string())
+}
+
+pub(crate) fn search(root: &Path, path: &str, query: &str, offset: usize) -> io::Result<String> {
+    let input = SearchInput {
+        path: path.into(),
+        query: query.into(),
+        offset,
+    };
+    if input.query.is_empty() || input.query.len() > 1024 {
+        return Err(io::Error::other("query must contain 1 to 1024 bytes"));
+    }
+    let document = load(root, &input.path)?;
+    let query = &input.query;
+    let candidates = document
+        .units
+        .iter()
+        .enumerate()
+        .flat_map(|(index, unit)| {
+            unit.text
+                .lines()
+                .enumerate()
+                .filter_map(move |(line, text)| {
+                    text.contains(query).then_some((index, unit, line, text))
+                })
+        })
+        .skip(input.offset);
+    let mut matches = Vec::new();
+    let mut bytes = 0;
+    let mut next = None;
+    for (index, unit, line, text) in candidates {
+        let entry = json!({"unit":index+1,"location":paths::bounded(&unit.location,1024),"line":line+1,"text":paths::bounded(text,512)});
+        let size = entry.to_string().len() + 1;
+        if matches.len() == 50 || bytes + size > PAGE_BYTES {
+            next = Some(input.offset + matches.len());
+            break;
+        }
+        bytes += size;
+        matches.push(entry);
+    }
+    Ok(json!({"path":input.path,"format":document.format,"matches":matches,"next_offset":next,"warnings":document.warnings}).to_string())
 }

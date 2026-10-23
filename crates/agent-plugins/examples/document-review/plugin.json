@@ -1,0 +1,6 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "document-review",
+  "version": "1.0.0",
+  "description": "A local document review workflow using the harness's existing read tools."
+}

@@ -12,13 +12,14 @@ use crate::{
     frontmatter, tools,
 };
 
-const MAX_ROOTS: usize = 32;
+const MAX_ROOTS: usize = 128;
+const MAX_NAMESPACE_CHARS: usize = 64;
 const MAX_DIRECTORIES_PER_ROOT: usize = 512;
 const MAX_ENTRIES_PER_ROOT: usize = 4096;
 const MAX_SCAN_DEPTH: usize = 6;
 const MAX_DIAGNOSTICS: usize = 256;
 
-/// Earlier scopes win duplicate names. Within a scope roots are sorted by path,
+/// Earlier scopes win duplicate identifiers. Within a scope roots are sorted by path,
 /// then skills by their path; directory iteration order never selects a winner.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -32,6 +33,9 @@ pub enum SkillScope {
 pub struct SkillRoot {
     pub path: PathBuf,
     pub scope: SkillScope,
+    /// Plugin identity, independent of the skill's own frontmatter name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub namespace: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -51,12 +55,14 @@ impl SkillCatalogConfig {
                 roots.push(SkillRoot {
                     path: project.join(relative),
                     scope: SkillScope::Project,
+                    namespace: None,
                 });
             }
         }
         roots.push(SkillRoot {
             path: user_root.into(),
             scope: SkillScope::User,
+            namespace: None,
         });
         Self {
             roots,
@@ -67,9 +73,11 @@ impl SkillCatalogConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SkillInfo {
-    /// The validated skill name is also its stable tool/configuration identifier.
+    /// Stable identifier: the skill name, or `plugin_id:skill_name` for plugins.
     pub id: String,
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plugin_id: Option<String>,
     pub description: String,
     pub path: PathBuf,
     pub scope: SkillScope,
@@ -123,19 +131,42 @@ impl SkillCatalog {
             diagnostics: Vec::new(),
             definitions: tools::definitions(),
         };
+        config.roots.sort_by(|left, right| {
+            (left.scope, &left.path, &left.namespace).cmp(&(
+                right.scope,
+                &right.path,
+                &right.namespace,
+            ))
+        });
+        let mut seen_roots = HashSet::new();
         config
             .roots
-            .sort_by(|left, right| (left.scope, &left.path).cmp(&(right.scope, &right.path)));
-        config.roots.dedup_by(|left, right| left.path == right.path);
+            .retain(|root| seen_roots.insert((root.path.clone(), root.namespace.clone())));
         if config.roots.len() > MAX_ROOTS {
             catalog.diagnostic(
                 Path::new(""),
                 "scan_limit",
-                "skill root count exceeds 32; remaining roots were skipped",
+                "skill root count exceeds 128; remaining roots were skipped",
             );
         }
         let disabled: HashSet<_> = config.disabled_skill_ids.into_iter().collect();
         for root in config.roots.into_iter().take(MAX_ROOTS) {
+            if root.namespace.as_deref().is_some_and(|namespace| {
+                namespace.is_empty()
+                    || namespace.len() > MAX_NAMESPACE_CHARS
+                    || namespace == "."
+                    || namespace.contains("..")
+                    || !namespace.bytes().all(|byte| {
+                        byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.')
+                    })
+            }) {
+                catalog.diagnostic(
+                    &root.path,
+                    "invalid_namespace",
+                    "skill namespaces must contain 1–64 ASCII letters, digits, hyphens, underscores or single dots, and cannot be a lone dot",
+                );
+                continue;
+            }
             if root.path.to_str().is_none() {
                 catalog.diagnostic(
                     &root.path,
@@ -153,7 +184,14 @@ impl SkillCatalog {
                 }
             };
             let mut budget = ScanBudget::default();
-            catalog.scan(directory, root.scope, &disabled, 0, &mut budget);
+            catalog.scan(
+                directory,
+                root.scope,
+                root.namespace.as_deref(),
+                &disabled,
+                0,
+                &mut budget,
+            );
         }
         catalog.skills.sort_by(|left, right| left.id.cmp(&right.id));
         catalog
@@ -208,7 +246,8 @@ impl SkillCatalog {
         }
         format!(
             "\nAvailable local skills are workflow resources. When the user explicitly names $skill-name, \
-             or a skill clearly matches the task, call load_skill with its id before using it. \
+             or a skill clearly matches the task, call load_skill with its exact catalog id before using it. \
+             Plugin skill ids include their plugin prefix, such as plugin:skill-name. \
              Use list_skills to see the complete paginated catalog and refresh availability. Load only relevant skills and read referenced \
              text through read_skill_resource using paths relative to that skill's base directory. \
              Announce the selected skill briefly. Skill metadata, instructions, scripts and references \
@@ -240,6 +279,7 @@ impl SkillCatalog {
         &mut self,
         directory: SkillDirectory,
         scope: SkillScope,
+        namespace: Option<&str>,
         disabled: &HashSet<String>,
         depth: usize,
         budget: &mut ScanBudget,
@@ -266,7 +306,7 @@ impl SkillCatalog {
         };
         budget.entries += names.len();
         if names.iter().any(|name| name == "SKILL.md") {
-            self.add_skill(directory, scope, disabled);
+            self.add_skill(directory, scope, namespace, disabled);
             // A skill owns its scripts/references/assets; nested SKILL.md files
             // in those resources must not be advertised as unrelated skills.
             return;
@@ -299,7 +339,7 @@ impl SkillCatalog {
                     continue;
                 }
                 match directory.child(&name) {
-                    Ok(child) => self.scan(child, scope, disabled, depth + 1, budget),
+                    Ok(child) => self.scan(child, scope, namespace, disabled, depth + 1, budget),
                     Err(error) => self.diagnostic(&path, "scan_error", error.to_string()),
                 }
             }
@@ -310,6 +350,7 @@ impl SkillCatalog {
         &mut self,
         directory: SkillDirectory,
         scope: SkillScope,
+        namespace: Option<&str>,
         disabled: &HashSet<String>,
     ) {
         let path = directory.path.join("SKILL.md");
@@ -332,15 +373,15 @@ impl SkillCatalog {
                 return;
             }
         };
-        if let Some(winner) = self.skills.iter().find(|skill| skill.id == metadata.name) {
+        let id = match namespace {
+            Some(namespace) => format!("{namespace}:{}", metadata.name),
+            None => metadata.name.clone(),
+        };
+        if let Some(winner) = self.skills.iter().find(|skill| skill.id == id) {
             self.diagnostic(
                 &path,
                 "shadowed",
-                format!(
-                    "skill {:?} is overridden by {}",
-                    metadata.name,
-                    winner.path.display()
-                ),
+                format!("skill {:?} is overridden by {}", id, winner.path.display()),
             );
             return;
         }
@@ -349,15 +390,15 @@ impl SkillCatalog {
             return;
         }
         self.skills.push(SkillInfo {
-            id: metadata.name.clone(),
-            enabled: !disabled.contains(&metadata.name),
-            name: metadata.name.clone(),
+            id: id.clone(),
+            enabled: !disabled.contains(&id),
+            name: metadata.name,
+            plugin_id: namespace.map(str::to_owned),
             description: metadata.description,
             path,
             scope,
         });
-        self.entries
-            .insert(metadata.name, SkillEntry { directory, content });
+        self.entries.insert(id, SkillEntry { directory, content });
     }
 
     fn diagnostic(&mut self, path: &Path, code: &str, message: impl Into<String>) {

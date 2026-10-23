@@ -18,6 +18,59 @@ const fixture = {
   disabled_skill_ids: ['review'],
 }
 describe('extension bridge validation', () => {
+  it('keeps the memory setting across unrelated configuration saves', () => {
+    expect(extensionConfiguration(fixture).llm_wiki_enabled).toBeUndefined()
+    for (const enabled of [true, false]) {
+      const request = apiRequest({
+        operation: 'saveExtensions',
+        config: { ...fixture, llm_wiki_enabled: enabled },
+      })
+      expect(request.body).toMatchObject({ llm_wiki_enabled: enabled })
+    }
+    for (const enabled of [null, 'false', 0, {}]) {
+      expect(() => extensionConfiguration({ ...fixture, llm_wiki_enabled: enabled })).toThrow(
+        '无效的记忆插件启用状态',
+      )
+    }
+  })
+  it('routes memory reads and the built-in toggle through bounded API operations', () => {
+    expect(apiRequest({ operation: 'runMemory', id: 'run-1' })).toEqual({
+      path: '/api/runs/run-1/memory',
+      method: 'GET',
+    })
+    expect(
+      apiRequest({ operation: 'setPluginEnabled', id: 'builtin.llm-wiki', enabled: false }),
+    ).toEqual({
+      path: '/api/plugins/builtin.llm-wiki/enabled',
+      method: 'POST',
+      body: { enabled: false },
+    })
+    for (const id of ['../private', 'run-1?other=true', '', null])
+      expect(() => apiRequest({ operation: 'runMemory', id })).toThrow()
+  })
+  it('maps read-only skill discovery and keeps the workspace access check explicit', () => {
+    expect(apiRequest({ operation: 'skillCatalog' })).toEqual({
+      path: '/api/extensions/skills',
+      method: 'GET',
+    })
+    const path = '/Users/test/项目 & notes'
+    expect(apiRequest({ operation: 'skillCatalog', workspacePath: path })).toEqual({
+      path: `/api/extensions/skills?workspace_path=${encodeURIComponent(path)}`,
+      method: 'GET',
+      workspacePath: path,
+    })
+    for (const path of [
+      null,
+      42,
+      '',
+      'relative/path',
+      '/tmp/\0private',
+      '/tmp/\nprivate',
+      `/${'x'.repeat(4096)}`,
+    ]) {
+      expect(() => apiRequest({ operation: 'skillCatalog', workspacePath: path })).toThrow()
+    }
+  })
   it('maps bounded settings and run-scoped approvals through the fixed API', () => {
     expect(apiRequest({ operation: 'saveExtensions', config: fixture }).body).toEqual(
       extensionConfiguration(fixture),
@@ -32,6 +85,13 @@ describe('extension bridge validation', () => {
     expect(apiRequest({ operation: 'refreshRunSkills', id: 'run-1' }).path).toBe(
       '/api/runs/run-1/extensions/refresh',
     )
+  })
+  it('preserves qualified plugin skill identifiers at their full bound', () => {
+    const id = `${'p'.repeat(64)}:${'s'.repeat(64)}`
+    expect(
+      extensionConfiguration({ ...fixture, disabled_skill_ids: [id] }).disabled_skill_ids,
+    ).toEqual([id])
+    expect(() => extensionConfiguration({ ...fixture, disabled_skill_ids: [`${id}s`] })).toThrow()
   })
   it('rejects secret values, arbitrary paths, duplicate servers and insecure remote URLs', () => {
     expect(() =>

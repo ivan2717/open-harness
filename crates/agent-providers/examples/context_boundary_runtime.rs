@@ -204,6 +204,7 @@ fn input_ref<'a>(
         run_id: run.id(),
         instructions: &agent.instructions,
         events: run.events(),
+        derived_messages: &[],
         tools: &[],
         deferred_tools: &[],
         tool_output_projector: None,

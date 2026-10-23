@@ -8,17 +8,18 @@ use crate::{
 };
 use axum::{
     Json, Router,
-    extract::{DefaultBodyLimit, Path, Request, State},
+    extract::{DefaultBodyLimit, Path, Query, Request, State},
     http::StatusCode,
     middleware::{self, Next},
     response::{
         IntoResponse, Response, Sse,
         sse::{Event, KeepAlive},
     },
-    routing::{get, post},
+    routing::{delete, get, post},
 };
 use std::{convert::Infallible, time::Duration};
 mod health_router;
+mod plugins;
 
 pub(crate) fn router(state: AppState) -> Router {
     Router::new()
@@ -26,8 +27,13 @@ pub(crate) fn router(state: AppState) -> Router {
         .route("/config", get(config))
         .route("/models", post(configure_model))
         .route("/extensions", get(extension_settings).post(save_extensions))
+        .route("/extensions/skills", get(skill_catalog))
         .route("/extensions/mcp/{id}/test", post(test_mcp))
+        .route("/plugins/install", post(plugins::install))
+        .route("/plugins/{id}/enabled", post(plugins::enable))
+        .route("/plugins/{id}", delete(plugins::uninstall))
         .route("/runs/{id}/extensions", get(run_extensions))
+        .route("/runs/{id}/memory", get(run_memory))
         .route("/runs/{id}/extensions/refresh", post(refresh_run_skills))
         .route(
             "/runs/{id}/extensions/approvals/{approval}",
@@ -86,6 +92,21 @@ async fn extension_settings(
 ) -> Json<crate::extensions::ExtensionSettings> {
     Json(state.extension_settings())
 }
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SkillCatalogQuery {
+    workspace_path: Option<String>,
+}
+
+async fn skill_catalog(
+    State(state): State<AppState>,
+    Query(query): Query<SkillCatalogQuery>,
+) -> Result<Json<crate::extensions::SkillCatalogView>, ServiceError> {
+    state
+        .skill_catalog(query.workspace_path.as_deref())
+        .map(Json)
+}
 async fn save_extensions(
     State(state): State<AppState>,
     Json(config): Json<crate::extensions::ExtensionConfig>,
@@ -103,6 +124,12 @@ async fn run_extensions(
     Path(id): Path<String>,
 ) -> Result<Json<crate::extensions::RunExtensions>, ServiceError> {
     state.run_extensions(&id).map(Json)
+}
+async fn run_memory(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<crate::memory::RunMemoryView>, ServiceError> {
+    state.run_memory(&id).await.map(Json)
 }
 async fn refresh_run_skills(
     State(state): State<AppState>,

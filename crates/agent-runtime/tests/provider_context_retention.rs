@@ -189,6 +189,27 @@ async fn prefix_bound_state_skips_soft_compaction_and_rejects_hard_overflow() {
 }
 
 #[tokio::test]
+async fn derived_prefix_is_rejected_even_below_compaction_threshold_for_bound_state() {
+    let mut run = AgentRun::new("prefix", "agent", "Inspect files");
+    append_step(&mut run, 0, ProviderReplayScope::Prefix);
+    let manager = CompactingContextManager::new(
+        policy(10_000),
+        SummarySpy::default(),
+        InMemoryContextCheckpointStore::new(),
+        ApproximateTokenCounter::new(1).unwrap(),
+    );
+    let input =
+        ContextInput::new(run.id(), "", run.events().to_vec(), vec![]).with_derived_messages(vec![
+            ModelMessage::summary("wiki:revision".into(), "Historical notes".into()),
+        ]);
+    assert!(matches!(
+        manager.prepare_owned(input).await,
+        Err(CompactingContextError::DerivedContextWithPrefixBoundState)
+    ));
+    assert!(manager.compactor().0.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn history_read_and_search_never_return_opaque_provider_state() {
     let mut run = AgentRun::new("history-state", "agent", "Inspect files");
     append_step(&mut run, 0, ProviderReplayScope::Response);

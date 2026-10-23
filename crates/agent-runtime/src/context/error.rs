@@ -35,6 +35,7 @@ pub enum CompactingContextError<CompactorError, CheckpointStoreError> {
     },
     NoEventsToCompact,
     PrefixBoundStateRequiresNativeCompaction,
+    DerivedContextWithPrefixBoundState,
     CompactionInputTokenLimitExceeded {
         sequence: u64,
         estimated_tokens: usize,
@@ -111,6 +112,7 @@ where
                 "compactor returned an empty summary through sequence {through_sequence}"
             ),
             Self::PrefixBoundStateRequiresNativeCompaction => formatter.write_str("prefix-bound thinking state requires provider-native compaction; portable summarization would invalidate its prefix"),
+            Self::DerivedContextWithPrefixBoundState => formatter.write_str("derived context cannot be inserted before prefix-bound thinking state; use a provider-aware context strategy"),
             Self::NoEventsToCompact => formatter.write_str("context compaction selected no events"),
             Self::CompactionInputTokenLimitExceeded {
                 sequence,
@@ -139,7 +141,7 @@ where
                 input_token_limit,
             } => write!(
                 formatter,
-                "protected user requirements, instructions, and tools need an estimated {estimated_tokens} tokens, exceeding the input limit of {input_token_limit}; they cannot be discarded by compaction"
+                "protected user requirements, derived context, instructions, and tools need an estimated {estimated_tokens} tokens, exceeding the input limit of {input_token_limit}; they cannot be discarded by compaction"
             ),
             Self::Fingerprint(error) => {
                 write!(formatter, "failed to fingerprint run history: {error}")

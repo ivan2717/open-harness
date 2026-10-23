@@ -187,6 +187,8 @@ async function saveUiModel(page, expectedWindow) {
 }
 try {
   let page = await launch()
+  // Isolate provider/compaction requests from the optional memory compiler.
+  await page.evaluate(() => window.harness.setPluginEnabled('builtin.llm-wiki', false))
   await expect(page.getByRole('link', { name: '添加模型', exact: true })).toBeVisible()
   await expect(page.getByLabel('选择模型')).toHaveCount(0)
   await page.getByRole('link', { name: '添加模型', exact: true }).click()
@@ -231,7 +233,7 @@ try {
   const config = await page.evaluate(() => window.harness.config())
   assert(!JSON.stringify(config).includes('fixture-secret'))
   await checkCapacity(page, initialModel, { ...basicInput, model: 'fixture-chat' }, 8192, 2048)
-  await page.getByRole('link', { name: '返回任务', exact: true }).click()
+  await page.getByRole('link', { name: '会话', exact: true }).click()
   await expect(page.getByRole('button', { name: '选择模型', exact: true })).toContainText(
     initialModel.name,
   )
@@ -256,7 +258,7 @@ try {
   ).toHaveAttribute('aria-checked', 'true')
   await expect(page.getByRole('menuitemradio', { name: /Local demo/ })).toHaveCount(0)
   await page.keyboard.press('Escape')
-  await page.getByRole('link', { name: /^工作区设置/ }).click()
+  await page.getByRole('link', { name: '模型', exact: true }).click()
   await page.getByLabel('API 基础地址').fill(base_url)
   await page.getByLabel('模型名称', { exact: true }).fill('fixture-metadata')
   await page.getByLabel('API key', { exact: true }).fill(basicInput.api_key)
@@ -339,7 +341,7 @@ try {
   assert.deepEqual(messagesModel.capacity, { context_window: 98304, max_output_tokens: 3072 })
   assert(metadataCalls.includes('/v1/models/fixture-messages-metadata'))
   await checkCapacity(page, messagesModel.model, messagesInput, 98304, 3072)
-  await page.getByRole('link', { name: '返回任务', exact: true }).click()
+  await page.getByRole('link', { name: '会话', exact: true }).click()
   for (const protocol of ['chat_completions', 'responses', 'anthropic_messages']) {
     const input = {
       protocol,

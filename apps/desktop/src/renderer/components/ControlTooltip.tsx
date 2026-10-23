@@ -1,23 +1,22 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { LoaderCircle, Plus } from 'lucide-react'
+import type { ReactNode } from 'react'
 
-export function AttachFilesButton({
+export function ControlTooltip({
   disabled,
-  pending,
-  onClick,
+  content,
+  children,
 }: {
   disabled?: boolean
-  pending?: boolean
-  onClick: () => void
+  content: ReactNode
+  children: (descriptionId: string | undefined) => ReactNode
 }) {
   const id = useId()
-  const button = useRef<HTMLButtonElement>(null)
+  const button = useRef<HTMLSpanElement>(null)
   const tooltip = useRef<HTMLDivElement>(null)
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const [open, setOpen] = useState(false)
   const visible = open && !disabled
-  const pasteKey = window.harness.platform === 'darwin' ? '⌘V' : 'Ctrl+V'
 
   function cancelTimer() {
     clearTimeout(timer.current)
@@ -72,28 +71,16 @@ export function AttachFilesButton({
 
   return (
     <>
-      <button
+      <span
         ref={button}
-        type="button"
-        className="composer-attach icon-button"
-        aria-label="添加文件"
-        aria-describedby={visible ? id : undefined}
-        disabled={disabled}
+        className="control-tooltip-anchor"
         onPointerEnter={() => show()}
         onPointerLeave={leave}
         onFocus={() => show(0)}
         onBlur={close}
-        onClick={() => {
-          close()
-          onClick()
-        }}
       >
-        {pending ? (
-          <LoaderCircle size={18} className="animate-spin" />
-        ) : (
-          <Plus size={21} strokeWidth={1.8} />
-        )}
-      </button>
+        {children(visible ? id : undefined)}
+      </span>
       {visible &&
         createPortal(
           <div
@@ -104,8 +91,7 @@ export function AttachFilesButton({
             onPointerEnter={() => show(0)}
             onPointerLeave={leave}
           >
-            <span>添加文件</span>
-            <small>也可拖入或按 {pasteKey} 粘贴</small>
+            {content}
           </div>,
           document.body,
         )}

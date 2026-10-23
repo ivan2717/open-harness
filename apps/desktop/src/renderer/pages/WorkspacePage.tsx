@@ -6,7 +6,7 @@ import { RunActivity } from '../components/RunActivity'
 import { ContextInspector } from '../components/ContextInspector'
 import { Conversation } from '../components/Conversation'
 import { CommandApprovals, WorkspaceReviewPanel } from '../components/WorkspaceReview'
-import { RunExtensions } from '../components/RunExtensions'
+import { ExtensionApprovals } from '../components/ExtensionApprovals'
 import { ErrorState, InlineError, Loading } from '../components/Feedback'
 import { errorMessage } from '../lib/format'
 import { configOptions, storeSnapshot, useRun, useWorkspace } from '../lib/queries'
@@ -49,6 +49,7 @@ export function WelcomePage() {
   if (config.isPending) return <Loading />
   if (config.isError) return <ErrorState error={config.error} retry={() => void config.refetch()} />
   const { models, selected: model } = taskModels(config.data, selectedModel)
+  const draftKey = project ? `new:${project.path}` : 'new'
   return (
     <div className="workspace-layout">
       <section className="main-pane">
@@ -57,7 +58,9 @@ export function WelcomePage() {
             <h1>开始一个新任务</h1>
             <div className="welcome-composer">
               <Composer
-                draftKey="new"
+                key={draftKey}
+                autoFocus
+                draftKey={draftKey}
                 models={models}
                 modelId={model?.id ?? ''}
                 onModelChange={setModel}
@@ -210,7 +213,7 @@ export function RunPage({ runId }: { runId: string }) {
         )}
         <Conversation run={run} />
         <div className="run-composer-area">
-          <RunExtensions key={runId} runId={runId} running={running} busy={cancel.isPending} />
+          <ExtensionApprovals key={runId} runId={runId} running={running} busy={cancel.isPending} />
           <CommandApprovals
             approvals={workspace.data?.approvals ?? []}
             busy={approve.isPending || cancel.isPending}
@@ -239,6 +242,7 @@ export function RunPage({ runId }: { runId: string }) {
           )}
           <Composer
             key={runId}
+            runId={runId}
             draftKey={`run:${runId}`}
             models={config.data?.models ?? []}
             modelId={run.model_id}

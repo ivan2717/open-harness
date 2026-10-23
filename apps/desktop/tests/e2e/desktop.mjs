@@ -47,9 +47,9 @@ try {
   await expect(page.getByRole('button', { name: '更多操作', exact: true })).toHaveCount(0)
   await expect(page.getByRole('button', { name: '选择项目', exact: true })).toBeVisible()
   await expect(page.getByRole('button', { name: '项目权限', exact: true })).toHaveCount(0)
-  await expect(page.getByRole('link', { name: /^工作区设置/ })).toHaveCount(1)
+  await expect(page.getByRole('link', { name: '设置', exact: true })).toHaveCount(1)
   await expect(
-    page.locator('.composer-stack').getByRole('link', { name: '工作区设置' }),
+    page.locator('.composer-stack').getByRole('link', { name: '设置', exact: true }),
   ).toHaveCount(0)
   await page.screenshot({ path: resolve(artifacts, 'desktop-start.png') })
   await application.evaluate(({ BrowserWindow }) =>
@@ -88,6 +88,7 @@ try {
   await expect(page.getByLabel('上下文窗口（tokens）')).toBeHidden()
   await expect(page.getByLabel('单次输出上限（tokens）')).toBeHidden()
   await expect(page.getByRole('button', { name: '运行上下文演示', exact: true })).toBeHidden()
+  await page.getByRole('link', { name: '设置', exact: true }).click()
   await page.getByText('开发调试', { exact: true }).click()
   await page.getByRole('button', { name: '运行上下文演示', exact: true }).click()
   await expect.poll(() => page.evaluate(() => window.location.hash)).toMatch(/\/runs\//)
@@ -196,7 +197,7 @@ try {
   )
   await page.getByRole('link', { name: new RegExp(prompt.slice(0, 8)) }).click()
   await expect.poll(() => page.evaluate(() => window.location.hash)).toContain(runId)
-  await page.getByRole('link', { name: /^工作区设置/ }).click()
+  await page.getByRole('link', { name: '设置', exact: true }).click()
   await expect.poll(() => page.evaluate(() => window.location.hash)).toContain('/settings')
   await page.screenshot({ path: resolve(artifacts, 'desktop-settings.png') })
   assert.deepEqual(errors, [], 'renderer must not report uncaught exceptions')

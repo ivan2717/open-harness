@@ -32,9 +32,13 @@ can make focused edits; each shell command still requires a separate approval.
 The desktop shows pending approvals, command results, and file changes in an
 on-demand project panel. The offline demonstration does not operate on projects.
 
-The local tools read, list, search, create, and edit bounded UTF-8 files. Built-in
-`read_document` and `search_document` extract PDF, DOCX, XLSX and PPTX text even
-in read-only projects, with page/paragraph/slide/cell locations and pagination.
+The model sees up to five local tools: `list_files`, `read_file`, `search_files`,
+`apply_patch`, and `run_command`. Read-only projects expose just the first three.
+Reading and searching automatically handle UTF-8 text and PDF, DOCX, XLSX and
+PPTX documents, preserving page/paragraph/slide/cell locations and pagination.
+Directory searches scan bounded text files and report skipped documents for
+individual reads/searches. Patches create, update, or delete files; context
+matches must be unique, and all changes are validated before the first write.
 Scanned documents require OCR, which is not yet included. Paths
 are relative to the selected directory; symlinks, hard-linked files, credential
 paths, and Git internals are rejected by file tools. Project `AGENTS.md` guidance
@@ -67,7 +71,137 @@ tool outcomes as unknown or not started. It never re-executes old tool calls.
 The model is instructed to inspect actual state before taking further action.
 Missing project directories disable execution without making history unreadable.
 
-### MCP and Skills
+### Plugins, MCP and Skills
+
+The built-in **LLM Wiki** memory plugin is enabled by default and can be turned
+off on the Plugins page. Each conversation has its own wiki, organized into a
+short topic guide and linked pages with event citations. The run inspector's
+**Memory / 记忆** tab shows these notes and links back to their timeline sources.
+This follows [Karpathy's LLM Wiki pattern](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f):
+retain original sources, then maintain an incremental, inspectable knowledge view.
+
+Real model runs compile newly accumulated visible events using the current
+model; this incurs additional model usage. Ordinary steps only queue the latest
+snapshot for a coalescing background worker and never await memory generation.
+Background compilation starts at 12,000 new source characters, 32 source chunks,
+or 8 user turns during execution; after an answer, the thresholds are 4,000
+characters, 16 chunks, or 4 user turns. A 500-ms debounce combines nearby updates,
+and background attempts are spaced at least 30 seconds apart. Successful batches
+continue catching up while the conversation is idle. A failed background batch
+gets at most one automatic retry; later activity can enqueue another attempt.
+Model failure, invalid JSON or a 20-second background request timeout leaves the
+previous wiki intact. The offline demo does not call a model for memory.
+
+Before actual **summary compaction**, the runtime checks whether the wiki's
+source cursor covers the proposed history boundary. If needed, foreground
+catch-up takes over the background worker and reads canonical events, including
+content omitted from normal tool projections. All catch-up batches and boundary
+expansions share an 8-second / 4-batch budget per preparation (transport retries
+remain subject to that deadline). Newly committed
+notes are used in that same model request and the context budget is rechecked.
+If coverage remains incomplete, optional automatic compaction is deferred;
+mandatory overflow recovery and explicit compaction still proceed. Canonical
+events remain available for later catch-up and verification. The remaining
+memory work is queued again. Tool-output
+pruning alone does not trigger this check. Disabling the plugin bypasses it.
+
+Large events are processed in consecutive Unicode chunks, up to 4,000 characters
+each and 24,000 per batch. A durable event/character cursor advances atomically
+with each successful wiki revision. Budget reductions defer the remainder rather
+than discarding it; failed batches do not advance progress. Restarting resumes
+the cursor, and legacy excerpt-based notes are backfilled from the beginning.
+Each background pass makes at most one compilation request; foreground catch-up
+uses the shared budget above. Cancellation, shutdown and model replacement stop
+background work. Complete ingestion does not guarantee that the model retains
+every fact in its generated notes.
+
+Compact supplies a self-contained handoff, including essential requirements,
+decisions, failed attempts and concrete results as well as current progress and
+the next action. Its correctness must not depend on optional Wiki notes.
+Wiki archives more detailed decision reasons and
+alternatives, failure conditions and verified fixes, concrete results/artifacts,
+and source evidence. Later fixes should preserve earlier failure conditions and
+decisions with their corrections. The overview is a topic guide for inspection
+and tools, not a second rolling progress summary.
+
+Normal context receives at most 2,400 characters of guidance, complete active
+constraints, and relevant historical records/passages. The full overview and
+unrelated page bodies are not automatically injected. Matching complete paragraphs
+can come from anywhere in a page; paragraphs too long to fit remain available
+through a page locator. Short continuation requests reuse the recent explicit
+topic. A small directory keeps nonmatching archives discoverable; all pages,
+records and original citations remain accessible through tools. Requirements are
+never truncated to fit: omitted active constraints produce a reminder to read
+the tasks tool. Legacy overview-only snapshots retain a matching excerpt or an
+index link. This reduces duplicate prompt content without deleting stored notes
+or relying on an unvalidated compact snapshot for semantic deduplication.
+Its cost is included in the existing input budget. Structured task records distinguish
+planned, attempted, completed, failed, superseded and uncertain work. Each
+record has exact source quotes; completion requires an eligible actual tool
+outcome (commands require a zero exit code), not an assistant's claim or a tool
+request. Newer cited failures cannot be overridden by old successful evidence.
+These checks establish provenance/status eligibility, not semantic proof of
+every generated statement. Pages and overview remain fallible derived notes.
+
+The read-only `session_memory` tool provides index, keyword search, paginated page
+and task reads, and `source` to inspect complete cited canonical events. Source
+reads are limited to the current session's cited visible evidence, paginated and
+redacted. The inspector shows task states, original quotes and pending ingestion.
+No embedding database,
+tokenizer or provider token-count request is added. Small model windows and
+prefix-bound provider state skip automatic memory injection to preserve their
+budget/protocol constraints. Disabling the plugin removes the tool on the next
+turn, immediately revokes tool reads, stops compilation and discards in-flight
+updates; stored pages remain inspectable and can be reused when enabled again.
+
+The Wiki switch does not disable Compact or original-history recovery. Real
+conversations retain `search_run_history` and `read_run_history` independently of
+the plugin; these tools are exposed after summary compaction or output clipping,
+when details are absent from the active context. They read the canonical JSONL
+for the current run within the runtime-selected boundary, with bounded outputs
+and paginated reads, including after restart. Uncompacted conversations need no
+extra history tool schemas. Queries run locally without an additional model
+generation request; returned text still consumes context in the next model turn.
+When evidence is missing, the agent is instructed to look it up or acknowledge
+uncertainty instead of inferring that an omitted event never happened.
+Original-history reads exclude prior Wiki lookup results, and Wiki compilation
+excludes history lookup results. New Wiki citations must refer to original
+observations rather than these retrieval copies. Existing archives remain
+inspectable; neither filtering nor turning Wiki off deletes canonical events.
+
+The authoritative wiki is stored under the application's `memories/` directory,
+isolated by run ID, with regenerable `index.md`, `tasks.md`, `log.md`, and `pages/*.md` views.
+Original event JSONL is never rewritten. Source fingerprints reject stale or
+mismatched history. Notes are fallible historical context, not instructions or
+proof that a planned action happened; current user corrections take precedence.
+No automatic cross-session sharing is performed. Hidden reasoning and provider
+state are excluded; recognizable API tokens are redacted on a best-effort basis.
+This improves recall but does not guarantee lossless memory of every detail.
+
+Settings includes a **plugins** section for installing a local directory or ZIP,
+updating an installed package, enabling/disabling it, and uninstalling it. A plugin
+bundles Skills and MCP configurations under one identity. Both portable root
+`plugin.json` packages and the `.codex-plugin/plugin.json` compatibility layout
+are supported for these components. Standalone personal/project skills and
+manually configured MCP services continue to work.
+
+Plugin files are copied into application-managed storage. Import records the
+source, version and content hash; editing the source does not change the installed
+copy. Updates must target the same plugin identity and publish through an atomic
+registry change. Invalid packages leave the previous installation intact.
+Skills use `plugin-id:skill-name` identifiers and MCP services receive stable
+plugin-owned IDs, so components from separate packages do not collide.
+
+Installation never starts commands, connects to MCP servers, or calls a model.
+The plugin card lists bundled components, compatibility warnings and MCP
+connection tests. Existing per-operation permissions still apply. Disable,
+update or uninstall revokes that plugin's clients and pending approvals without
+changing unrelated extensions. Installation and activation also check the combined
+Skill capacity against personal skills and projects already loaded by the host;
+later project changes report discovery diagnostics if they exceed the catalog limit.
+Public marketplaces, automatic package-manager
+installation, OAuth account flows, Codex account mappings and lifecycle hooks
+are not included. See the [plugin format, examples and limits](crates/agent-plugins/README.md).
 
 Settings includes **tool services** and **skills**. MCP services support local
 stdio executables and Streamable HTTP, with connection tests and paginated
@@ -91,6 +225,13 @@ referenced by environment-variable name; OAuth is not implemented. See
 [MCP protocol support and limits](crates/agent-mcp/README.md),
 [skill discovery and bounds](crates/agent-skills/README.md), and
 [local document tools](crates/agent-local/README.md).
+
+Skill tools appear only when at least one skill is enabled; MCP discovery and
+dispatch tools appear only when a server is enabled. Individual MCP tool schemas
+and full skill instructions are loaded on demand. A conversation refreshes its
+tool definitions at the next user turn or resume, and holds them stable during
+that turn. Disabling an extension revokes its execution permissions immediately.
+History read/search tools remain deferred until context has omitted history.
 
 ## Development
 
@@ -120,6 +261,7 @@ cargo run -p api --locked
 - `agent-local`: permission-scoped file, document and approved command tools.
 - `agent-mcp`: official MCP SDK transport, protocol negotiation and session lifecycle.
 - `agent-skills`: bounded skill discovery, metadata and scoped resource reads.
+- `agent-plugins`: local capability packages, validated imports and atomic installation registry.
 - `api::extensions`: persisted configuration, per-conversation MCP clients,
   approval lifecycle and composition with the ordinary `ToolExecutor` interface.
 
@@ -164,6 +306,14 @@ and short-context fixtures. Tests for pending operations, cancellation, or
 storage failures keep their special fixtures local so their behavior is visible.
 
 ## Extension contracts
+
+Dynamic executors override `ToolExecutor::snapshot_definitions`. The runtime
+captures one snapshot for each execution turn or manual compaction and uses it
+for context preparation, accounting, and dispatch. It rejects calls to tools
+absent from that turn's catalog. Executors must also check current permissions
+when executing, so a captured catalog never overrides later revocation.
+Provider prefix bindings remain enforced: changing a bound tool catalog cannot
+silently discard or rewrite persisted reasoning state.
 
 `ContextManager::prepare` accepts `ContextInputRef`; `prepare_owned` is a
 convenience for callers that already own their input. It must not be used to

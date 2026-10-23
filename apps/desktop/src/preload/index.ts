@@ -11,17 +11,35 @@ import type {
 import { channels, type BridgeRequest } from '../main/protocol'
 import { MAX_REFERENCE_FILES } from '../shared/file-references'
 import type { ResolvedResource } from '../shared/message-resources'
-import type { ExtensionSettings, RunExtensions, McpCatalog } from '../shared/extensions'
+import type { RunMemory } from '../shared/memory'
+import type {
+  ExtensionSettings,
+  RunExtensions,
+  McpCatalog,
+  SkillCatalog,
+} from '../shared/extensions'
 
 const invoke = <T>(request: BridgeRequest): Promise<T> =>
   ipcRenderer.invoke(channels.invoke, request) as Promise<T>
 let nextSubscription = 0
 
 const bridge: DesktopBridge = {
+  installPlugin: (expectedId, sourceKind = 'directory') =>
+    ipcRenderer.invoke(
+      channels.installPlugin,
+      expectedId,
+      sourceKind,
+    ) as Promise<ExtensionSettings | null>,
+  setPluginEnabled: (id, enabled) =>
+    invoke<ExtensionSettings>({ operation: 'setPluginEnabled', id, enabled }),
+  uninstallPlugin: (id) => invoke<ExtensionSettings>({ operation: 'uninstallPlugin', id }),
   extensionSettings: () => invoke<ExtensionSettings>({ operation: 'extensionSettings' }),
+  skillCatalog: (workspacePath) =>
+    invoke<SkillCatalog>({ operation: 'skillCatalog', workspacePath }),
   saveExtensions: (config) => invoke<ExtensionSettings>({ operation: 'saveExtensions', config }),
   testMcp: (id) => invoke<McpCatalog>({ operation: 'testMcp', id }),
   runExtensions: (id) => invoke<RunExtensions>({ operation: 'runExtensions', id }),
+  runMemory: (id) => invoke<RunMemory>({ operation: 'runMemory', id }),
   refreshRunSkills: (id) => invoke<RunExtensions>({ operation: 'refreshRunSkills', id }),
   approveExtension: (id, approvalId, allow) =>
     invoke<RunExtensions>({ operation: 'approveExtension', id, approvalId, allow }),
@@ -37,6 +55,7 @@ const bridge: DesktopBridge = {
   getRun: (id) => invoke<RunDetail>({ operation: 'getRun', id }),
   createRun: (input) => invoke<RunDetail>({ operation: 'createRun', input }),
   chooseWorkspace: () => ipcRenderer.invoke(channels.chooseWorkspace) as Promise<string | null>,
+  openWorkspace: (path) => ipcRenderer.invoke(channels.openWorkspace, path) as Promise<string>,
   chooseFiles: () => ipcRenderer.invoke(channels.chooseFiles) as Promise<FileImportResult>,
   importFiles: (files) => {
     if (!Array.isArray(files) || files.length > MAX_REFERENCE_FILES)

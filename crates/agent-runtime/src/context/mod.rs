@@ -7,6 +7,7 @@ mod manager;
 mod measurement;
 mod native;
 mod policy;
+mod preparation;
 mod projection;
 mod tokens;
 mod usage;
@@ -31,9 +32,13 @@ pub use native::{
     NativeContextError, NativeContextManager,
 };
 pub use policy::{ContextPolicy, ContextPolicyBuilder, ContextPolicyError};
+pub use preparation::{CompactionPreparation, CompactionPreparationHook};
 pub use tokens::{ApproximateTokenCounter, ApproximateTokenCounterError, TokenCounter};
 
-use crate::{ModelContextMetadata, ModelOutput, ModelRequest, ToolDefinition, ToolOutputProjector};
+use crate::{
+    ModelContextMetadata, ModelMessage, ModelOutput, ModelRequest, ToolDefinition,
+    ToolOutputProjector,
+};
 use agent_core::agent::RunEventEnvelope;
 use serde::{Deserialize, Serialize};
 use std::{error::Error, fmt, future::Future};
@@ -49,6 +54,12 @@ pub struct ContextInput {
     pub run_id: String,
     pub instructions: String,
     pub events: Vec<RunEventEnvelope>,
+    /// Host-owned historical context, projected before canonical history without
+    /// changing the event journal or its checkpoint fingerprints. Use user-role
+    /// summary messages so current user requests retain priority. These messages
+    /// are protected fixed input and must fit within the model input budget.
+    /// Native context and prefix-bound replay reject this portable injection.
+    pub derived_messages: Vec<ModelMessage>,
     pub tools: Vec<ToolDefinition>,
     pub deferred_tools: Vec<ToolDefinition>,
     /// Capabilities of the model receiving this request, independent of the
@@ -67,6 +78,7 @@ impl ContextInput {
             run_id: run_id.into(),
             instructions: instructions.into(),
             events,
+            derived_messages: Vec::new(),
             tools,
             deferred_tools: Vec::new(),
             model_metadata: None,
@@ -75,6 +87,11 @@ impl ContextInput {
 
     pub fn with_deferred_tools(mut self, tools: Vec<ToolDefinition>) -> Self {
         self.deferred_tools = tools;
+        self
+    }
+
+    pub fn with_derived_messages(mut self, messages: Vec<ModelMessage>) -> Self {
+        self.derived_messages = messages;
         self
     }
 
@@ -88,6 +105,7 @@ impl ContextInput {
             run_id: &self.run_id,
             instructions: &self.instructions,
             events: &self.events,
+            derived_messages: &self.derived_messages,
             tools: &self.tools,
             deferred_tools: &self.deferred_tools,
             tool_output_projector: None,
@@ -103,6 +121,8 @@ pub struct ContextInputRef<'a> {
     pub run_id: &'a str,
     pub instructions: &'a str,
     pub events: &'a [RunEventEnvelope],
+    /// See [`ContextInput::derived_messages`].
+    pub derived_messages: &'a [ModelMessage],
     pub tools: &'a [ToolDefinition],
     pub deferred_tools: &'a [ToolDefinition],
     pub tool_output_projector: Option<&'a dyn ToolOutputProjector>,
@@ -116,6 +136,7 @@ impl fmt::Debug for ContextInputRef<'_> {
             .field("run_id", &self.run_id)
             .field("instructions", &self.instructions)
             .field("events", &self.events)
+            .field("derived_messages", &self.derived_messages)
             .field("tools", &self.tools)
             .field("deferred_tools", &self.deferred_tools)
             .field("model_metadata", &self.model_metadata)
@@ -128,6 +149,11 @@ impl fmt::Debug for ContextInputRef<'_> {
 }
 
 impl<'a> ContextInputRef<'a> {
+    pub fn with_derived_messages(mut self, messages: &'a [ModelMessage]) -> Self {
+        self.derived_messages = messages;
+        self
+    }
+
     pub fn with_tool_output_projector(mut self, projector: &'a dyn ToolOutputProjector) -> Self {
         self.tool_output_projector = Some(projector);
         self
@@ -140,6 +166,7 @@ impl<'a> ContextInputRef<'a> {
             run_id: self.run_id.to_owned(),
             instructions: self.instructions.to_owned(),
             events: self.events.to_vec(),
+            derived_messages: self.derived_messages.to_vec(),
             tools: self.tools.to_vec(),
             deferred_tools: self.deferred_tools.to_vec(),
             model_metadata: self.model_metadata.cloned(),

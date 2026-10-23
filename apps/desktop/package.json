@@ -24,7 +24,10 @@
     "test:e2e:workspace": "npm run build && node scripts/backend.mjs debug && node tests/e2e/workspace.mjs",
     "test:e2e:files": "npm run build && node scripts/backend.mjs debug && node tests/e2e/file-references.mjs",
     "test:e2e:extensions": "npm run build && node scripts/backend.mjs debug && node tests/e2e/extensions.mjs",
-    "test:e2e:rich": "npm run build && node scripts/backend.mjs debug && node tests/e2e/rich-messages.mjs"
+    "test:e2e:rich": "npm run build && node scripts/backend.mjs debug && node tests/e2e/rich-messages.mjs",
+    "test:e2e:navigation": "npm run build && node scripts/backend.mjs debug && node tests/e2e/navigation.mjs",
+    "test:e2e:plugins": "npm run build && node scripts/backend.mjs debug && node tests/e2e/plugins.mjs",
+    "test:e2e:memory": "npm run build && node scripts/backend.mjs debug && node tests/e2e/memory.mjs"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.90.0",

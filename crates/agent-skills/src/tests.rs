@@ -8,6 +8,8 @@ use agent_runtime::{ToolCall, ToolExecutor};
 
 use crate::*;
 
+mod namespaces;
+
 static NEXT_DIRECTORY: AtomicU64 = AtomicU64::new(0);
 
 struct Fixture(PathBuf);
@@ -41,6 +43,7 @@ impl Fixture {
             roots: vec![SkillRoot {
                 path: self.0.clone(),
                 scope: SkillScope::User,
+                namespace: None,
             }],
             disabled_skill_ids: Vec::new(),
         }
@@ -77,6 +80,7 @@ fn project_skill_overrides_user_and_additional_independent_of_input_order() {
     config.roots.push(SkillRoot {
         path: fixture.0.join("other"),
         scope: SkillScope::Additional,
+        namespace: None,
     });
     config.roots.reverse();
     let catalog = SkillCatalog::discover(config);
@@ -303,6 +307,7 @@ fn scan_limits_oversized_skills_and_missing_roots_are_reported() {
     config.roots.push(SkillRoot {
         path: fixture.0.join("missing"),
         scope: SkillScope::User,
+        namespace: None,
     });
     let catalog = SkillCatalog::discover(config);
     assert!(catalog.skills().is_empty());
@@ -344,6 +349,7 @@ fn escaping_symlinks_hardlinks_and_symlinked_roots_are_denied() {
         roots: vec![SkillRoot {
             path: fixture.0.join("escape"),
             scope: SkillScope::User,
+            namespace: None,
         }],
         disabled_skill_ids: vec![],
     });
@@ -355,6 +361,7 @@ fn escaping_symlinks_hardlinks_and_symlinked_roots_are_denied() {
         roots: vec![SkillRoot {
             path: directory_link.join("external"),
             scope: SkillScope::Project,
+            namespace: None,
         }],
         disabled_skill_ids: vec![],
     });
@@ -485,6 +492,7 @@ fn non_utf8_root_diagnostics_are_serializable() {
         roots: vec![SkillRoot {
             path: fixture.0.join(OsString::from_vec(vec![b's', 0xff])),
             scope: SkillScope::Additional,
+            namespace: None,
         }],
         disabled_skill_ids: vec![],
     });

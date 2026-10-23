@@ -1,4 +1,8 @@
-use crate::{LocalTools, PermissionMode, journal::SavedFile, lock_error, paths};
+use crate::{
+    LocalTools, PermissionMode,
+    journal::{SavedFile, SavedPermissions},
+    lock_error, paths,
+};
 use agent_runtime::{ToolCall, ToolDefinition};
 use serde::Deserialize;
 use serde_json::json;
@@ -21,27 +25,21 @@ pub(crate) fn definitions(mode: PermissionMode) -> Vec<ToolDefinition> {
         ),
         make(
             "read_file",
-            "Read a UTF-8 text file up to 32 MiB, returning a bounded chunk and next_offset for pagination. Offsets count characters. For PDF/DOCX/XLSX/PPTX use read_document.",
-            json!({"path":{"type":"string"},"offset":{"type":"integer","minimum":0}}),
+            "Read UTF-8, PDF, DOCX, XLSX or PPTX (up to 32 MiB). Returns bounded text and source locations; pass next_cursor unchanged to continue. No OCR or macro execution.",
+            json!({"path":{"type":"string"},"cursor":{"type":"object","properties":{"unit":{"type":"integer","minimum":1},"offset":{"type":"integer","minimum":0}},"required":["unit","offset"],"additionalProperties":false}}),
             &["path"],
         ),
         make(
             "search_files",
-            "Search literal text in workspace files; returns matching paths, line numbers and bounded excerpts.",
-            json!({"query":{"type":"string"},"path":{"type":"string"}}),
+            "Search case-sensitive literal text. A file path reads text or PDF/DOCX/XLSX/PPTX; directories scan bounded text only and report skipped documents. Returns source locations and next_offset for matching-line pagination.",
+            json!({"query":{"type":"string"},"path":{"type":"string"},"offset":{"type":"integer","minimum":0}}),
             &["query", "path"],
         ),
         make(
-            "write_file",
-            "Create or replace a UTF-8 file. For existing files expected_content must exactly match the current contents; null is only valid for a new file. Edits are journaled for review and safe undo.",
-            json!({"path":{"type":"string"},"content":{"type":"string"},"expected_content":{"type":["string","null"]}}),
-            &["path", "content", "expected_content"],
-        ),
-        make(
-            "edit_file",
-            "Replace exactly one occurrence of old_text in a UTF-8 file. Refuses missing or ambiguous matches; edits are journaled for safe undo.",
-            json!({"path":{"type":"string"},"old_text":{"type":"string"},"new_text":{"type":"string"}}),
-            &["path", "old_text", "new_text"],
+            "apply_patch",
+            "Apply journaled UTF-8 edits (256 KiB/file). Format: *** Begin Patch, *** Add File: path (+lines), *** Update File: path (@@ then space context/-old/+new lines), *** Delete File: path, *** End Patch. Each update hunk must match exactly once; read first. Preserves existing line endings and final newline. Validates all files before writing; supports safe undo.",
+            json!({"patch":{"type":"string"}}),
+            &["patch"],
         ),
         make(
             "run_command",
@@ -50,9 +48,8 @@ pub(crate) fn definitions(mode: PermissionMode) -> Vec<ToolDefinition> {
             &["command"],
         ),
     ];
-    definitions.extend(crate::documents::definitions());
     definitions.retain(|tool| match tool.name.as_str() {
-        "write_file" | "edit_file" => mode == PermissionMode::WorkspaceWrite,
+        "apply_patch" => mode == PermissionMode::WorkspaceWrite,
         "run_command" => {
             mode == PermissionMode::WorkspaceWrite && crate::command::sandbox_available()
         }
@@ -65,19 +62,6 @@ pub(crate) fn definitions(mode: PermissionMode) -> Vec<ToolDefinition> {
 #[serde(deny_unknown_fields)]
 struct PathInput {
     path: String,
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ReadInput {
-    path: String,
-    #[serde(default)]
-    offset: usize,
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct SearchInput {
-    path: String,
-    query: String,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -112,8 +96,6 @@ impl LocalTools {
                     let metadata = entry.metadata()?;
                     let reader = if kind.is_dir() {
                         None
-                    } else if crate::documents::supported(&entry.path()) {
-                        Some("read_document")
                     } else {
                         Some("read_file")
                     };
@@ -127,20 +109,9 @@ impl LocalTools {
                 entries.sort_by_key(|entry| entry["name"].as_str().unwrap_or_default().to_owned());
                 json!({"entries":entries}).to_string()
             }
-            "read_file" => {
-                let input: ReadInput = parse(&call.arguments)?;
-                let target = paths::resolve(self.root(), &input.path)?;
-                let content = paths::read_text(&target, paths::READ_LIMIT)?;
-                let mut chars = content.chars().skip(input.offset).peekable();
-                let chunk: String = chars.by_ref().take(8192).collect();
-                let next = chars.peek().map(|_| input.offset + chunk.chars().count());
-                json!({"path":input.path,"content":chunk,"offset":input.offset,"next_offset":next})
-                    .to_string()
-            }
-            "search_files" => {
-                let input: SearchInput = parse(&call.arguments)?;
-                crate::search::search(self.root(), &input.path, &input.query)?.to_string()
-            }
+            "read_file" => crate::reader::read(self.root(), &call.arguments)?,
+            "search_files" => crate::reader::search(self.root(), &call.arguments)?,
+            "apply_patch" => self.apply_patch(&call.arguments)?,
             "read_document" | "search_document" => crate::documents::call(self.root(), &call)?,
 
             "write_file" => {
@@ -197,6 +168,10 @@ impl LocalTools {
         // compares the actual file to this expected result before allowing undo.
         let prior = journal.files.get(path).cloned();
         let saved = SavedFile {
+            before_permissions: prior
+                .as_ref()
+                .and_then(|prior| prior.before_permissions.clone())
+                .or(file_permissions(&target)?),
             before: prior
                 .as_ref()
                 .map_or(before.clone(), |saved| saved.before.clone()),
@@ -234,8 +209,24 @@ fn required_nullable<'de, D: serde::Deserializer<'de>>(
 /// Rename a fresh regular file instead of truncating an existing inode. This
 /// preserves other hard-link aliases and makes each saved edit atomic.
 pub(crate) fn replace_file(target: &Path, content: Option<&str>) -> io::Result<()> {
+    replace_with_permissions(target, content, None)
+}
+
+pub(crate) fn replace_with_permissions(
+    target: &Path,
+    content: Option<&str>,
+    original: Option<&SavedPermissions>,
+) -> io::Result<()> {
     let Some(content) = content else {
-        return fs::remove_file(target);
+        fs::remove_file(target)?;
+        #[cfg(unix)]
+        fs::File::open(
+            target
+                .parent()
+                .ok_or_else(|| paths::denied("cannot remove root"))?,
+        )?
+        .sync_all()?;
+        return Ok(());
     };
     static NEXT: AtomicU64 = AtomicU64::new(1);
     let parent = target
@@ -254,6 +245,18 @@ pub(crate) fn replace_file(target: &Path, content: Option<&str>) -> io::Result<(
             .open(&temporary)?;
         if let Ok(metadata) = fs::metadata(target) {
             file.set_permissions(metadata.permissions())?;
+        } else if let Some(original) = original {
+            #[cfg(unix)]
+            if let Some(mode) = original.unix_mode {
+                use std::os::unix::fs::PermissionsExt;
+                file.set_permissions(fs::Permissions::from_mode(mode))?;
+            }
+            #[cfg(not(unix))]
+            {
+                let mut permissions = file.metadata()?.permissions();
+                permissions.set_readonly(original.readonly);
+                file.set_permissions(permissions)?;
+            }
         }
         file.write_all(content.as_bytes())?;
         file.sync_all()?;
@@ -266,4 +269,27 @@ pub(crate) fn replace_file(target: &Path, content: Option<&str>) -> io::Result<(
         let _ = fs::remove_file(&temporary);
     }
     result
+}
+
+/// Store permissions before deletion so rollback and restart-safe undo can
+/// recreate a script or private file without losing its original mode.
+pub(crate) fn file_permissions(path: &Path) -> io::Result<Option<SavedPermissions>> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            let permissions = metadata.permissions();
+            #[cfg(unix)]
+            let unix_mode = {
+                use std::os::unix::fs::PermissionsExt;
+                Some(permissions.mode())
+            };
+            #[cfg(not(unix))]
+            let unix_mode = None;
+            Ok(Some(SavedPermissions {
+                readonly: permissions.readonly(),
+                unix_mode,
+            }))
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
 }

@@ -1,0 +1,52 @@
+.management-page-title {
+  margin: 0;
+  font: inherit;
+}
+
+.management-content > .settings-section:first-child,
+.management-tab-content > .settings-section:first-child {
+  margin-top: 0;
+}
+
+.management-tabs {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  margin-bottom: 28px;
+  border-bottom: 1px solid #e5e9df;
+}
+
+.management-tabs a {
+  position: relative;
+  padding: 0 2px 12px;
+  color: #7c867b;
+  font-size: 13px;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.management-tabs a:hover {
+  color: #303c34;
+}
+
+.management-tabs a.is-selected {
+  color: #303c34;
+  font-weight: 550;
+}
+
+.management-tabs a.is-selected::after {
+  content: '';
+  position: absolute;
+  right: 0;
+  bottom: -1px;
+  left: 0;
+  height: 2px;
+  border-radius: 2px;
+  background: #809b70;
+}
+
+.management-tabs a:focus-visible {
+  outline: 2px solid #4b876d;
+  outline-offset: 4px;
+  border-radius: 2px;
+}

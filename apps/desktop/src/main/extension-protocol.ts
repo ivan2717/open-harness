@@ -24,6 +24,8 @@ export function extensionConfiguration(value: unknown): ExtensionConfig {
   const revision = input.revision ?? 0
   if (typeof revision !== 'number' || !Number.isSafeInteger(revision) || revision < 0)
     throw new Error('无效的扩展配置版本')
+  if (input.llm_wiki_enabled !== undefined && typeof input.llm_wiki_enabled !== 'boolean')
+    throw new Error('无效的记忆插件启用状态')
   if (!Array.isArray(input.mcp_servers) || input.mcp_servers.length > 32)
     throw new Error('最多配置 32 个 MCP 服务')
   const ids = new Set<string>()
@@ -81,5 +83,20 @@ export function extensionConfiguration(value: unknown): ExtensionConfig {
     }
     throw new Error('不支持的 MCP 传输方式')
   })
-  return { revision, mcp_servers, disabled_skill_ids: strings(input.disabled_skill_ids, 256, 128) }
+  return {
+    revision,
+    ...(input.llm_wiki_enabled === undefined ? {} : { llm_wiki_enabled: input.llm_wiki_enabled }),
+    mcp_servers,
+    disabled_skill_ids: strings(input.disabled_skill_ids, 256, 129),
+  }
+}
+
+export function pluginIdentifier(value: unknown): string {
+  if (
+    typeof value !== 'string' ||
+    !/^[a-zA-Z0-9](?:[a-zA-Z0-9_.-]{0,62}[a-zA-Z0-9])?$/.test(value) ||
+    value.includes('..')
+  )
+    throw new Error('无效的插件标识')
+  return value
 }

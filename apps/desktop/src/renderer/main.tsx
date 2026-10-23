@@ -7,13 +7,18 @@ import {
   createRoute,
   createRouter,
   Link,
+  redirect,
   RouterProvider,
 } from '@tanstack/react-router'
 import { AppShell } from './components/AppShell'
 import { RunPage, WelcomePage } from './pages/WorkspacePage'
 import { SettingsPage } from './pages/SettingsPage'
+import { ModelsPage } from './pages/ModelsPage'
+import { ExtensionsPage } from './pages/ExtensionsPage'
 import { errorMessage } from './lib/format'
 import './styles.css'
+import './navigation.css'
+import './navigation-pages.css'
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -56,12 +61,39 @@ const settingsRoute = createRoute({
   path: '/settings',
   component: SettingsPage,
 })
+const modelsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/models',
+  component: ModelsPage,
+})
+const extensionsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/extensions',
+  validateSearch: (search: Record<string, unknown>): { tab: 'plugins' | 'skills' | 'mcp' } => ({
+    tab: search.tab === 'skills' || search.tab === 'mcp' ? search.tab : 'plugins',
+  }),
+  component: ExtensionsPage,
+})
+const projectsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/projects',
+  beforeLoad: () => {
+    throw redirect({ to: '/', replace: true })
+  },
+})
 function RunRoute() {
   const { runId } = runRoute.useParams()
   return <RunPage key={runId} runId={runId} />
 }
 const router = createRouter({
-  routeTree: rootRoute.addChildren([welcomeRoute, runRoute, settingsRoute]),
+  routeTree: rootRoute.addChildren([
+    welcomeRoute,
+    runRoute,
+    projectsRoute,
+    extensionsRoute,
+    modelsRoute,
+    settingsRoute,
+  ]),
   history: createHashHistory(),
 })
 declare module '@tanstack/react-router' {

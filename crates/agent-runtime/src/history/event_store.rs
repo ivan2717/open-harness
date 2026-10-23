@@ -21,6 +21,7 @@ use super::{
 pub struct EventStoreHistoryAccess {
     limits: HistoryLimits,
     definitions: [ToolDefinition; 2],
+    excluded_tools: HashSet<String>,
 }
 
 impl EventStoreHistoryAccess {
@@ -32,7 +33,18 @@ impl EventStoreHistoryAccess {
         Self {
             limits,
             definitions: history_tool_definitions(),
+            excluded_tools: HashSet::new(),
         }
+    }
+
+    /// Omit these tools' requests and results from historical evidence, in
+    /// addition to this adapter's own lookup tools. Hosts can exclude derived
+    /// memory/recall outputs without teaching the runtime about a plugin.
+    /// Keep this configuration stable for a run so read cursors stay stable.
+    /// Canonical events and ownership of executable tools remain unchanged.
+    pub fn with_excluded_tools(mut self, names: impl IntoIterator<Item = String>) -> Self {
+        self.excluded_tools = names.into_iter().collect();
+        self
     }
 
     pub fn limits(&self) -> HistoryLimits {
@@ -117,7 +129,12 @@ impl EventStoreHistoryAccess {
             .ok_or_else(|| HistoryAccessError::RunNotFound {
                 run_id: context.run_id.clone(),
             })?;
-        let visible_events = visible_history_events(&stored.events, context.through_sequence, &[]);
+        let visible_events = visible_history_events(
+            &stored.events,
+            context.through_sequence,
+            &[],
+            &self.excluded_tools,
+        );
         let folded_query = arguments.query.to_lowercase();
         let mut hits = Vec::with_capacity(limit);
         let mut total_matches = 0_usize;
@@ -206,7 +223,7 @@ impl EventStoreHistoryAccess {
             run_id: context.run_id.clone(),
         })?;
         // A requested range may contain a result but not its preceding request.
-        // Fetch only the matching requests so history-tool results stay hidden
+        // Fetch only the matching requests so excluded lookup results stay hidden
         // without loading every earlier event and its potentially large output.
         let result_call_ids = stored
             .events
@@ -228,19 +245,23 @@ impl EventStoreHistoryAccess {
                 .await
                 .map_err(HistoryAccessError::EventStore)?
         };
-        let events =
-            visible_history_events(&stored.events, context.through_sequence, &matching_calls)
-                .into_iter()
-                .filter(|envelope| {
-                    envelope.sequence >= arguments.from_sequence && envelope.sequence <= to_sequence
-                })
-                .map(|envelope| HistoryReadEvent {
-                    sequence: envelope.sequence,
-                    step: envelope.step,
-                    event_type: Cow::Borrowed(event_type(&envelope.event)),
-                    event: Cow::Owned(envelope.event.without_provider_state()),
-                })
-                .collect();
+        let events = visible_history_events(
+            &stored.events,
+            context.through_sequence,
+            &matching_calls,
+            &self.excluded_tools,
+        )
+        .into_iter()
+        .filter(|envelope| {
+            envelope.sequence >= arguments.from_sequence && envelope.sequence <= to_sequence
+        })
+        .map(|envelope| HistoryReadEvent {
+            sequence: envelope.sequence,
+            step: envelope.step,
+            event_type: Cow::Borrowed(event_type(&envelope.event)),
+            event: Cow::Owned(envelope.event.without_provider_state()),
+        })
+        .collect();
         let response = HistoryReadResponse {
             warning: Cow::Borrowed(HISTORY_WARNING),
             checkpoint_id: Cow::Borrowed(&context.checkpoint_id),
@@ -309,15 +330,17 @@ fn visible_history_events<'a>(
     events: &'a [RunEventEnvelope],
     through_sequence: u64,
     matching_calls: &[RunEventEnvelope],
+    excluded_tools: &HashSet<String>,
 ) -> Vec<&'a RunEventEnvelope> {
-    let history_call_ids: HashSet<&str> = events
+    let excluded = |name: &str| is_history_tool(name) || excluded_tools.contains(name);
+    let excluded_call_ids: HashSet<&str> = events
         .iter()
         .chain(matching_calls)
         .filter(|envelope| envelope.sequence <= through_sequence)
         .filter_map(|envelope| match &envelope.event {
             RunEvent::ToolCallRequested {
                 call_id, tool_name, ..
-            } if is_history_tool(tool_name) => Some(call_id.as_str()),
+            } if excluded(tool_name) => Some(call_id.as_str()),
             _ => None,
         })
         .collect();
@@ -326,10 +349,10 @@ fn visible_history_events<'a>(
         .iter()
         .filter(|envelope| envelope.sequence <= through_sequence)
         .filter(|envelope| match &envelope.event {
-            RunEvent::ToolCallRequested { tool_name, .. } => !is_history_tool(tool_name),
+            RunEvent::ToolCallRequested { tool_name, .. } => !excluded(tool_name),
             RunEvent::ToolCallSucceeded { call_id, .. }
             | RunEvent::ToolCallFailed { call_id, .. } => {
-                !history_call_ids.contains(call_id.as_str())
+                !excluded_call_ids.contains(call_id.as_str())
             }
             _ => true,
         })

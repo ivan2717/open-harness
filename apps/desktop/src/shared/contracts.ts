@@ -1,6 +1,14 @@
 import type { ModelCapacity, ResolvedModelLimits } from './model-limits'
-import type { ExtensionConfig, ExtensionSettings, McpCatalog, RunExtensions } from './extensions'
+import type {
+  ExtensionConfig,
+  ExtensionSettings,
+  McpCatalog,
+  RunExtensions,
+  PluginSourceKind,
+  SkillCatalog,
+} from './extensions'
 import type { ResolvedResource, ResourceAction, ResourceReference } from './message-resources'
+import type { RunMemory } from './memory'
 
 export type RunStatus =
   'running' | 'waiting_for_input' | 'completed' | 'failed' | 'cancelled' | 'interrupted'
@@ -203,9 +211,17 @@ export interface WorkspaceReview {
 
 export interface DesktopBridge {
   extensionSettings(): Promise<ExtensionSettings>
+  skillCatalog(workspacePath?: string): Promise<SkillCatalog>
   saveExtensions(config: ExtensionConfig): Promise<ExtensionSettings>
+  installPlugin(
+    expectedId?: string,
+    sourceKind?: PluginSourceKind,
+  ): Promise<ExtensionSettings | null>
+  setPluginEnabled(id: string, enabled: boolean): Promise<ExtensionSettings>
+  uninstallPlugin(id: string): Promise<ExtensionSettings>
   testMcp(id: string): Promise<McpCatalog>
   runExtensions(id: string): Promise<RunExtensions>
+  runMemory(id: string): Promise<RunMemory>
   refreshRunSkills(id: string): Promise<RunExtensions>
   approveExtension(id: string, approvalId: string, allow: boolean): Promise<RunExtensions>
   openSkillsDirectory(): Promise<void>
@@ -221,6 +237,7 @@ export interface DesktopBridge {
   importFiles(files: File[]): Promise<FileImportResult>
   pasteFiles(): Promise<FileImportResult>
   chooseWorkspace(): Promise<string | null>
+  openWorkspace(path: string): Promise<string>
   getWorkspace(id: string): Promise<WorkspaceReview>
   approveCommand(id: string, approvalId: string, allow: boolean): Promise<WorkspaceReview>
   revertFile(id: string, path: string): Promise<WorkspaceReview>

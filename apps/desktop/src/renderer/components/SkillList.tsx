@@ -24,17 +24,19 @@ export function SkillList({
             <summary>
               <ChevronDown size={13} />
               <strong>{skill.name}</strong>
-              <span className="extension-scope">{scopeNames[skill.scope]}</span>
+              <span className="extension-scope">
+                {skill.plugin_id ? `插件 · ${skill.plugin_id}` : scopeNames[skill.scope]}
+              </span>
             </summary>
             <p>{skill.description}</p>
             <code>{skill.path}</code>
-            <p className="extension-hint">在消息中输入 ${skill.name} 即可使用。</p>
+            <p className="extension-hint">在消息中输入 ${skill.id} 即可使用。</p>
           </details>
           <button
             type="button"
             role="switch"
             aria-checked={skill.enabled}
-            aria-label={`启用技能 ${skill.name}`}
+            aria-label={`启用技能 ${skill.plugin_id ? skill.id : skill.name}`}
             className={`toggle-switch ${skill.enabled ? 'is-on' : ''}`}
             disabled={busy}
             onClick={() => onToggle(skill.id, !skill.enabled)}

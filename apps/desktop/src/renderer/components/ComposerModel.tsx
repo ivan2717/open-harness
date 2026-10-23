@@ -26,7 +26,7 @@ export function ComposerModel({
     )
   if (!models.length)
     return (
-      <Link to="/settings" className="composer-control add-model-link">
+      <Link to="/models" className="composer-control add-model-link">
         添加模型
       </Link>
     )
@@ -59,7 +59,7 @@ export function ComposerModel({
         </button>
       ))}
       <div role="separator" className="composer-menu-separator" />
-      <Link to="/settings" role="menuitem" className="composer-menu-item">
+      <Link to="/models" role="menuitem" className="composer-menu-item">
         <Settings2 size={15} />
         添加／管理模型
       </Link>

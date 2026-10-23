@@ -56,13 +56,14 @@ for await (const line of createInterface({input:process.stdin})) {
 }
 `,
 )
+const documentsPrompt = 'DOCUMENTS $review'
 const plans = {
-  DOCUMENTS: [
+  [documentsPrompt]: [
     ['list_skills', {}],
     ['load_skill', { id: 'review' }],
     ['read_skill_resource', { id: 'review', path: 'references/criteria.md' }],
-    ['read_document', { path: 'handbook.docx' }],
-    ['search_document', { path: 'resume.pdf', query: 'Rust' }],
+    ['read_file', { path: 'handbook.docx' }],
+    ['search_files', { path: 'resume.pdf', query: 'Rust' }],
   ],
   MCP: [
     ['list_mcp_servers', {}],
@@ -80,13 +81,26 @@ const plans = {
   CANCEL: [
     ['call_mcp_tool', { server_id: 'fixture', name: 'counter', arguments: { cancelled: true } }],
   ],
-  DISABLED: [
-    ['load_skill', { id: 'review' }],
-    ['list_mcp_servers', {}],
-  ],
 }
 const counts = new Map()
 const modelRequests = []
+const readOnlyTools = ['list_files', 'read_file', 'search_files']
+const extensionTools = [
+  'list_skills',
+  'load_skill',
+  'read_skill_resource',
+  'list_mcp_servers',
+  'list_mcp_tools',
+  'call_mcp_tool',
+  'list_mcp_resources',
+  'read_mcp_resource',
+  'list_mcp_prompts',
+  'get_mcp_prompt',
+]
+const userPrompt = (request) =>
+  request.messages.filter((message) => message.role === 'user').at(-1).content
+const toolNames = (request) => request.tools.map((tool) => tool.function.name).sort()
+const requestsFor = (prompt) => modelRequests.filter((request) => userPrompt(request) === prompt)
 let sequence = 0
 const server = createServer(async (request, response) => {
   if (request.method !== 'POST') {
@@ -97,10 +111,11 @@ const server = createServer(async (request, response) => {
   for await (const chunk of request) chunks.push(chunk)
   const body = JSON.parse(Buffer.concat(chunks).toString())
   modelRequests.push(body)
-  const prompt = body.messages.filter((message) => message.role === 'user').at(-1).content
+  const prompt = userPrompt(body)
   const count = counts.get(prompt) ?? 0
   counts.set(prompt, count + 1)
   const call = plans[prompt]?.[count]
+  if (call) assert(toolNames(body).includes(call[0]), `${call[0]} must be advertised before use`)
   response.writeHead(200, { 'Content-Type': 'text/event-stream' })
   response.write(
     `data: ${JSON.stringify({ id: `response-${++sequence}`, choices: [{ index: 0, delta: call ? { role: 'assistant', tool_calls: [{ index: 0, id: `tool-${sequence}`, type: 'function', function: { name: call[0], arguments: JSON.stringify(call[1]) } }] } : { role: 'assistant', content: '验证完成。' }, finish_reason: call ? 'tool_calls' : 'stop' }] })}\n\n`,
@@ -122,10 +137,11 @@ const env = { ...process.env, OPENHARNESS_DESKTOP_DATA_DIR: data }
 delete env.ELECTRON_RUN_AS_NODE
 let application
 const errors = []
+let capturedAddMenu = false
 async function launch() {
   application = await _electron.launch({
-    executablePath: require('electron'),
-    args: [resolve('.')],
+    executablePath: process.env.OPENHARNESS_E2E_EXECUTABLE ?? require('electron'),
+    args: process.env.OPENHARNESS_E2E_EXECUTABLE ? [] : [resolve('.')],
     env,
     timeout: 30_000,
   })
@@ -156,16 +172,111 @@ async function approval(page, id, allow) {
   )
   return pending
 }
+async function openSkills(page) {
+  await page.getByRole('button', { name: '添加内容', exact: true }).click()
+  if (!capturedAddMenu) {
+    await mkdir(resolve('test-results'), { recursive: true })
+    await page.screenshot({ path: resolve('test-results/desktop-composer-add-menu.png') })
+    capturedAddMenu = true
+  }
+  await page.getByRole('menuitem', { name: '使用技能', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: '选择技能', exact: true })
+  await expect(dialog).toBeVisible()
+  await expect(dialog.locator('.skill-picker-results')).toHaveAttribute('aria-busy', 'false')
+  return dialog
+}
 try {
   let page = await launch()
+  // Keep the fixture's exact Skills/MCP schema independent of optional memory.
+  // memory.mjs covers the default-enabled plugin and its model requests.
+  await page.evaluate(() => window.harness.setPluginEnabled('builtin.llm-wiki', false))
   const configured = await page.evaluate(
     (input) => window.harness.configureModel(input),
     modelInput,
   )
   await application.evaluate(({ dialog }, root) => {
-    dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [root] })
+    globalThis.__skillPickerDirectoryCalls = 0
+    dialog.showOpenDialog = async () => {
+      globalThis.__skillPickerDirectoryCalls += 1
+      return { canceled: false, filePaths: [root] }
+    }
   }, root)
-  await page.evaluate(() => window.harness.chooseWorkspace())
+  await page.reload()
+  const composer = page.getByRole('textbox', { name: '任务描述', exact: true })
+  await assert.rejects(
+    page.evaluate((path) => window.harness.skillCatalog(path), root),
+    /选择项目|打开此目录/,
+    'catalog preview must not read an unselected project directory',
+  )
+  const initialConfig = (await page.evaluate(() => window.harness.extensionSettings())).config
+  await composer.fill('Before After')
+  await composer.evaluate((textarea) => textarea.setSelectionRange(7, 7))
+  let skillDialog = await openSkills(page)
+  await expect(skillDialog.getByRole('switch')).toHaveCount(0)
+  await expect(
+    skillDialog.getByRole('button', { name: '使用技能 review', exact: true }),
+  ).toHaveCount(0)
+  await skillDialog.getByRole('textbox', { name: '搜索技能', exact: true }).fill('global')
+  await skillDialog.getByRole('button', { name: '使用技能 global-review', exact: true }).click()
+  await expect(skillDialog).toHaveCount(0)
+  await expect(composer).toHaveValue('Before $global-review After')
+  await expect(composer).toBeFocused()
+  skillDialog = await openSkills(page)
+  await skillDialog
+    .getByRole('textbox', { name: '搜索技能', exact: true })
+    .fill('no-matching-skill')
+  await expect(skillDialog.getByRole('button', { name: /^使用技能 / })).toHaveCount(0)
+  await page.keyboard.press('Escape')
+  await expect(skillDialog).toHaveCount(0)
+  await expect(composer).toHaveValue('Before $global-review After')
+
+  // A project draft offers project skills without changing the global draft,
+  // configuration, provider state, or the number of persisted conversations.
+  await page.getByRole('button', { name: '选择项目', exact: true }).click()
+  await expect(composer).toHaveValue('')
+  skillDialog = await openSkills(page)
+  await page.screenshot({ path: resolve('test-results/desktop-skill-picker.png') })
+  await skillDialog.getByRole('button', { name: '使用技能 review', exact: true }).click()
+  await expect(composer).toHaveValue('$review ')
+  await page.getByRole('link', { name: /新建会话/ }).click()
+  await expect(composer).toHaveValue('Before $global-review After')
+  await page.getByRole('button', { name: '在 project 中新建会话', exact: true }).click()
+  await expect(composer).toHaveValue('$review ')
+  assert.deepEqual(
+    (await page.evaluate(() => window.harness.extensionSettings())).config,
+    initialConfig,
+  )
+  assert.equal((await page.evaluate(() => window.harness.listRuns())).length, 0)
+  assert.equal(modelRequests.length, 0, 'choosing a skill must not send a model request')
+  await expect(page.locator('.run-skills')).toHaveCount(0)
+  await page.evaluate(async () => {
+    const { config } = await window.harness.extensionSettings()
+    await window.harness.saveExtensions({
+      ...config,
+      disabled_skill_ids: ['global-review', 'review'],
+    })
+  })
+  skillDialog = await openSkills(page)
+  await expect(skillDialog.getByRole('button', { name: /^使用技能 / })).toHaveCount(0)
+  await expect(skillDialog.getByRole('link', { name: /管理技能|插件/ })).toBeVisible()
+  await page.keyboard.press('Escape')
+  assert.equal(modelRequests.length, 0)
+  const run = await page.evaluate(
+    ({ root, model }) =>
+      window.harness.createRun({
+        prompt: 'SURFACE_EMPTY',
+        model_id: model,
+        workspace_path: root,
+        permission_mode: 'read_only',
+      }),
+    { root, model: configured.model.id },
+  )
+  await settled(page, run.id)
+  assert.deepEqual(toolNames(requestsFor('SURFACE_EMPTY')[0]), readOnlyTools)
+  await page.evaluate(async () => {
+    const { config } = await window.harness.extensionSettings()
+    await window.harness.saveExtensions({ ...config, disabled_skill_ids: [] })
+  })
   const extensionConfig = {
     mcp_servers: [
       {
@@ -183,7 +294,7 @@ try {
     disabled_skill_ids: [],
   }
   await page.evaluate(() => {
-    window.location.hash = '/settings'
+    window.location.hash = '/extensions?tab=mcp'
   })
   await expect(page.getByRole('heading', { name: '工具服务', exact: true })).toBeVisible()
   await page.getByRole('button', { name: '添加服务', exact: true }).click()
@@ -206,6 +317,10 @@ try {
     '',
     'connection test must not execute tools',
   )
+  await page
+    .getByRole('navigation', { name: '扩展分类' })
+    .getByRole('link', { name: '技能', exact: true })
+    .click()
   await expect(page.getByText('global-review', { exact: true })).toBeVisible()
   const globalSwitch = page.getByRole('switch', { name: '启用技能 global-review', exact: true })
   await globalSwitch.click()
@@ -216,6 +331,36 @@ try {
   )
   await globalSwitch.click()
   await expect(globalSwitch).toBeChecked()
+  const directoryCalls = await application.evaluate(() => globalThis.__skillPickerDirectoryCalls)
+  const scopeConfig = (await page.evaluate(() => window.harness.extensionSettings())).config
+  const skillScope = page.getByRole('combobox', { name: '技能范围', exact: true })
+  await skillScope.selectOption(root)
+  const projectSwitch = page.getByRole('switch', { name: '启用技能 review', exact: true })
+  await expect(projectSwitch).toBeChecked()
+  assert.deepEqual(
+    (await page.evaluate(() => window.harness.extensionSettings())).config,
+    scopeConfig,
+  )
+  await projectSwitch.click()
+  await expect(projectSwitch).not.toBeChecked()
+  assert.deepEqual(
+    (await page.evaluate(() => window.harness.extensionSettings())).config.disabled_skill_ids,
+    ['review'],
+  )
+  await projectSwitch.click()
+  await expect(projectSwitch).toBeChecked()
+  await skillScope.selectOption('')
+  await expect(projectSwitch).toHaveCount(0)
+  await expect(globalSwitch).toBeChecked()
+  assert.equal(
+    await application.evaluate(() => globalThis.__skillPickerDirectoryCalls),
+    directoryCalls,
+    'managing a known project must not ask for its directory again',
+  )
+  await page
+    .getByRole('navigation', { name: '扩展分类' })
+    .getByRole('link', { name: 'MCP 服务', exact: true })
+    .click()
   await page.getByRole('button', { name: '编辑 Fixture MCP', exact: true }).click()
   await expect(page.getByRole('textbox', { name: '参数 · 每行一个', exact: true })).toHaveValue(
     [mcpFile, callsFile].join('\n'),
@@ -244,32 +389,49 @@ try {
     path: resolve('test-results/desktop-extensions-settings.png'),
     fullPage: true,
   })
-  const run = await page.evaluate(
-    ({ root, model }) =>
-      window.harness.createRun({
-        prompt: 'DOCUMENTS',
-        model_id: model,
-        workspace_path: root,
-        permission_mode: 'read_only',
-      }),
-    { root, model: configured.model.id },
-  )
   await page.evaluate((id) => {
     window.location.hash = `/runs/${id}`
   }, run.id)
-  const documents = await settled(page, run.id)
-  await page.locator('.run-skills > summary').click()
-  await expect(page.getByText('review', { exact: true })).toBeVisible()
-  await expect(page.getByText('global-review', { exact: true })).toBeVisible()
+  await expect(page.locator('.run-skills')).toHaveCount(0)
+  await expect(page.locator('.run-composer-area').getByRole('switch')).toHaveCount(0)
+  await composer.fill('DOCUMENTS ')
+  skillDialog = await openSkills(page)
+  await expect(
+    skillDialog.getByRole('button', { name: '使用技能 review', exact: true }),
+  ).toBeVisible()
+  await expect(
+    skillDialog.getByRole('button', { name: '使用技能 global-review', exact: true }),
+  ).toBeVisible()
+  await page.keyboard.press('Escape')
+  await expect(composer).toHaveValue('DOCUMENTS ')
   const addedSkill = join(project, '.agents/skills/later')
   await mkdir(addedSkill)
   await writeFile(
     join(addedSkill, 'SKILL.md'),
     '---\nname: later\ndescription: Installed during a run\n---\nUse the fresh catalog.\n',
   )
-  await page.locator('.run-skills').getByRole('button', { name: '刷新', exact: true }).click()
-  await expect(page.getByText('later', { exact: true })).toBeVisible()
-  await page.locator('.run-skills > summary').click()
+  skillDialog = await openSkills(page)
+  await expect(
+    skillDialog.getByRole('button', { name: '使用技能 later', exact: true }),
+  ).toBeVisible()
+  await skillDialog.getByRole('button', { name: '使用技能 review', exact: true }).click()
+  await expect(composer).toHaveValue(`${documentsPrompt} `)
+  assert.equal(
+    modelRequests.length,
+    1,
+    'draft skill selection must not execute tools or a model turn',
+  )
+  assert.equal((await page.evaluate(() => window.harness.listRuns())).length, 1)
+  assert.deepEqual(
+    (await page.evaluate(() => window.harness.extensionSettings())).config.disabled_skill_ids,
+    [],
+  )
+  await page.getByRole('button', { name: '开始运行', exact: true }).click()
+  await expect.poll(() => requestsFor(documentsPrompt).length).toBeGreaterThan(0)
+  const documents = await settled(page, run.id)
+  await expect(
+    page.locator('.tool-card summary').filter({ hasText: /已加载技能.*review/ }),
+  ).toBeVisible()
   assert(
     documents.messages
       .filter((message) => message.role === 'tool')
@@ -279,12 +441,13 @@ try {
   assert(text.includes('面试手册'))
   assert(text.includes('experienced Rust engineer'))
   assert(text.includes('RESOURCE_BODY_MARKER'))
-  const first = modelRequests[0]
+  const first = requestsFor(documentsPrompt)[0]
   assert(!JSON.stringify(first).includes('SKILL_BODY_MARKER'), 'skill body must be lazy')
-  const names = first.tools.map((tool) => tool.function.name)
-  for (const name of ['read_document', 'search_document', 'list_skills', 'call_mcp_tool'])
-    assert(names.includes(name))
-  for (const name of ['run_command', 'write_file', 'edit_file']) assert(!names.includes(name))
+  const names = toolNames(first)
+  assert.deepEqual(names, [...readOnlyTools, ...extensionTools].sort())
+  for (const request of requestsFor(documentsPrompt)) {
+    assert.deepEqual(request.tools, first.tools, 'tool definitions remain stable within a turn')
+  }
   await page.evaluate((id) => window.harness.submitInput(id, 'MCP'), run.id)
   await expect(page.getByRole('button', { name: '允许本次', exact: true })).toBeVisible({
     timeout: 20_000,
@@ -334,15 +497,22 @@ try {
     return window.harness.saveExtensions({
       ...config,
       mcp_servers: config.mcp_servers.map((server) => ({ ...server, enabled: false })),
-      disabled_skill_ids: ['review'],
+      disabled_skill_ids: ['global-review', 'later', 'review'],
     })
   })
+  await page.evaluate((id) => window.harness.resumeRun(id, 'SURFACE_DISABLED'), run.id)
+  await settled(page, run.id)
+  assert.deepEqual(
+    toolNames(requestsFor('SURFACE_DISABLED')[0]),
+    readOnlyTools,
+    'the existing conversation refreshes disabled extension tools on its next turn',
+  )
   await application.close()
   application = undefined
   page = await launch()
   const settings = await page.evaluate(() => window.harness.extensionSettings())
   assert.equal(settings.config.mcp_servers[0].enabled, false)
-  assert.deepEqual(settings.config.disabled_skill_ids, ['review'])
+  assert.deepEqual(settings.config.disabled_skill_ids, ['global-review', 'later', 'review'])
   const projectState = await page.evaluate((id) => window.harness.runExtensions(id), run.id)
   assert.equal(projectState.skills.find((skill) => skill.id === 'review').enabled, false)
   assert.deepEqual(projectState.approvals, [])
@@ -355,7 +525,12 @@ try {
         run: run.id,
         checks: [
           'readonly PDF/DOCX',
+          'minimal provider tool schema',
+          'same-conversation enable/disable on the next turn',
           'lazy skills/resources',
+          'per-message skill selection without global mutation',
+          'global/project draft isolation and caret insertion',
+          'fresh skill picker and actual load record',
           'MCP discovery',
           'stateful calls',
           'resources/prompts',

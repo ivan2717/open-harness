@@ -1,5 +1,6 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
+import { ControlTooltip } from './ControlTooltip'
 
 export function ComposerMenu({
   label,
@@ -9,6 +10,7 @@ export function ComposerMenu({
   title,
   align = 'start',
   className = '',
+  tooltip,
 }: {
   label: string
   trigger: ReactNode
@@ -17,6 +19,7 @@ export function ComposerMenu({
   title?: string
   align?: 'start' | 'end'
   className?: string
+  tooltip?: ReactNode
 }) {
   const id = useId()
   const button = useRef<HTMLButtonElement>(null)
@@ -63,30 +66,35 @@ export function ComposerMenu({
 
   return (
     <>
-      <button
-        ref={button}
-        type="button"
-        className={`composer-control ${className}`}
-        aria-label={label}
-        aria-haspopup="menu"
-        aria-expanded={expanded}
-        aria-controls={expanded ? id : undefined}
-        disabled={disabled}
-        title={title}
-        onClick={() => {
-          focusLast.current = false
-          setOpen(!expanded)
-        }}
-        onKeyDown={(event) => {
-          if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
-            event.preventDefault()
-            focusLast.current = event.key === 'ArrowUp'
-            setOpen(true)
-          }
-        }}
-      >
-        {trigger}
-      </button>
+      <ControlTooltip disabled={!tooltip || disabled || expanded} content={tooltip}>
+        {(descriptionId) => (
+          <button
+            ref={button}
+            type="button"
+            className={`composer-control ${className}`}
+            aria-label={label}
+            aria-describedby={descriptionId}
+            aria-haspopup="menu"
+            aria-expanded={expanded}
+            aria-controls={expanded ? id : undefined}
+            disabled={disabled}
+            title={title}
+            onClick={() => {
+              focusLast.current = false
+              setOpen(!expanded)
+            }}
+            onKeyDown={(event) => {
+              if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+                event.preventDefault()
+                focusLast.current = event.key === 'ArrowUp'
+                setOpen(true)
+              }
+            }}
+          >
+            {trigger}
+          </button>
+        )}
+      </ControlTooltip>
       {expanded &&
         createPortal(
           <div

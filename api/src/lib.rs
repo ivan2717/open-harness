@@ -4,6 +4,7 @@ mod demo;
 mod event_store;
 pub mod extensions;
 mod input;
+mod memory;
 mod model;
 mod projection;
 mod routes;

@@ -1,7 +1,8 @@
 # Local execution host
 
-`LocalTools` binds a session to a canonical project directory. Its file tools
-list, search, read, create and edit bounded UTF-8 files, and read/search PDF,
+`LocalTools` binds a session to a canonical project directory. Its public tool
+surface is `list_files`, `read_file`, `search_files`, `apply_patch`, and
+`run_command`. Reading/searching automatically handles UTF-8 text and PDF,
 DOCX, XLSX and PPTX documents without commands or a Python installation. `ReadOnly` is the default;
 `WorkspaceWrite` permits file edits within the selected project. Read-only
 sessions advertise only read tools. `run_command` is advertised only when writes
@@ -10,9 +11,17 @@ reject calls to unavailable tools. Root/home/system
 directories, protected credential paths, symbolic links and hard-linked files
 are rejected. The root's identity is checked again on every operation.
 
-Every edit saves its original contents and intended result before replacement.
+Every patch validates all files and hunks before writing, then saves original
+contents, recreation permissions and intended results to the journal. Each
+replacement is atomic; ordinary mid-batch failures conditionally roll back
+already-written files. An external edit is never overwritten during rollback.
+This is not a filesystem-wide atomic transaction: a process crash can leave a
+partially applied batch, whose recorded intentions remain available for review
+and undo. Empty directories created by a failed addition can remain.
+
 Undo restores the session's original contents only if the file still matches
-the last agent edit. It never resets Git or discards an intervening user change.
+the last agent edit. Deleted files retain their original permissions when
+recreated, including across application restarts. It never resets Git or discards an intervening user change.
 The journal lives outside the workspace, is bound to that workspace, and is
 written atomically with owner-only file permissions.
 
@@ -57,19 +66,59 @@ inside another restrictive sandbox can return `sandbox_apply: Operation not
 permitted`. These tests use temporary directories and local loopback only;
 no model API or external network access is required.
 
-## Document tools
+## Reading and searching
 
-- `read_document {path, unit?, offset?}` returns at most 6000 characters across
-  at most 32 source units. `next_cursor` contains the next 1-based unit and
-  character offset. Locations are PDF pages, DOCX paragraphs, PPTX slides in
-  presentation order, and named XLSX sheets with explicit cell addresses.
-- `search_document {path, query, offset?}` performs literal, case-sensitive text
-  search, returns up to 50 matching lines with source locations, and provides
-  `next_offset` when more matches exist.
-- Both tools work in read-only mode and enforce the same canonical workspace,
+- `read_file {path, cursor?}` reads text or supported document formats. Pass
+  `next_cursor` unchanged to continue; its `unit` is 1-based and `offset` counts
+  Unicode characters, not bytes. Text files use unit 1, return at most 8192
+  characters in `content`, and include the starting `line`. Documents return
+  at most 6000 characters across 32 source units in `chunks`, with PDF page,
+  DOCX paragraph, PPTX slide or named XLSX sheet/cell locations.
+- `search_files {path, query, offset?}` performs literal, case-sensitive search.
+  An individual file is dispatched to its text/document reader. Directories
+  perform bounded text-only scans and explicitly report skipped documents;
+  search those documents individually when relevant. Text search returns at
+  most 100 matching lines; documents return at most 50. Serialized byte budgets
+  may produce smaller pages. `next_offset` always reflects the retained matches.
+- These tools work in read-only mode and enforce the same canonical workspace,
   protected-path, symlink and hard-link policies as other file tools.
+- Legacy `read_document`, `search_document`, `write_file` and `edit_file` entry
+  points remain available to direct `LocalTools` callers. They are absent from
+  the runtime catalog and cannot be newly invoked by the model. Persisted runs
+  retain their old results without re-executing calls. Legacy top-level read
+  `unit`/`offset` fields remain accepted; they cannot be combined with cursor.
 - `documents::extract_document(name, bytes)` exposes the same parser for callers
   that have already admitted a user attachment. It grants no filesystem access.
+
+## Applying patches
+
+`apply_patch {patch}` accepts the following small, explicit grammar:
+
+```text
+*** Begin Patch
+*** Add File: notes.txt
++New file contents
+*** Update File: src/example.txt
+@@
+ unchanged context
+-old line
++new line
+*** Delete File: obsolete.txt
+*** End Patch
+```
+
+Each update hunk begins with `@@`; lines have a space (context), `-` (remove),
+or `+` (add) prefix. Matching uses exact complete lines, ignoring LF/CRLF in the
+patch itself. A hunk must match exactly once in the original file. Multiple
+hunks must be ordered and non-overlapping. Add context to disambiguate duplicate
+text. Insertions require context except in an empty file. Context lines preserve
+their existing endings, added lines use nearby endings, and updates preserve
+whether the file had a final newline. Added files use LF and a final newline.
+Empty Add File sections create empty files. Paths must be unique and cannot be
+ancestors of another target. Add refuses existing paths; update/delete require
+existing text files. Limits are 1 MiB serialized arguments, 64 files per patch,
+256 hunks per file, and 256 KiB per original or resulting file. There is no fuzzy
+matching, rename operation or implicit full-file overwrite.
 
 Parsers: [pdf-extract](https://docs.rs/pdf-extract/0.12.1/pdf_extract/),
 [calamine](https://docs.rs/calamine/0.37.0/calamine/),

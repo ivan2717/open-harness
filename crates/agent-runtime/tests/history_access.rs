@@ -412,6 +412,99 @@ impl EventStore for RangeObservedStore {
 }
 
 #[tokio::test]
+async fn excluded_derived_memory_is_not_searchable_or_readable_as_original_evidence() {
+    let store = InMemoryEventStore::new();
+    let mut run = AgentRun::new("derived-memory", "agent", "Original user requirement");
+    run.begin_step().unwrap();
+    run.record(RunEvent::ModelResponseReceived {
+        response: None,
+        provider_continuation: None,
+        token_usage: None,
+        provider_state: None,
+        content: "Look up past evidence.".into(),
+    })
+    .unwrap();
+    run.record(RunEvent::ToolCallRequested {
+        call_id: "wiki".into(),
+        tool_name: "session_memory".into(),
+        arguments: r#"{"query":"derived-only-marker"}"#.into(),
+    })
+    .unwrap();
+    run.record(RunEvent::ToolCallSucceeded {
+        call_id: "wiki".into(),
+        output: "derived-only-marker is a generated Wiki claim".into(),
+    })
+    .unwrap();
+    persist_run(&store, &run).await;
+    let context = HistoryContext {
+        run_id: run.id().into(),
+        through_sequence: run.events().last().unwrap().sequence,
+        checkpoint_id: "derived-memory-checkpoint".into(),
+    };
+    let call = |name: &str, arguments: &str| ToolCall {
+        id: "lookup".into(),
+        name: name.into(),
+        arguments: arguments.into(),
+    };
+    let query = r#"{"query":"derived-only-marker"}"#;
+    let default_output = EventStoreHistoryAccess::new()
+        .execute(
+            &store,
+            context.clone(),
+            call(SEARCH_RUN_HISTORY_TOOL, query),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&default_output).unwrap()["total_matches"],
+        2
+    );
+
+    let access = EventStoreHistoryAccess::new().with_excluded_tools(["session_memory".to_owned()]);
+    // Exclusion is a projection policy, not a third tool or an ownership grant.
+    assert_eq!(
+        HistoryAccess::<InMemoryEventStore>::definitions(&access).len(),
+        2
+    );
+    assert!(!HistoryAccess::<InMemoryEventStore>::owns_tool(
+        &access,
+        "session_memory"
+    ));
+    let search = access
+        .execute(
+            &store,
+            context.clone(),
+            call(SEARCH_RUN_HISTORY_TOOL, query),
+        )
+        .await
+        .unwrap();
+    let search: serde_json::Value = serde_json::from_str(&search).unwrap();
+    assert_eq!(search["total_matches"], 0);
+    assert_eq!(search["hits"], serde_json::json!([]));
+    let read = access
+        .execute(
+            &store,
+            context.clone(),
+            call(
+                READ_RUN_HISTORY_TOOL,
+                &format!(
+                    r#"{{"from_sequence":0,"to_sequence":{}}}"#,
+                    context.through_sequence
+                ),
+            ),
+        )
+        .await
+        .unwrap();
+    assert!(read.contains("Original user requirement"));
+    assert!(!read.contains("derived-only-marker"));
+    assert!(!read.contains("session_memory"));
+    assert_eq!(
+        store.load(run.id()).await.unwrap().unwrap().events,
+        run.events()
+    );
+}
+
+#[tokio::test]
 async fn a_narrow_history_read_looks_up_requests_to_filter_history_results() {
     let inner = InMemoryEventStore::new();
     let mut run = AgentRun::new(
@@ -428,7 +521,11 @@ async fn a_narrow_history_read_looks_up_requests_to_filter_history_results() {
         content: "Read current and archived evidence.".to_owned(),
     })
     .unwrap();
-    for (call_id, tool_name) in [("regular", "read_file"), ("history", READ_RUN_HISTORY_TOOL)] {
+    for (call_id, tool_name) in [
+        ("regular", "read_file"),
+        ("history", READ_RUN_HISTORY_TOOL),
+        ("wiki", "session_memory"),
+    ] {
         run.record(RunEvent::ToolCallRequested {
             call_id: call_id.to_owned(),
             tool_name: tool_name.to_owned(),
@@ -447,6 +544,11 @@ async fn a_narrow_history_read_looks_up_requests_to_filter_history_results() {
         output: "An old history response must not appear recursively".to_owned(),
     })
     .unwrap();
+    run.record(RunEvent::ToolCallFailed {
+        call_id: "wiki".to_owned(),
+        message: "A derived memory lookup failed; this is not original evidence".to_owned(),
+    })
+    .unwrap();
     let last_result = run.events().last().unwrap().sequence;
     persist_run(&inner, &run).await;
     let store = RangeObservedStore {
@@ -456,6 +558,7 @@ async fn a_narrow_history_read_looks_up_requests_to_filter_history_results() {
     };
 
     let output = EventStoreHistoryAccess::new()
+        .with_excluded_tools(["session_memory".to_owned()])
         .execute(
             &store,
             HistoryContext {
@@ -486,7 +589,11 @@ async fn a_narrow_history_read_looks_up_requests_to_filter_history_results() {
     assert_eq!(ranges[0], first_result..last_result + 1);
     assert_eq!(
         *store.call_lookups.lock().unwrap(),
-        [vec!["regular".to_owned(), "history".to_owned()]]
+        [vec![
+            "regular".to_owned(),
+            "history".to_owned(),
+            "wiki".to_owned()
+        ]]
     );
 }
 

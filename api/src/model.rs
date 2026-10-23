@@ -105,6 +105,12 @@ impl ToolExecutor for ServiceTools {
             Self::Host(tools) => tools.definitions(),
         }
     }
+    fn snapshot_definitions(&self) -> Vec<ToolDefinition> {
+        match self {
+            Self::Demo(tools) => tools.snapshot_definitions(),
+            Self::Host(tools) => tools.snapshot_definitions(),
+        }
+    }
     async fn execute(&self, call: ToolCall) -> Result<String, Self::Error> {
         match self {
             Self::Demo(tools) => tools.execute(call).await,

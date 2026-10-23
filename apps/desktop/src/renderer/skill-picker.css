@@ -1,0 +1,118 @@
+.control-tooltip-anchor {
+  display: inline-flex;
+  min-width: 0;
+}
+.skill-picker {
+  width: min(520px, calc(100vw - 40px));
+  max-height: min(620px, calc(100vh - 64px));
+  margin: auto;
+  padding: 18px;
+  border: 1px solid #e0e4dc;
+  border-radius: 16px;
+  background: #fff;
+  color: #303c34;
+  box-shadow: 0 16px 64px #24302126;
+}
+.skill-picker::backdrop {
+  background: #18201540;
+}
+.skill-picker header,
+.skill-picker footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.skill-picker h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+.skill-picker-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 16px 0 10px;
+  padding: 10px;
+  border: 1px solid #e0e4dc;
+  border-radius: 8px;
+  color: #677267;
+}
+.skill-picker-search input {
+  min-width: 0;
+  width: 100%;
+  font: inherit;
+  color: #303c34;
+}
+.skill-picker-search:focus-within {
+  border-color: #7b9778;
+  box-shadow: 0 0 0 2px #7b977820;
+}
+.skill-picker-search input:focus-visible {
+  outline: none;
+}
+.skill-picker-results {
+  max-height: min(380px, calc(100vh - 260px));
+  overflow-y: auto;
+}
+.skill-picker-results ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.skill-picker-results li > button {
+  display: flex;
+  gap: 10px;
+  padding: 12px 10px;
+  width: 100%;
+  text-align: left;
+  border-radius: 8px;
+}
+.skill-picker-results li > button:hover,
+.skill-picker-results li > button:focus-visible {
+  background: #f0f3eb;
+  outline-offset: -2px;
+}
+.skill-picker-results li svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+  color: #677267;
+}
+.skill-picker-results li span {
+  min-width: 0;
+}
+.skill-picker-results strong {
+  display: block;
+  overflow-wrap: anywhere;
+  font-size: 13px;
+}
+.skill-picker-results small {
+  display: block;
+  color: #677267;
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+.skill-picker-results p {
+  margin-top: 4px;
+  color: #677267;
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.skill-picker-hint {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 24px 8px;
+}
+.skill-picker footer {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid #edf0e7;
+  color: #677267;
+  font-size: 11px;
+}
+.skill-picker footer a {
+  color: #436b53;
+  white-space: nowrap;
+}

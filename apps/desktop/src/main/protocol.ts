@@ -6,7 +6,7 @@ import type {
 } from '../shared/contracts'
 import { MODEL_TOKEN_LIMIT, resolveModelLimits } from '../shared/model-limits'
 import type { ExtensionConfig } from '../shared/extensions'
-import { extensionConfiguration } from './extension-protocol'
+import { extensionConfiguration, pluginIdentifier } from './extension-protocol'
 import {
   MAX_REFERENCE_FILES,
   MAX_FILE_REFERENCE_BYTES,
@@ -15,12 +15,14 @@ import {
 
 export const channels = {
   openSkillsDirectory: 'openharness:skills:open-directory',
+  installPlugin: 'openharness:plugins:install',
   resolveResource: 'openharness:resource:resolve',
   resourceAction: 'openharness:resource:action',
   openExternal: 'openharness:resource:external',
   copyText: 'openharness:clipboard:copy-text',
   invoke: 'openharness:invoke',
   chooseWorkspace: 'openharness:workspace:choose',
+  openWorkspace: 'openharness:workspace:open',
   chooseFiles: 'openharness:files:choose',
   importFiles: 'openharness:files:import',
   pasteFiles: 'openharness:files:paste',
@@ -31,8 +33,11 @@ export const channels = {
 
 export type BridgeRequest =
   | { operation: 'extensionSettings' }
+  | { operation: 'skillCatalog'; workspacePath?: string }
+  | { operation: 'setPluginEnabled'; id: string; enabled: boolean }
+  | { operation: 'uninstallPlugin'; id: string }
   | { operation: 'saveExtensions'; config: ExtensionConfig }
-  | { operation: 'testMcp' | 'runExtensions' | 'refreshRunSkills'; id: string }
+  | { operation: 'testMcp' | 'runExtensions' | 'refreshRunSkills' | 'runMemory'; id: string }
   | { operation: 'approveExtension'; id: string; approvalId: string; allow: boolean }
   | { operation: 'config' | 'listRuns' }
   | {
@@ -48,7 +53,9 @@ export type BridgeRequest =
 
 export interface ApiRequest {
   path: string
-  method: 'GET' | 'POST'
+  method: 'GET' | 'POST' | 'DELETE'
+  /** Main-process access check only; never forwarded in the HTTP body. */
+  workspacePath?: string
   body?:
     | ExtensionConfig
     | CreateRunInput
@@ -56,6 +63,8 @@ export interface ApiRequest {
     | { message?: string; files?: TextFileReference[] }
     | { path: string }
     | { allow: boolean }
+    | { enabled: boolean }
+    | { source_path: string; expected_id?: string }
 }
 
 function object(value: unknown): Record<string, unknown> {
@@ -195,8 +204,29 @@ export function resolvedModelConfiguration(value: unknown): ResolvedModelConfigu
 export function apiRequest(value: unknown): ApiRequest {
   const request = object(value)
   switch (request.operation) {
+    case 'setPluginEnabled':
+      if (typeof request.enabled !== 'boolean') throw new Error('无效的插件启用状态')
+      return {
+        path: `/api/plugins/${pluginIdentifier(request.id)}/enabled`,
+        method: 'POST',
+        body: { enabled: request.enabled },
+      }
+    case 'uninstallPlugin':
+      return { path: `/api/plugins/${pluginIdentifier(request.id)}`, method: 'DELETE' }
     case 'extensionSettings':
       return { path: '/api/extensions', method: 'GET' }
+    case 'skillCatalog': {
+      if (request.workspacePath === undefined)
+        return { path: '/api/extensions/skills', method: 'GET' }
+      const path = boundedText(request.workspacePath, 4096, 'project path')
+      if (!absolutePath(path) || /[\u0000-\u001f\u007f]/.test(path))
+        throw new Error('Invalid project path')
+      return {
+        path: `/api/extensions/skills?workspace_path=${encodeURIComponent(path)}`,
+        method: 'GET',
+        workspacePath: path,
+      }
+    }
     case 'saveExtensions':
       return {
         path: '/api/extensions',
@@ -207,6 +237,8 @@ export function apiRequest(value: unknown): ApiRequest {
       return { path: `/api/extensions/mcp/${identifier(request.id)}/test`, method: 'POST' }
     case 'runExtensions':
       return { path: `/api/runs/${identifier(request.id)}/extensions`, method: 'GET' }
+    case 'runMemory':
+      return { path: `/api/runs/${identifier(request.id)}/memory`, method: 'GET' }
     case 'refreshRunSkills':
       return { path: `/api/runs/${identifier(request.id)}/extensions/refresh`, method: 'POST' }
     case 'approveExtension':

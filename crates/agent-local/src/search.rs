@@ -9,6 +9,11 @@ const BYTE_LIMIT: u64 = 64 * 1024 * 1024;
 #[derive(Default)]
 struct Scan {
     matches: Vec<Value>,
+    match_bytes: usize,
+    skipped_bytes: usize,
+    offset: usize,
+    seen: usize,
+    has_more: bool,
     skipped: Vec<Value>,
     skipped_count: usize,
     scanned: usize,
@@ -19,12 +24,15 @@ struct Scan {
 impl Scan {
     fn skip(&mut self, path: &str, reason: &str) {
         self.skipped_count += 1;
-        if self.skipped.len() < 64 {
-            self.skipped.push(json!({"path":path,"reason":reason}));
+        let entry = json!({"path":path,"reason":reason});
+        let bytes = entry.to_string().len() + 1;
+        if self.skipped.len() < 64 && self.skipped_bytes + bytes <= 8192 {
+            self.skipped_bytes += bytes;
+            self.skipped.push(entry);
         }
     }
     fn walk(&mut self, root: &Path, path: &Path, query: &str, depth: usize) -> io::Result<()> {
-        if self.limit_reached {
+        if self.limit_reached || self.has_more {
             return Ok(());
         }
         let relative = path
@@ -46,12 +54,30 @@ impl Scan {
             }
         };
         if metadata.is_dir() {
-            let mut entries = fs::read_dir(path)?
-                .take(ENTRY_LIMIT + 1)
-                .collect::<Result<Vec<_>, _>>()?;
+            let directory = match fs::read_dir(path) {
+                Ok(directory) => directory,
+                Err(_) => {
+                    self.skip(&relative, "directory unavailable");
+                    return Ok(());
+                }
+            };
+            let mut entries = Vec::new();
+            let mut enumerated = 0;
+            for entry in directory.take(ENTRY_LIMIT + 1) {
+                enumerated += 1;
+                match entry {
+                    Ok(entry) => entries.push(entry),
+                    Err(_) => self.skip(&relative, "directory entry unavailable"),
+                }
+            }
+            let truncated = enumerated > ENTRY_LIMIT;
+            if truncated {
+                entries.truncate(ENTRY_LIMIT);
+                self.skip(&relative, "directory enumeration limit reached");
+            }
             entries.sort_by_key(|entry| entry.file_name());
             for entry in entries {
-                if self.limit_reached {
+                if self.limit_reached || self.has_more {
                     break;
                 }
                 let name = entry.file_name().to_string_lossy().into_owned();
@@ -68,10 +94,14 @@ impl Scan {
                 }
                 self.walk(root, &entry.path(), query, depth + 1)?;
             }
+            self.limit_reached |= truncated;
         } else if !metadata.is_file() || metadata.file_type().is_symlink() {
             self.skip(&relative, "not a regular file or symbolic link");
         } else if documents::supported(path) {
-            self.skip(&relative, "document: use search_document");
+            self.skip(
+                &relative,
+                "document: search this file individually with search_files",
+            );
         } else if metadata.len() > paths::READ_LIMIT as u64 {
             self.skip(&relative, "file exceeds 32 MiB text read limit");
         } else if self.bytes.saturating_add(metadata.len()) > BYTE_LIMIT {
@@ -90,13 +120,19 @@ impl Scan {
             self.scanned += 1;
             for (index, line) in content.lines().enumerate() {
                 if line.contains(query) {
-                    self.matches.push(
-                        json!({"path":relative,"line":index+1,"text":paths::bounded(line,256)}),
-                    );
-                    if self.matches.len() == 100 {
-                        self.limit_reached = true;
+                    self.seen += 1;
+                    if self.seen <= self.offset {
+                        continue;
+                    }
+                    let entry =
+                        json!({"path":relative,"line":index+1,"text":paths::bounded(line,256)});
+                    let bytes = entry.to_string().len() + 1;
+                    if self.matches.len() == 100 || self.match_bytes + bytes > 48 * 1024 {
+                        self.has_more = true;
                         break;
                     }
+                    self.match_bytes += bytes;
+                    self.matches.push(entry);
                 }
             }
         }
@@ -104,7 +140,7 @@ impl Scan {
     }
 }
 
-pub(crate) fn search(root: &Path, path: &str, query: &str) -> io::Result<Value> {
+pub(crate) fn search(root: &Path, path: &str, query: &str, offset: usize) -> io::Result<Value> {
     if query.is_empty() || query.len() > 1024 {
         return Err(io::Error::other("query must contain 1 to 1024 bytes"));
     }
@@ -115,9 +151,12 @@ pub(crate) fn search(root: &Path, path: &str, query: &str) -> io::Result<Value> 
             "search path does not exist",
         ));
     }
-    let mut scan = Scan::default();
+    let mut scan = Scan {
+        offset,
+        ..Scan::default()
+    };
     scan.walk(root, &target, query, 0)?;
     Ok(
-        json!({"matches":scan.matches,"limit_reached":scan.limit_reached,"coverage":{"complete":!scan.limit_reached && scan.skipped_count == 0,"scanned_files":scan.scanned,"scanned_bytes":scan.bytes,"skipped_count":scan.skipped_count,"skipped":scan.skipped},"hint":"Text search excludes binary documents. Use search_document for PDF, DOCX, XLSX and PPTX."}),
+        json!({"matches":scan.matches,"next_offset":scan.has_more.then(|| offset + scan.matches.len()),"limit_reached":scan.limit_reached || scan.has_more,"coverage":{"complete":!scan.limit_reached && !scan.has_more && scan.skipped_count == 0,"scanned_files":scan.scanned,"scanned_bytes":scan.bytes,"skipped_count":scan.skipped_count,"skipped":scan.skipped},"hint":"Text search excludes binary documents. Search a PDF, DOCX, XLSX or PPTX file individually with search_files."}),
     )
 }

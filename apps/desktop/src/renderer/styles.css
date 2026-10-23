@@ -270,22 +270,6 @@ summary::-webkit-details-marker {
   text-decoration: underline;
   text-underline-offset: 3px;
 }
-.sidebar-bottom {
-  margin-top: 20px;
-}
-.settings-link {
-  border-top: 1px solid #dfe5d7;
-  padding: 15px 10px 3px;
-  display: flex;
-  gap: 9px;
-  align-items: center;
-  font-size: 11px;
-  color: #677267;
-}
-.settings-link:hover,
-.settings-link.is-active {
-  color: #303c34;
-}
 .workspace {
   min-width: 0;
   min-height: 0;
@@ -1390,19 +1374,6 @@ details[open] > summary .details-chevron {
   max-width: 790px;
   margin: 0 auto;
   padding: 42px 48px 24px;
-}
-.settings-intro h1 {
-  font-size: 31px;
-  letter-spacing: -1px;
-  color: #303c34;
-  font-weight: 500;
-  margin: 15px 0 9px;
-}
-.settings-intro > p {
-  color: #677267;
-  font-size: 11px;
-  margin: 0;
-  line-height: 1.8;
 }
 .settings-section {
   margin-top: 36px;

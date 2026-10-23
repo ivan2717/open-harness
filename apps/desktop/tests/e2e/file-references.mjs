@@ -110,7 +110,8 @@ async function clipboardBackup() {
     for (const item of await clipboard.read()) {
       const values = {}
       for (const type of item.types) values[type] = await item.getType(type)
-      backup.push(new ClipboardItem(values))
+      // Some hosts return an empty item for an empty clipboard.
+      if (item.types.length) backup.push(new ClipboardItem(values))
     }
     globalThis.__fileReferenceClipboardBackup = backup
   })
@@ -185,6 +186,8 @@ function userBodies(request) {
 
 try {
   let page = await launch()
+  // This fixture counts attachment/resume requests, not Wiki compilation calls.
+  await page.evaluate(() => window.harness.setPluginEnabled('builtin.llm-wiki', false))
   const configured = await page.evaluate(
     (input) => window.harness.configureModel(input),
     configuration,
@@ -200,8 +203,18 @@ try {
   }, configured.model.id)
   await page.reload()
   const draftFiles = () => page.locator('.composer .file-references li')
-  await expect(page.getByRole('button', { name: '添加文件', exact: true })).toBeVisible()
-  await diskFileEvent(page, [firstPath])
+  const addContent = page.getByRole('button', { name: '添加内容', exact: true })
+  await expect(addContent).toBeVisible()
+  await addContent.hover()
+  await expect(page.getByRole('tooltip')).toContainText('添加文件或使用技能')
+  const tooltipId = await page.getByRole('tooltip').getAttribute('id')
+  assert(tooltipId)
+  await expect(addContent).toHaveAttribute('aria-describedby', tooltipId)
+  await application.evaluate(({ dialog }, path) => {
+    dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [path] })
+  }, firstPath)
+  await addContent.click()
+  await page.getByRole('menuitem', { name: '添加文件', exact: true }).click()
   await expect(draftFiles()).toHaveCount(1)
   await expect(draftFiles()).toContainText('计划 sample.ts')
   await expect(page.locator('.composer')).not.toHaveClass(/composer-dragging/)
@@ -211,8 +224,8 @@ try {
   await expect(draftFiles()).toHaveCount(0)
   await expect(page.getByRole('button', { name: '开始运行', exact: true })).toBeDisabled()
   await diskFileEvent(page, [firstPath])
-  await page.getByRole('link', { name: /^工作区设置/ }).click()
-  await page.getByRole('link', { name: '返回任务', exact: true }).click()
+  await page.getByRole('link', { name: '设置', exact: true }).click()
+  await page.getByRole('link', { name: '会话', exact: true }).click()
   await expect(draftFiles()).toHaveCount(1)
 
   await diskFileEvent(page, [imagePath])

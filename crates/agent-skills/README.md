@@ -22,6 +22,21 @@ scope, paths are sorted deterministically, so `.agents` takes precedence over
 stable identifier; disabling that identifier disables the effective skill,
 including any fallback with the same name.
 
+Plugin skill roots set `SkillRoot.namespace` to their plugin ID. Their stable
+identifier becomes `plugin-id:skill-name`; `name` remains the original skill name
+and `SkillInfo.plugin_id` identifies the owner. Plugin IDs contain 1–64 ASCII
+letters, numbers, hyphens, underscores or single dots (for example `org.review`),
+making the qualified identifier at most 129 characters. A lone dot or consecutive
+dots are invalid. Invalid namespaces are diagnosed and skipped. An omitted
+namespace retains the standalone behavior and remains compatible with existing
+configuration.
+
+Overrides, disabling, and tool lookups use the complete identifier. For example,
+`review`, `alpha:review`, and `beta:review` can coexist; disabling `alpha:review`
+does not disable either of the others. A project `review` still overrides a
+personal `review` but cannot shadow a plugin's `alpha:review`. Namespacing does
+not broaden resource access: each skill still owns only its own directory.
+
 Each skill is a directory containing `SKILL.md`. Its YAML frontmatter requires
 `name` (1–64 letters, numbers, hyphens or underscores) and `description` (1–1024
 characters). Folded YAML, Unicode, and additional metadata fields are supported.
@@ -45,12 +60,13 @@ The catalog implements `agent_runtime::ToolExecutor`:
   does not run it. Offsets in text tools count Unicode characters, not bytes.
 
 `prompt()` supplies metadata and selection guidance, including explicit
-`$skill-name` activation. Skill content remains untrusted workflow data and
-cannot override user requests, harness instructions, permissions, or approvals.
+`$skill-name` activation (use `$plugin-id:skill-name` for a plugin skill). Skill
+content remains untrusted workflow data and cannot override user requests,
+harness instructions, permissions, or approvals.
 
 ## Bounds
 
-Discovery permits at most 32 roots, 512 directories and 4096 entries per root,
+Discovery permits at most 128 roots, 512 directories and 4096 entries per root,
 six directory levels, 256 effective skills, and 256 diagnostics. Each instruction
 or resource file is limited to 128 KiB, with at most 16 KiB of frontmatter. Binary
 files, parent traversal, absolute resource paths, protected files, symbolic links

@@ -3,6 +3,36 @@
 A desktop workbench for the Rust harness, built with Electron, React, TypeScript,
 Zustand, Tailwind CSS, TanStack Query, and TanStack Router.
 
+## Navigation
+
+The narrow left rail keeps **会话**, **插件**, **模型**, and **设置** available
+throughout the app. Hovering or focusing an icon shows its label; the selected
+section stays highlighted. **会话** returns to the last conversation or new-task
+page, preserving each draft. Its history sidebar can be collapsed independently
+and is hidden on management pages.
+
+Inside the conversation sidebar, **会话** lists chats without a project and
+**项目** groups project chats beneath their folder. Each chat appears once.
+Folders expand in place; their new-chat control starts a task in that project.
+**添加项目** uses the native directory picker. Empty selected projects remain in
+the list, and identical folder names remain distinct by full path. Search matches
+chat content or the project name/path and reveals matches inside collapsed groups.
+
+Project and general task drafts are separate, including unsent file references.
+The top **新建会话** action and Cmd/Ctrl+N start a general chat; each project's
+new-chat control opens and focuses that project's draft with read-only permissions,
+without opening a directory picker or creating a run before the first message is sent.
+The main process remembers directories selected through the native picker, including
+empty projects. They can be reopened directly after restart; existing projects from
+older versions are recognized from the local runtime's conversation history.
+Renderer sidebar metadata alone cannot grant directory access. Merely viewing
+project history never selects a directory or promotes its execution permissions.
+This follows the project/chat hierarchy in the
+[Codex projects documentation](https://learn.chatgpt.com/docs/projects).
+**插件** contains separate tabs for packages, standalone Skills, and MCP services.
+**模型** owns model configuration; **设置** contains interface preferences, local
+data information, and the optional developer demo.
+
 ## Run locally
 
 Install Node.js 24 LTS (minimum 22.12), npm, and the workspace Rust toolchain.
@@ -23,7 +53,7 @@ drafts remain editable and project selection remains available, but sending is
 disabled until a model is configured. New tasks and the default-model settings
 only list available real models; old preferences pointing to the demo are ignored.
 
-**Settings → 开发调试 → 运行上下文演示** explicitly starts a deterministic,
+**设置 → 开发调试 → 运行上下文演示** explicitly starts a deterministic,
 offline demonstration. This section is collapsed by default. The demo uses the
 real `AgentRuntime`, tool execution, event persistence, and context compaction;
 its generated text and tool data are synthetic and token counts are estimates.
@@ -32,7 +62,7 @@ model, project selection or task draft. Its small context window makes compactio
 observable without changing production defaults. Existing demo history remains
 readable and can be continued as a demo.
 
-In **Settings → 接入模型**, configure a model using Chat Completions, Responses,
+In **模型 → 接入模型**, configure a model using Chat Completions, Responses,
 or Anthropic Messages. Supply the provider's base URL, model ID and API key;
 select the matching reasoning option explicitly. Context capacity and the
 per-request output budget are automatic. **高级设置** offers optional overrides and
@@ -50,8 +80,9 @@ The lower-right contains the model and send/stop controls. The text area grows w
 supports Shift+Enter for a newline, and does not send during IME composition.
 Menus support arrow keys, Escape with focus return, and outside-click dismissal.
 **添加模型**, or **添加／管理模型** in the model menu, opens model settings; the selected
-project, permissions and draft survive that navigation. Global workspace settings
-remain in the sidebar. Use **新建会话** in the sidebar to start a separate project task.
+project, permissions and draft survive that navigation. Use **新建会话** in the
+conversation sidebar to start a task without a project, or the project row’s new-chat
+control to start another task in that folder.
 Project access defaults to **只读**. Select **允许修改** in the permissions menu before creating the session to
 authorize file edits within that project. The agent can list, read and search
 files, load project instructions, and make guarded edits. The renderer cannot
@@ -59,7 +90,7 @@ start work in an arbitrary path without native directory selection.
 Existing conversations display their bound project, permission and model as
 fixed values; starting a new task is required to change that execution context.
 
-Use the plus button (hover or focus for its “添加文件” hint), drag local files into the composer, or copy files in the
+Use **＋ → 添加文件** (hover or focus for its “添加文件或使用技能” hint), drag local files into the composer, or copy files in the
 file manager and paste with Cmd+V / Ctrl+V to add references. Ordinary text pastes
 remain text. References appear as removable filename chips, survive settings
 navigation, and remain in the draft if sending fails. Unsent file snapshots are
@@ -201,6 +232,8 @@ npm run test:e2e:models
 npm run test:e2e:workspace
 npm run test:e2e:files
 npm run test:e2e:rich
+npm run test:e2e:plugins
+npm run test:e2e:navigation
 npm run package:dir
 ```
 
@@ -216,6 +249,14 @@ An already packaged app does not load changes from `out/`: rebuild with
 creating and stopping runs, actual context compaction, restart recovery, and
 renderer isolation, then saves screenshots under `test-results/`. It requires a
 desktop display (or a suitable virtual display in Linux CI).
+
+`test:e2e:navigation` checks the persistent rail, selected section, hover and
+keyboard hints, extension tabs, separate drafts, return to the previous chat,
+sidebar collapse, project/chat grouping, duplicate folder names, search, isolated
+project drafts and file references, native selection, direct project reopening
+after restart, legacy history migration, navigation during delayed project lookup,
+rejection of forged sidebar metadata, and the 1000px minimum window.
+It saves screenshots and uses isolated local data without provider API calls.
 
 `test:e2e:models` uses a local HTTP fixture server for all three protocols. It
 checks the settings form, credential redaction, multi-turn conversations,
@@ -248,7 +289,63 @@ Never point two application instances at the same directory.
 
 ## Tools and skills
 
-The Settings page includes **工具服务** (MCP) and **技能**. Add a local executable
+The default project tool surface is `list_files`, `read_file`, `search_files`,
+`apply_patch` and `run_command`. Read-only projects expose only the first three;
+patches require write permission. Commands are available only when the system
+sandbox is supported and require approval. Creating, editing and deleting files
+share one patch interface, with review and undo preserved.
+
+Open **插件** in the left rail. Use **安装插件** to choose a plugin folder
+or ZIP through the native picker. Each plugin shows its version, included Skills
+and MCP services, source, compatibility warnings, and connection checks. It can
+be enabled, disabled, updated from a new package, or uninstalled as a unit.
+Updating must keep the same plugin identity and preserves its enabled state.
+Installing a package only copies and validates it; it does not execute scripts,
+connect accounts, or call a model. Plugin tools keep the existing MCP approval
+flow. Required credentials remain environment-variable references; the plugin
+card lists those names and connection errors. Public marketplace browsing and
+OAuth connections are not included.
+
+Plugin Skills use qualified IDs such as `document-review:review` so packages can
+share a skill name without replacing personal/project workflows. Their controls
+appear inside the owning plugin card; conversation Skills show their provenance.
+Disabling or uninstalling a plugin removes its contributed capabilities while
+retaining independently configured Skills and services.
+
+### Session memory
+
+**插件 → LLM Wiki** is a built-in plugin enabled by default. It incrementally
+archives a conversation's decision reasons, failure lessons, results and evidence. Automatic organization
+uses the conversation's configured model and can incur additional model usage.
+The Compact handoff remains self-contained: essential requirements, decisions,
+failed attempts and results stay alongside current progress and the next action.
+Only a bounded set of active constraints and relevant historical passages is
+supplied automatically; full pages and source evidence remain available through
+memory tools. The overview is a topic guide rather than a second progress summary.
+Memory belongs to that conversation.
+Ordinary turns queue background organization without waiting for it. Before actual
+summary compaction, memory catches up to the proposed history boundary within an
+8-second / 4-batch budget. Incomplete coverage defers optional compaction;
+hard-limit recovery and manual compaction still proceed, retaining original history.
+New notes are immediately included in the prepared request when its budget allows.
+
+Open **运行详情 → 记忆** to inspect the saved overview and topic pages. Source event
+buttons open the corresponding original event in the timeline. This view is
+read-only: refreshing or reopening it does not request model generation. Generated
+Markdown never loads remote images or opens file links automatically.
+
+Turning off the plugin stops new organization and model access to its notes.
+Compact and original-history recovery continue independently. After compaction
+or tool-output clipping, the model can use `search_run_history` and
+`read_run_history` to retrieve missing details from the current conversation's
+original journal, including after restart. These local queries need no Wiki
+compilation; their returned text still uses model input tokens.
+Existing pages remain available in the memory inspector after the switch is off
+and after restarting the app. The built-in plugin has no import, update or uninstall
+action. Memory complements context compaction and the original event history;
+derived notes can be incomplete, so source records remain available for verification.
+
+**MCP 服务** and **技能** tabs remain available for standalone setup. Add a local executable
 with one argument per line, or a Streamable HTTP URL. Enable, edit, remove and test
 connections from the same page. Connection tests discover capabilities without
 calling tools. Credentials are environment-variable references; OAuth is not yet
@@ -262,13 +359,28 @@ are never automatically replayed. Configuration revisions reject stale updates.
 
 Use **打开文件夹** to install a personal skill folder containing `SKILL.md`, then
 refresh. Project `.agents/skills` and `.openharness/skills` folders are discovered
-automatically. Each conversation has a compact **技能** control to inspect,
-refresh or disable its available workflows. The model lists metadata and loads
-the selected instructions/resources in bounded pages. `$skill-name` requests a
-specific workflow. Loading scripts does not execute them or expand permissions.
+automatically. Manage standalone personal/project skills in **插件 → 技能** using
+the scope selector; plugin-owned skills remain in their plugin cards. Enable/disable
+switches are global for the exact skill identifier, not local to a conversation.
+There is no permanent skill-management panel above the composer.
+Use **＋ → 使用技能** to search enabled skills for the current draft or conversation.
+Choosing one inserts `$skill-id` at the text cursor, preserving plugin namespaces;
+it does not enable a skill globally, load instructions, create a run, or call a model.
+Actual `load_skill` calls appear in the conversation as skill-loading records, with
+failed loads and partial reads distinguished from a complete load. The model lists
+metadata and loads selected instructions/resources in bounded pages. Loading
+scripts does not execute them or expand permissions.
+Skill tools are sent to the model only when an enabled skill is available. MCP
+discovery/call tools are sent only when a server is enabled; individual service
+tool definitions are loaded on demand. Each user turn keeps one tool-definition
+snapshot, and configuration changes take effect on the next turn of the same
+conversation. Disabled services still revoke access immediately.
 
 Selected projects can read/search PDF, DOCX, XLSX and PPTX directly in read-only
-mode. Document tools return source locations and continuation cursors. Plain text
+mode through `read_file` and `search_files`. These detect the file format and
+return source locations and continuation cursors for documents. Directory search
+scans text and reports skipped document files; search a document path to inspect
+its extracted content. Plain text
 reads support files up to 32 MiB; edit/review limits remain independent. OCR,
 native vision/audio input and full document layout rendering are not included.
 The attachment picker still imports UTF-8 snapshots; use the project tools for
@@ -277,4 +389,17 @@ these document formats.
 `npm run test:e2e:extensions` exercises real Electron IPC, the Rust API, document
 fixtures, local Skills and a stateful stdio MCP peer. It covers settings CRUD,
 discovery, lazy loading, permissions, approvals, cancellation and restart. MCP
-crate tests additionally cover Streamable HTTP JSON/SSE and failure cleanup.
+and Skill enable/disable checks also inspect the actual provider tool schema on
+the next turn of an existing conversation. MCP crate tests additionally cover
+Streamable HTTP JSON/SSE and failure cleanup.
+
+`npm run test:e2e:plugins` verifies native directory/ZIP import, package enable and
+disable, namespaced Skills, explicit MCP connection checks, update failure
+preservation, restart, and uninstall without removing standalone extensions.
+It uses temporary packages and a loopback MCP fixture; no external services or
+model API calls are required.
+
+`npm run test:e2e:memory` uses a loopback model fixture and an isolated desktop
+data directory. It verifies automatic Wiki generation, event provenance, read-only
+inspection, disable/re-enable behavior, and persistence through unrelated settings
+saves and an application restart. No real provider API or user configuration is used.

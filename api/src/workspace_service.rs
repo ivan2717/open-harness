@@ -16,7 +16,13 @@ impl AppState {
                 "离线演示不操作本地项目，请选择已配置的真实模型".into(),
             ));
         }
-        if !Path::new(path).is_absolute() {
+        self.validate_workspace_path(path)
+            .map(|root| Some(root.to_string_lossy().into_owned()))
+    }
+
+    pub(super) fn validate_workspace_path(&self, path: &str) -> Result<PathBuf, ServiceError> {
+        if path.len() > 4096 || path.chars().any(char::is_control) || !Path::new(path).is_absolute()
+        {
             return Err(ServiceError::BadRequest("项目目录必须为绝对路径".into()));
         }
         let root = fs::canonicalize(path).map_err(workspace_error)?;
@@ -30,7 +36,7 @@ impl AppState {
                 "项目目录不能包含或位于应用的数据目录中".into(),
             ));
         }
-        Ok(Some(root.to_string_lossy().into_owned()))
+        Ok(root)
     }
 
     pub(super) fn workspace_entry(

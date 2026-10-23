@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import {
   Activity,
   ArrowDown,
+  BookOpen,
   Check,
   ChevronRight,
   CircleAlert,
@@ -11,6 +12,7 @@ import {
 } from 'lucide-react'
 import type { ChatMessage, RunDetail } from '../../shared/contracts'
 import { toolOutcome } from '../lib/format'
+import { skillActivityLabel } from '../lib/skill-activity'
 import { FileReferences } from './FileReferences'
 import { MessageMarkdown } from './MessageMarkdown'
 
@@ -24,15 +26,18 @@ function Message({ message, runId }: { message: ChatMessage; runId: string }) {
     return null
   const toolRunning = message.status === 'streaming' || message.status === 'pending'
   const outcome = toolOutcome(message)
+  const skillActivity = skillActivityLabel(message)
   if (message.role === 'tool')
     return (
       <div className="tool-row">
         <details className={`tool-card ${outcome.failed ? 'tool-error' : ''}`}>
           <summary>
             <span className="tool-card-icon">
-              <Terminal size={14} />
+              {skillActivity ? <BookOpen size={14} /> : <Terminal size={14} />}
             </span>
-            <span className="min-w-0 flex-1 truncate">{message.tool_name || '工具执行'}</span>
+            <span className="min-w-0 flex-1 truncate">
+              {skillActivity ?? message.tool_name ?? '工具执行'}
+            </span>
             <span className="tool-status">
               {toolRunning ? (
                 <LoaderCircle className="animate-spin" size={12} />
