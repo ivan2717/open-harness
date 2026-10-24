@@ -61,8 +61,8 @@ try {
     $startInfo.ArgumentList.Add((Join-Path $desktop 'tests/e2e/packaged.mjs'))
     $smoke = [System.Diagnostics.Process]::Start($startInfo)
     try {
-        if (-not $smoke.WaitForExit(300000)) {
-            throw 'Installed app smoke test timed out after 5 minutes; see stage diagnostics'
+        if (-not $smoke.WaitForExit(720000)) {
+            throw 'Installed app smoke test timed out after 12 minutes; see stage diagnostics'
         }
         if ($smoke.ExitCode -ne 0) { throw 'Installed app smoke test failed' }
     } finally {

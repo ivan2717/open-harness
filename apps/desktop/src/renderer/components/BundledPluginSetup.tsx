@@ -53,7 +53,40 @@ export function BundledPluginSetup({
           <small>首次使用需下载 Chromium。安装插件本身不会下载或启动浏览器。</small>
         </div>
       )}
-      {plugin.id === 'computer-use' && plugin.available && (
+      {plugin.id === 'computer-use' && plugin.available && plugin.desktop && (
+        <div className="plugin-description">
+          <p>在会话中选择允许操作的应用。点击和输入需要将该应用置于前台，请避免同时操作它。</p>
+          <div className="approval-actions">
+            <span role="status">
+              {plugin.desktop.available === true
+                ? '桌面可用'
+                : plugin.desktop.available === false
+                  ? '桌面暂不可用，请解锁电脑后重试'
+                  : '桌面状态检查失败'}
+            </span>
+            <button
+              className="extension-text-button"
+              type="button"
+              disabled={disabled || catalog.isFetching}
+              onClick={() => void catalog.refetch()}
+            >
+              {catalog.isFetching ? '正在检查…' : '检查状态'}
+            </button>
+          </div>
+          {plugin.desktop.error && <InlineError message={plugin.desktop.error} />}
+          <details>
+            <summary>使用说明</summary>
+            <p>
+              Windows 无需开启 macOS 的辅助功能或屏幕录制权限。系统登录、锁屏和 UAC
+              安全桌面不能操作；以管理员身份运行的应用也可能无法操作。浏览网页可使用 Chrome
+              插件在后台标签页中完成。
+            </p>
+            <p>当前控制组件：</p>
+            <code>{plugin.desktop.helperPath}</code>
+          </details>
+        </div>
+      )}
+      {plugin.id === 'computer-use' && plugin.available && !plugin.desktop && (
         <div className="plugin-description">
           <p>为 Open Harness Computer Use 授予 macOS 系统权限后，再在会话中选择允许操作的应用。</p>
           <div className="approval-actions">

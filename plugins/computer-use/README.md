@@ -1,14 +1,60 @@
-# Computer Use plugin (macOS)
+# Computer Use plugin (macOS and Windows)
 
-An importable local plugin with one Skill, one stdio MCP server and an independent
-macOS agent application named **Open Harness Computer Use**. It operates
+An importable local plugin with one Skill and one stdio MCP server. On macOS it uses an independent
+agent application named **Open Harness Computer Use**. It operates
 one explicitly selected running application with macOS Accessibility,
 CoreGraphics keyboard input and ScreenCaptureKit APIs. Coordinate clicks and
 scrolling additionally use dynamically resolved window-routing APIs described
 below. It has no network dependencies and
 never reads other applications' windows while observing the selected app.
 
-## Build and install
+On Windows the same tools use a native UI Automation helper. Application selection
+keeps the existing host approval contract, `bundle_id` plus `pid`; Windows
+`bundle_id` is an opaque executable identity. It is not a permission to control
+all processes that happen to have the same displayed name.
+
+## Windows build and runtime
+
+Windows 10/11 requires an unlocked interactive desktop. Build the helper on a
+Windows machine or CI runner:
+
+```sh
+node plugins/computer-use/windows/build.mjs
+```
+
+The output is `windows/bin/OpenHarnessComputerUse.exe`. Desktop packaging includes
+the helper and a native `launch.exe --mcp` entry point, so installed users do not
+need Node, PowerShell scripts, a compiler, or macOS system permission grants.
+The host supplies its bundled Node-compatible runtime to the launcher. The JS
+bridge directly spawns the helper with `windowsHide: true`, no command shell,
+and private stdin/stdout JSON lines. Each MCP session owns one helper process;
+release, cancellation and host EOF discard its selection and snapshots.
+
+`computer_status` returns `platform: "windows"`, `desktop_available`,
+`capabilities`, `helper_path`, `helper_pid` and `permissions_requested: false`.
+It does not invent Accessibility/Screen Recording grants on Windows. The helper
+uses Windows UI Automation for observations and control references, and verified
+foreground input for typing and navigation. It does not elevate itself, interact
+with the secure desktop, or bypass restrictions on elevated applications.
+Status readiness is checked before an action; it is not a promise that every
+application exposes accessible controls.
+
+Window coordinates on Windows are **physical pixels**, local to the selected
+window, with the origin at its top left. The observation states this explicitly.
+Screenshot scaling metadata retains `window_width_points` and
+`window_height_points` for protocol compatibility; their values are in the
+reported coordinate units. Use those values to scale screenshot pixels. A native
+desktop action may take foreground focus. For independent browser work that
+should leave the user's active tab alone, use Chrome's background-tab plugin.
+
+The Windows installation smoke uses the actual installed helper and MCP launcher,
+plus independent WinForms fixture windows. It verifies concrete Unicode input,
+click/scroll outcomes, screenshots, consumed snapshots, protected fields and
+release/EOF cleanup. The fixture reports its state separately from the helper;
+it is not shipped as an end-user capability. A missing interactive desktop fails
+the Windows GUI acceptance; mocks and successful compilation are not substitutes.
+
+## macOS build and runtime
 
 Requires macOS 14+, Node.js 20+ and Xcode Command Line Tools **to build**:
 
@@ -185,7 +231,7 @@ The fixture and helper are cleaned up afterwards. Do not enable global computer
 permissions merely to make a CI test pass; run the GUI test in an explicitly
 prepared local session.
 
-This first version does not support Windows/Linux, background desktop input,
+The plugin does not support Linux, background desktop input,
 password entry, drag gestures, menus outside the selected window or cross-app
 shortcuts. Application-specific AX quality varies; an unavailable control is
 reported rather than guessed.

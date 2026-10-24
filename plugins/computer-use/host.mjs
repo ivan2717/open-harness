@@ -1,6 +1,6 @@
 // Host-only permission bridge. It never exposes permission prompting as MCP tools.
 import { ComputerBridge } from './bridge.mjs';
-import { computerEndpoint, requireComputerEndpoint } from './endpoint.mjs';
+import { computerEndpoint, requireComputerEndpoint, requireComputerPlatform } from './endpoint.mjs';
 
 const [, , flag, method, ...extra] = process.argv;
 const allowed = ['status', 'request_accessibility', 'request_screen_recording'];
@@ -9,7 +9,8 @@ process.on('SIGTERM', () => { bridge?.stop(); process.exit(0); });
 process.on('SIGINT', () => { bridge?.stop(); process.exit(0); });
 try {
   if (flag !== '--request' || !allowed.includes(method) || extra.length) throw new Error('Invalid host permission request.');
-  if (process.platform !== 'darwin') throw new Error('Computer Use requires macOS.');
+  requireComputerPlatform();
+  if (process.platform === 'win32' && method !== 'status') throw new Error('Windows Computer Use does not use macOS Accessibility or Screen Recording grants. Check desktop readiness instead.');
   const endpoint = computerEndpoint();
   requireComputerEndpoint(endpoint);
   bridge = new ComputerBridge(endpoint, [], { timeoutMs: method === 'status' ? 15_000 : 60_000 });

@@ -3,10 +3,11 @@
 A first-party Open Harness plugin with one Skill and a local stdio MCP server.
 It uses Playwright Chromium in a new isolated browser context. It has no model
 client, separate agent loop, user-profile access or arbitrary JavaScript tool.
-This version supports macOS and Linux. The desktop marks it unavailable on
-Windows because a Windows launcher is not yet provided.
-Real Chromium and Electron acceptance tests were run on macOS. Linux display
-selection has unit coverage but has not been verified on a Linux host.
+This plugin supports Windows, macOS and Linux. Windows packages use the bundled
+`launch.exe --mcp` launcher and Electron as the Node runtime; users do not need
+a separate Node.js installation. Real Chromium fixtures cover browser actions,
+and Windows installed-app CI exercises the packaged launcher and runtime.
+Linux display selection also has unit coverage.
 
 ## Setup
 
@@ -20,7 +21,7 @@ policy still applies to invoking tools.
 
 The desktop supplies these environment values to the server:
 
-- `OPENHARNESS_NODE_BINARY`: Node or Electron executable used by `launch.sh`.
+- `OPENHARNESS_NODE_BINARY`: Node or Electron executable used by `launch.sh` or Windows `launch.exe`.
 - `ELECTRON_RUN_AS_NODE`: `1` when using Electron as the Node runtime.
 - `OPENHARNESS_BROWSER_RUNTIME`: absolute `playwright-core` module entry.
 - `PLAYWRIGHT_BROWSERS_PATH`: the host-managed Chromium cache.
@@ -53,7 +54,8 @@ Each attempted side effect is dispatched once. Playwright may wait for an
 element to become actionable, but this server does not repeat navigation,
 clicks or typing after failure. Error results mark uncertain outcomes. MCP
 cancellation closes the session and invalidates queued work. EOF and process
-termination close the browser; Open Harness also owns process-group cleanup.
+termination close the browser; Open Harness also owns process-group cleanup
+on Unix and a kill-on-close Job Object on Windows.
 
 Text and accessibility snapshots are bounded to 24,000 and 16,000 characters,
 respectively, with at most 128 interactive refs. Screenshots are viewport-only

@@ -312,7 +312,13 @@ It also prepares the real current-user Chrome registration, starts the packaged
 native host and MCP launcher, and tests the extension in an isolated Chrome for
 Testing profile. This covers authenticated named-pipe communication, background
 tab groups, page input/clicks and screenshots without switching the user's tab.
-It then uninstalls the app before uploading the installer. This is a smoke test,
+The same installed-app run prepares and exercises the independent Chromium
+browser, then drives a temporary WinForms app through the packaged Windows
+Computer Use helper. It checks Unicode input, ref clicks, navigation, scrolling,
+window-only PNG capture, stale snapshot/password refusal, and owned process
+cleanup. API stdin closure is also tested on Windows to verify graceful backend
+shutdown before the forced-exit deadline. It then uninstalls the app before
+uploading the installer. This is a smoke test,
 not full coverage of every Windows feature or an upgrade test.
 
 Download `Open-Harness-<version>-windows-x64-setup.exe` directly from the
@@ -354,9 +360,12 @@ not publish a GitHub Release. The existing macOS local packaging command
 remains available without an Apple developer account.
 
 Windows currently supports the desktop conversation interface, model connections,
-context management, history, local file tools, and Chrome connection. The isolated
-browser launcher, native Computer Use, and sandboxed shell commands still require
-platform work and remain unavailable on Windows; packaging does not enable them.
+context management, history, local file tools, Chrome connection, the independent
+Chromium browser and native Computer Use. Native desktop input requires an
+unlocked interactive Windows session, stays in the selected foreground window,
+and does not elevate privileges. Chrome tab operations can run in the background.
+Sandboxed shell commands still require separate platform work; enabling these
+plugins does not enable shell execution.
 
 ### Local checks and macOS packaging
 
@@ -444,8 +453,10 @@ Never point two application instances at the same directory.
 Open **扩展 → 插件** for the bundled **Chrome**, **独立浏览器** and **电脑操作** cards.
 They are optional installations with their own Skill and stdio MCP server;
 installing them grants no control permission and starts no process. Desktop
-builds bundle their source and, on macOS, a prebuilt native helper. Building the
-macOS app requires Xcode Command Line Tools and macOS 14 or later.
+builds bundle their source and a native helper on Windows and macOS. Building the
+macOS app requires Xcode Command Line Tools and macOS 14 or later. The Windows
+helper uses the inbox .NET Framework compiler and framework assemblies; users
+do not need Node.js, Python or a separate .NET SDK.
 
 For **Chrome**, the production entry is **安装 Chrome 扩展**. It prepares the local
 Native Messaging host, installs/enables the bundled plugin, then opens its verified
@@ -468,8 +479,8 @@ This release's extension has not yet been published to the Web Store.
 
 For **Browser Use**, click **准备浏览器** to explicitly download matching Chromium,
 then **安装**. Subsequent use opens an isolated browser with temporary cookies,
-not an existing personal profile. The browser supports macOS/Linux (headless on
-Linux without a graphical session); Windows is currently unavailable. Page text
+not an existing personal profile. The browser supports Windows, macOS and Linux
+(headless on Linux without a graphical session). Page text
 and accessibility references support semantic actions. Coordinates additionally
 require a current screenshot. Native dialogs, file upload, arbitrary JavaScript
 execution and persistent profiles are outside this initial version.
@@ -486,13 +497,22 @@ permission. If System Settings shows an enabled entry but a previously built
 local app has a different signing identity, remove that old entry and add the
 current packaged Open Harness Computer Use app again. After granting permissions, stop the
 current control session and try again; the OS may require restarting the host.
-The executor only controls a selected running app and its observed window.
-Windows/Linux desktop input, secure-field typing and cross-app shortcuts are
-not supported.
+On Windows, **电脑操作** uses the bundled **OpenHarnessComputerUse.exe** helper.
+Its card reports whether the interactive desktop is available; there are no macOS
+permission switches. UI Automation provides window contents and element refs,
+PrintWindow captures only the selected window, and native input requires that
+window to be in the foreground. An unlocked desktop is required. Higher-integrity
+applications and the UAC secure desktop are refused; the helper never requests
+administrator elevation. Apps that cannot produce a window-only capture can
+still expose accessibility refs, but coordinate actions require a valid capture.
+
+Both executors only control a selected running app and its observed window.
+Native Linux desktop input, secure-field typing and cross-app shortcuts are
+not supported. For concurrent background web work, use the Chrome plugin.
 
 At first use, approve **允许本次** or **允许本会话** in the conversation. A browser
 grant covers its isolated session. An application grant records its exact bundle
-ID and PID; first use of another application needs approval, and returning to a
+ID (macOS) or executable-derived identity (Windows) and PID; first use of another application needs approval, and returning to a
 previously approved unchanged process reuses its session grant. Chrome grants
 cover one tab and one origin; navigation to a new origin needs another approval. The inline
 **电脑与浏览器控制** strip identifies the current target and provides **停止控制**.
@@ -537,8 +557,11 @@ cargo test -p agent-core -p agent-runtime -p agent-memory -p agent-providers --o
 ```
 
 The native smoke operates only its temporary Cocoa fixture. Missing OS permission
-reports `blocked` with exit code 2, which is not a passing GUI test. Native GUI
-success has not been established on Windows/Linux; there is no executor there.
+reports `blocked` with exit code 2, which is not a passing GUI test. Windows CI
+uses `tests/e2e/windows-controls.mjs` through the installed-app smoke test; its
+WinForms fixture is compiled separately and is never shipped in the installer.
+The fixture checks actual input effects and cleanup, not just successful tool
+responses. Linux has no native desktop executor.
 
 To check permissions for normal use, first run `npm run package:dir`, open the
 packaged app through Finder or `open`, and check its Computer Use card. Authorize

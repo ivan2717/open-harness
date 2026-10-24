@@ -59,7 +59,7 @@ export async function runPackagedWorker({
   workerPath,
   artifacts,
   environment = process.env,
-  timeoutMs = 240_000,
+  timeoutMs = 600_000,
   shutdownGraceMs = 5_000,
 }) {
   await mkdir(artifacts, { recursive: true })

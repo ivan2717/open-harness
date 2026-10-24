@@ -2,9 +2,9 @@ use std::{io, os::windows::io::AsRawHandle, process::Child, ptr};
 use windows_sys::Win32::{
     Foundation::{CloseHandle, HANDLE},
     System::JobObjects::{
-        AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
-        SetInformationJobObject,
+        AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_BREAKAWAY_OK,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JobObjectExtendedLimitInformation, SetInformationJobObject,
     },
 };
 
@@ -21,7 +21,10 @@ impl Job {
         }
         let job = Self(handle);
         let mut information = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
-        information.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        // Only the dedicated Chrome launch command explicitly breaks away.
+        // Ordinary Node/helper/browser children still inherit this job.
+        information.BasicLimitInformation.LimitFlags =
+            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_BREAKAWAY_OK;
         // SAFETY: information points to the matching structure for this class,
         // and its storage remains alive until this synchronous call returns.
         if unsafe {

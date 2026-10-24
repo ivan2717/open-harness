@@ -2,9 +2,12 @@ use std::{net::SocketAddr, path::PathBuf};
 use tokio::net::TcpListener;
 use tracing_subscriber::EnvFilter;
 
+mod parent_lifetime;
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     init_tracing();
+    let parent = parent_lifetime::watch()?;
 
     let address: SocketAddr = std::env::var("OPENHARNESS_BIND")
         .unwrap_or_else(|_| "127.0.0.1:7788".into())
@@ -26,7 +29,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     axum::serve(listener, api::app(state.clone()))
         .with_graceful_shutdown(async move {
-            shutdown_signal().await;
+            shutdown_signal(parent).await;
             state.shutdown().await;
         })
         .await?;
@@ -43,7 +46,7 @@ fn init_tracing() {
         .init();
 }
 
-async fn shutdown_signal() {
+async fn shutdown_signal(parent: Option<tokio::sync::oneshot::Receiver<()>>) {
     let interrupt = async {
         if let Err(error) = tokio::signal::ctrl_c().await {
             tracing::error!(%error, "failed to listen for interrupt");
@@ -63,6 +66,14 @@ async fn shutdown_signal() {
     };
     #[cfg(not(unix))]
     let terminate = std::future::pending::<()>();
-    tokio::select! { _ = interrupt => {}, _ = terminate => {} }
+    let parent_closed = async {
+        match parent {
+            Some(receiver) => {
+                let _ = receiver.await;
+            }
+            None => std::future::pending::<()>().await,
+        }
+    };
+    tokio::select! { _ = interrupt => {}, _ = terminate => {}, _ = parent_closed => {} }
     tracing::info!("shutdown signal received");
 }
