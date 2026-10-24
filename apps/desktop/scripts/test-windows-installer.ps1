@@ -20,10 +20,14 @@ function Assert-BackendDependencies {
     # on users' machines. Inspect the installed backend instead of trusting that
     # it launches here or relying only on the compiler's static-CRT flag.
     $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
-    $dumpbin = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -find 'VC\Tools\MSVC\**\bin\Hostx64\x64\dumpbin.exe' | Select-Object -First 1
-    if ($LASTEXITCODE -ne 0 -or -not $dumpbin) { throw 'Could not locate dumpbin for backend dependency validation' }
+    $installations = @(& $vswhere -all -products '*' -prerelease -property installationPath)
+    if ($LASTEXITCODE -ne 0) { throw 'Could not locate Visual Studio installations' }
+    $dumpbin = $installations | Where-Object { $_.Trim() } | ForEach-Object {
+        Get-ChildItem (Join-Path ($_.Trim()) 'VC/Tools/MSVC/*/bin/Hostx64/x64/dumpbin.exe') -ErrorAction SilentlyContinue
+    } | Sort-Object FullName -Descending | Select-Object -First 1
+    if (-not $dumpbin) { throw "Could not locate dumpbin under: $($installations -join ', ')" }
     $backend = Join-Path $installDirectory 'resources/bin/api.exe'
-    $dependencies = (& $dumpbin /DEPENDENTS $backend 2>&1 | Out-String)
+    $dependencies = (& $dumpbin.FullName /DEPENDENTS $backend 2>&1 | Out-String)
     $dependencyExitCode = $LASTEXITCODE
     $artifacts = if ($env:OPENHARNESS_E2E_ARTIFACTS) {
         [System.IO.Path]::GetFullPath($env:OPENHARNESS_E2E_ARTIFACTS)

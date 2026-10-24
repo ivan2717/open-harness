@@ -87,7 +87,8 @@ jobs:
           cache-dependency-path: apps/desktop/package-lock.json
       - name: Set up Rust
         run: rustup toolchain install stable --profile minimal
-      - uses: actions/cache@v5
+      - uses: actions/cache/restore@v5
+        id: rust-cache
         with:
           path: |
             ~/.cargo/registry
@@ -98,6 +99,15 @@ jobs:
       - run: npm ci
       - name: Build Windows installer
         run: npm run package:win
+      - name: Save compiled backend cache
+        if: steps.rust-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ steps.rust-cache.outputs.cache-primary-key }}
       - name: Install, launch, and uninstall the packaged app
         run: ./scripts/test-windows-installer.ps1
       - name: Record checksums and build provenance
