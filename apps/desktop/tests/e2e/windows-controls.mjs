@@ -469,6 +469,11 @@ export async function verifyWindowsControls({ page, runtime, directory, artifact
     await step('select separate private fixture', () =>
       secondary.tool('computer_select_app', { bundle_id: firstApp.bundle_id, pid: other.pid }),
     )
+    await step('verify foreground moved to selected fixture', async () => {
+      const selected = await secondary.tool('computer_observe')
+      assert.equal(selected.selected_app?.pid, other.pid)
+      assert.equal(selected.selected_app?.bundle_id, firstApp.bundle_id)
+    })
     await step('reject input after foreground moves', () =>
       assert.rejects(
         computerClient.tool('computer_type', {

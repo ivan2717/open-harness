@@ -116,6 +116,7 @@ async function withPluginSources(test) {
       await writeFile(join(source, name, 'mcp.json'), JSON.stringify(manifest))
     }
     await mkdir(join(source, 'computer-use', 'windows', 'bin'), { recursive: true })
+    await writeFile(join(source, 'computer-use', 'windows', 'Fixture.cs'), 'test window source')
     for (const file of [
       'OpenHarnessComputerUse.exe',
       'ComputerUseFixture.exe',
@@ -155,6 +156,7 @@ test('Windows packages all control plugins with native MCP launchers and only th
     await access(join(computer, 'windows', 'bin', 'OpenHarnessComputerUse.exe'))
     await assert.rejects(access(join(computer, 'windows', 'bin', 'ComputerUseFixture.exe')))
     await assert.rejects(access(join(computer, 'windows', 'bin', 'ComputerUseFixture.pdb')))
+    await assert.rejects(access(join(computer, 'windows', 'Fixture.cs')))
     await assert.rejects(access(join(computer, 'bin')))
   })
 })

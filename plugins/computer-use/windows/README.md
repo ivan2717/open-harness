@@ -47,6 +47,16 @@ require unchanged window-only pixels and a hit test inside the selected window.
 All coordinates are physical pixels relative to the window's top-left corner,
 not the pixels of the potentially resized screenshot.
 
+Only explicit application selection requests foreground activation. If normal
+activation is refused, the helper tries the selected UIA window's `SetFocus`,
+then one temporary `AttachThreadInput` handoff from the verified foreground
+thread. The attached section performs only Win32 checks and activation; it
+never waits on a UIA provider and always detaches before further validation.
+Held mouse buttons/modifiers, secure desktops, and elevated foreground apps
+prevent this handoff. Input operations never steal focus back. Windows can
+still deny activation; `FOCUS_CHANGED` then asks the user to bring the intended
+app forward once. No synthetic Alt key or global Windows setting is used.
+
 Scrolling uses a vertically scrollable UIA target or ancestor without changing
 focus. UIA supplies small/large semantic increments, so the magnitude is not an
 exact pixel distance. Traditional controls without ScrollPattern receive one
@@ -67,4 +77,7 @@ Implementation references:
 - [UI Automation threading](https://learn.microsoft.com/en-us/dotnet/framework/ui-automation/ui-automation-threading-issues)
 - [PrintWindow](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-printwindow)
 - [SendInput and UIPI](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-sendinput)
+- [Foreground activation restrictions](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setforegroundwindow)
+- [Input queue attachment](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-attachthreadinput)
+- [UIA focus and provider behavior](https://learn.microsoft.com/en-us/dotnet/api/system.windows.automation.automationelement.setfocus)
 - [DPI awareness](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setprocessdpiawarenesscontext)

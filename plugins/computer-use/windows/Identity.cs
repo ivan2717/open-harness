@@ -82,9 +82,10 @@ namespace OpenHarness.ComputerUse {
             identity.WindowThread = Native.GetWindowThreadProcessId(chosen, out owner);
             var element = AutomationElement.FromHandle(chosen);
             identity.WindowRuntime = Observation.Runtime(element);
+            Input.IdleInput();
             if (Native.IsIconic(chosen)) Native.ShowWindowAsync(chosen, 9);
-            if (Native.GetForegroundWindow() != chosen) Native.SetForegroundWindow(chosen);
-            for (int i = 0; i < 20 && Native.GetForegroundWindow() != chosen; i++) Thread.Sleep(25);
+            for (int i = 0; i < 20 && Native.IsIconic(chosen); i++) Thread.Sleep(25);
+            Foreground.Activate(identity);
             identity.RequireForeground();
             return identity;
         }

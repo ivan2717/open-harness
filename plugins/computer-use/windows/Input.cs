@@ -17,7 +17,7 @@ namespace OpenHarness.ComputerUse {
                 pendingReleases = null;
             }
         }
-        private static void IdleInput() {
+        internal static void IdleInput() {
             foreach (int key in new[] { 1, 2, 4, 16, 17, 18, 91, 92 })
                 if ((Native.GetAsyncKeyState(key) & 0x8000) != 0) throw new ComputerError("INPUT_BUSY", "A mouse button or modifier is held. Release it before the next computer action.");
         }
