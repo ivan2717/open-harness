@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { ChromeController } from '../extension/controller.mjs';
+import { pageOperation } from '../extension/page.mjs';
+import { runInNewContext } from 'node:vm';
 const A = '11111111-1111-4111-8111-111111111111';
 const B = '22222222-2222-4222-8222-222222222222';
 function fixture() {
@@ -51,7 +53,7 @@ function fixture() {
       async detach(target) { detached.push(target.tabId); },
       async sendCommand(target, method, args) {
         commands.push({ target, method, args });
-        if (method === 'Page.getFrameTree') return { frameTree: { frame: { id: `frame-${target.tabId}` } } };
+        if (method === 'Page.getFrameTree') return { frameTree: { frame: { id: `frame-${target.tabId}`, url: pages.get(target.tabId).url } } };
         if (method === 'Page.createIsolatedWorld') return { executionContextId: target.tabId * 100 };
         if (method === 'Page.captureScreenshot') return { data: 'aW1hZ2U=' };
         if (method === 'Runtime.callFunctionOn') {
@@ -316,4 +318,77 @@ test('attachment failure identifies the existing grouped tab so it need not be c
   assert.equal(controller.sessions.size, 0);
   assert.deepEqual((await controller.call(A, 'chrome_tabs')).tabs.map(tab => tab.tab_id), [3]);
   assert.notEqual(pages.get(3).groupId, -1);
+});
+
+test('a new uncommitted tab reports loading and retries only reads without creating another tab', async () => {
+  const { controller, api, pages, commands, created } = fixture(); controller.allowNewTabs = true;
+  const create = api.tabs.create;
+  api.tabs.create = async args => {
+    const tab = await create(args);
+    Object.assign(tab, { url: '', pendingUrl: args.url, status: 'loading' });
+    return tab;
+  };
+  const opened = await controller.call(A, 'chrome_open', { url: 'https://example.com/first' });
+  const before = commands.length;
+  assert.deepEqual((await controller.call(A, 'chrome_tabs')).tabs, [{ tab_id: opened.tab_id, origin: opened.origin, owned: true, loading: true }]);
+  await assert.rejects(controller.call(A, 'chrome_snapshot'), /page_loading:.*same tab/);
+  await assert.rejects(controller.call(A, 'chrome_screenshot'), /page_loading:/);
+  assert.equal(commands.length, before);
+  Object.assign(pages.get(opened.tab_id), { url: 'https://example.com/first', pendingUrl: undefined, status: 'complete' });
+  const snapshot = await controller.call(A, 'chrome_snapshot');
+  assert.equal(snapshot.tab_id, opened.tab_id); assert.ok(snapshot.revision);
+  assert.equal(created.length, 1);
+});
+
+test('a pending authorized URL grants no access to or closing of a different committed origin', async () => {
+  const { controller, pages, commands, removed } = fixture(); controller.allowNewTabs = true;
+  const opened = await controller.call(A, 'chrome_open', { url: 'https://example.com' });
+  const tab = pages.get(opened.tab_id);
+  Object.assign(tab, { url: 'https://private.example/secret', pendingUrl: 'https://example.com', status: 'loading', title: 'private title' });
+  const before = commands.length;
+  await assert.rejects(controller.call(A, 'chrome_snapshot'), /page_loading:/);
+  await assert.rejects(controller.call(A, 'chrome_select_tab', { tab_id: opened.tab_id, origin: opened.origin }), /page_loading:/);
+  assert.equal(commands.length, before);
+  assert.equal((await controller.call(A, 'chrome_release', { close_owned: true })).closed, false);
+  assert.deepEqual(removed, []);
+  tab.pendingUrl = undefined;
+  await assert.rejects(controller.call(A, 'chrome_select_tab', { tab_id: opened.tab_id, origin: opened.origin }), /origin_changed:/);
+});
+
+test('navigation invalidates an action revision and never replays input', async () => {
+  const { controller, pages, commands } = fixture(); await controller.share(2);
+  const snapshot = await controller.call(A, 'chrome_select_tab', { tab_id: 2, origin: 'https://shared.example' });
+  pages.get(2).pendingUrl = 'https://shared.example/next';
+  await assert.rejects(controller.call(A, 'chrome_action', { action: 'click', ref: 'e1', revision: snapshot.revision }), /page_loading:/);
+  delete pages.get(2).pendingUrl;
+  await assert.rejects(controller.call(A, 'chrome_action', { action: 'click', ref: 'e1', revision: snapshot.revision }), /stale_snapshot:/);
+  assert.equal(commands.some(command => command.method === 'Input.dispatchMouseEvent'), false);
+  const fresh = await controller.call(A, 'chrome_snapshot');
+  await controller.call(A, 'chrome_action', { action: 'click', ref: 'e1', revision: fresh.revision });
+  assert.equal(commands.filter(command => command.method === 'Input.dispatchMouseEvent').length, 2);
+});
+
+test('the committed CDP frame is checked before any DOM operation when tab metadata lags navigation', async () => {
+  const { controller, api, commands } = fixture(); controller.allowNewTabs = true;
+  await controller.call(A, 'chrome_open', { url: 'https://example.com' });
+  const command = api.debugger.sendCommand;
+  let frameUrl = 'about:blank';
+  api.debugger.sendCommand = (target, method, args) => method === 'Page.getFrameTree'
+    ? { frameTree: { frame: { id: 'frame', url: frameUrl } } } : command(target, method, args);
+  await assert.rejects(controller.call(A, 'chrome_snapshot'), /page_loading:/);
+  frameUrl = 'https://private.example/secret';
+  await assert.rejects(controller.call(A, 'chrome_snapshot'), /origin_changed:/);
+  assert.equal(commands.some(command => command.method === 'Runtime.callFunctionOn'), false);
+  frameUrl = 'https://example.com';
+  assert.ok((await controller.call(A, 'chrome_snapshot')).revision);
+});
+
+test('an isolated world refuses an uncommitted or unapproved document before reading the DOM', () => {
+  for (const [href, origin, expected] of [
+    ['about:blank', 'null', /page_loading:/],
+    ['https://private.example/secret', 'https://private.example', /origin_changed:/],
+  ]) {
+    const context = { location: { href, origin }, get document() { throw new Error('DOM must remain unread'); } };
+    assert.throws(() => runInNewContext(`(${pageOperation.toString()})('snapshot', {expected_origin:'https://example.com'})`, context), expected);
+  }
 });

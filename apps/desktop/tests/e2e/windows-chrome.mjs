@@ -575,14 +575,24 @@ async function verifyBrowser({
       /Open Harness/,
     )
     let snapshot
+    const readReadySnapshot = async () => {
+      try {
+        return await bridge.request('chrome_snapshot')
+      } catch (error) {
+        // Only an explicitly uncommitted navigation is retryable here. Origin
+        // changes, revoked grants and all action failures remain test failures.
+        if (error instanceof Error && /\bpage_loading:/.test(error.message)) return null
+        throw error
+      }
+    }
     await step(
       'wait for background fixture snapshot',
       () =>
         expect
           .poll(
             async () => {
-              snapshot = await bridge.request('chrome_snapshot')
-              return snapshot.text
+              snapshot = await readReadySnapshot()
+              return snapshot?.text ?? ''
             },
             { timeout: 15_000 },
           )
@@ -620,6 +630,14 @@ async function verifyBrowser({
     )
     const second = await rpc('chrome_open', { url: `${url}?agent=second` })
     assert.equal(second.group_id, first.group_id, 'the same task must reuse its Chrome group')
+    await step(
+      'wait for second background tab navigation',
+      () =>
+        expect
+          .poll(async () => (await readReadySnapshot())?.text ?? '', { timeout: 15_000 })
+          .toContain('Background fixture'),
+      20_000,
+    )
     assert.equal((await rpc('chrome_release', { close_owned: true })).closed, true)
     await rpc('chrome_select_tab', { tab_id: first.tab_id, origin: new URL(url).origin })
     assert.equal((await rpc('chrome_release', { close_owned: true })).closed, true)

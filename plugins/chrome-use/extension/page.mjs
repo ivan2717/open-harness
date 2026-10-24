@@ -1,6 +1,10 @@
 // Executed only in an extension-created isolated world. No page-provided code,
 // selectors or JavaScript expressions are accepted from model/tool arguments.
 export function pageOperation(operation, args) {
+  // Navigation can replace the document after tabs.get / Page.getFrameTree.
+  // Check again inside the exact isolated world before reading or dispatching.
+  if (!location.href || location.href === 'about:blank') throw new Error('page_loading: wait for navigation, then retry chrome_snapshot only.');
+  if (location.origin !== args.expected_origin) throw new Error('origin_changed: document access requires authorization again.');
   const key = '__openHarnessPageState';
   let state = globalThis[key];
   if (!state) {
