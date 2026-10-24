@@ -14,10 +14,10 @@ concurrency:
 
 jobs:
   check:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Set up Rust
         run: rustup toolchain install stable --profile minimal --component rustfmt --component clippy
       - name: Check formatting
@@ -30,14 +30,14 @@ jobs:
         run: cargo test --workspace --doc --locked
 
   desktop:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     defaults:
       run:
         working-directory: apps/desktop
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
         with:
           node-version: 24
           cache: npm
@@ -49,14 +49,14 @@ jobs:
       - run: npm run build
 
   plugins:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     defaults:
       run:
         working-directory: apps/desktop
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
         with:
           node-version: 24
           cache: npm
@@ -79,15 +79,15 @@ jobs:
         working-directory: apps/desktop
         shell: pwsh
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
         with:
           node-version: 24
           cache: npm
           cache-dependency-path: apps/desktop/package-lock.json
       - name: Set up Rust
         run: rustup toolchain install stable --profile minimal
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -116,7 +116,7 @@ jobs:
           } | ConvertTo-Json | Set-Content release/build-info.json -Encoding utf8
       - name: Upload Windows installer
         id: installer
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: Open-Harness-windows-x64-${{ github.run_number }}
           path: |
@@ -134,7 +134,7 @@ jobs:
           'Unsigned test build. Installed-app offline task and restart checks passed. Artifact expires after 14 days.' >> $env:GITHUB_STEP_SUMMARY
       - name: Upload smoke diagnostics
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: Windows-smoke-diagnostics-${{ github.run_number }}
           path: apps/desktop/test-results/packaged/

@@ -21,6 +21,9 @@ try {
     Wait-Installer $installer
     $env:OPENHARNESS_E2E_EXECUTABLE = Join-Path $installDirectory 'Open Harness.exe'
     if (-not (Test-Path $env:OPENHARNESS_E2E_EXECUTABLE)) { throw 'Installed executable missing' }
+    if (-not (Test-Path (Join-Path $installDirectory 'Uninstall Open Harness.exe'))) {
+        throw 'Installed uninstaller missing'
+    }
     & node (Join-Path $desktop 'tests/e2e/packaged.mjs')
     if ($LASTEXITCODE -ne 0) { throw 'Installed app smoke test failed' }
 } finally {
