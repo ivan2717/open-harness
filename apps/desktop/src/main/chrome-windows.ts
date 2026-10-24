@@ -76,8 +76,8 @@ export async function secureWindowsChromeDirectory(directory: string): Promise<v
   const script = `
 $ErrorActionPreference = 'Stop'
 $path = $env:OPENHARNESS_CHROME_PRIVATE_DIRECTORY
-$item = Get-Item -LiteralPath $path -Force
-if (-not $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'Invalid Chrome directory' }
+$item = [IO.DirectoryInfo]::new($path)
+if (-not $item.Exists -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'Invalid Chrome directory' }
 $user = [Security.Principal.WindowsIdentity]::GetCurrent().User
 $system = [Security.Principal.SecurityIdentifier]::new('S-1-5-18')
 $acl = [Security.AccessControl.DirectorySecurity]::new()
@@ -87,7 +87,7 @@ foreach ($identity in @($user, $system)) {
   $rule = [Security.AccessControl.FileSystemAccessRule]::new($identity, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
   $acl.AddAccessRule($rule)
 }
-Set-Acl -LiteralPath $path -AclObject $acl
+$item.SetAccessControl($acl)
 `
   await execute(powershell, encodedScript(script), {
     env: { ...process.env, OPENHARNESS_CHROME_PRIVATE_DIRECTORY: directory },

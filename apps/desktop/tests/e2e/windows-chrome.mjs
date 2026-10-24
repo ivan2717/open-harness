@@ -28,7 +28,9 @@ async function powershell(script, environment = {}) {
       '-NoProfile',
       '-NonInteractive',
       '-EncodedCommand',
-      Buffer.from(script, 'utf16le').toString('base64'),
+      Buffer.from("$PSModuleAutoLoadingPreference = 'None'\n" + script, 'utf16le').toString(
+        'base64',
+      ),
     ],
     {
       env: { ...process.env, ...environment },
@@ -76,15 +78,25 @@ async function verifyPrivateAcl(directory, configPath) {
     `
 $ErrorActionPreference = 'Stop'
 $user = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-$items = @($env:OPENHARNESS_SMOKE_CHROME_DIRECTORY, $env:OPENHARNESS_SMOKE_CHROME_CONFIG) | ForEach-Object {
-  $item = Get-Item -LiteralPath $_ -Force
-  $acl = Get-Acl -LiteralPath $_
-  $allowed = @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]) | Where-Object { $_.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow } | ForEach-Object {
-    @{ sid = $_.IdentityReference.Value; fullControl = $_.FileSystemRights.HasFlag([Security.AccessControl.FileSystemRights]::FullControl); inherited = $_.IsInherited }
-  })
-  @{ directory = $item.PSIsContainer; protected = $acl.AreAccessRulesProtected; owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value; allowed = $allowed }
+$items = [Collections.Generic.List[string]]::new()
+foreach ($item in @([IO.DirectoryInfo]::new($env:OPENHARNESS_SMOKE_CHROME_DIRECTORY), [IO.FileInfo]::new($env:OPENHARNESS_SMOKE_CHROME_CONFIG))) {
+  $acl = $item.GetAccessControl()
+  $allowed = [Collections.Generic.List[string]]::new()
+  foreach ($rule in $acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
+    if ($rule.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow) {
+      $full = $rule.FileSystemRights.HasFlag([Security.AccessControl.FileSystemRights]::FullControl).ToString().ToLowerInvariant()
+      $inherited = $rule.IsInherited.ToString().ToLowerInvariant()
+      $allowed.Add('{"sid":"' + $rule.IdentityReference.Value + '","fullControl":' + $full + ',"inherited":' + $inherited + '}')
+    }
+  }
+  $directory = ($item -is [IO.DirectoryInfo]).ToString().ToLowerInvariant()
+  $protected = $acl.AreAccessRulesProtected.ToString().ToLowerInvariant()
+  $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
+  $items.Add('{"directory":' + $directory + ',"protected":' + $protected + ',"owner":"' + $owner + '","allowed":[' + [String]::Join(',', $allowed) + ']}')
 }
-$json = @{ user = $user; items = @($items) } | ConvertTo-Json -Depth 5 -Compress
+# Values are OS-generated SID strings and booleans, not arbitrary path content.
+# Build the small ASCII result without loading ConvertTo-Json's Utility module.
+$json = '{"user":"' + $user + '","items":[' + [String]::Join(',', $items) + ']}'
 [Console]::Write([Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($json)))
 `,
     { OPENHARNESS_SMOKE_CHROME_DIRECTORY: directory, OPENHARNESS_SMOKE_CHROME_CONFIG: configPath },
