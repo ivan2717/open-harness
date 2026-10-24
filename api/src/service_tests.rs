@@ -145,3 +145,103 @@ async fn shutdown_settles_active_work_and_rejects_new_execution() {
     );
     fs::remove_dir_all(directory).unwrap();
 }
+
+#[tokio::test]
+async fn compact_waits_for_idle_worker_cleanup_and_rechecks_admission() {
+    for blocker in ["none", "execution", "compaction", "shutdown"] {
+        let directory = std::env::temp_dir().join(format!(
+            "open-harness-compact-tail-{}-{}",
+            std::process::id(),
+            NEXT_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        let state = AppState::open_with_delay(directory.clone(), None, Duration::ZERO)
+            .await
+            .unwrap();
+        let created = state
+            .create(CreateRunInput {
+                execution_policy: Default::default(),
+                prompt: "/ask compact cleanup".into(),
+                files: Vec::new(),
+                model_id: MODEL_ID.into(),
+                workspace_path: None,
+                permission_mode: Default::default(),
+            })
+            .await
+            .unwrap();
+        let id = &created.summary.id;
+        let entry = state.entry(id).unwrap();
+        let mut changed = state.inner.mailboxes.subscribe();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while entry.background.load(Ordering::Acquire) || entry.runtime.is_executing(id) {
+                changed.changed().await.unwrap();
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            entry.snapshot.get().summary.status,
+            RunStatus::WaitingForInput
+        );
+
+        // Recreate the precise boundary: the idle outcome has been published,
+        // but the worker still owns the execution tail until its guard drops.
+        entry.background.store(true, Ordering::Release);
+        let compact = state.compact(id);
+        tokio::pin!(compact);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(25), &mut compact)
+                .await
+                .is_err(),
+            "manual compaction must wait for the published idle run's cleanup"
+        );
+        assert!(!entry.snapshot.get().summary.compacting);
+
+        // Cleanup/cancellation and a competing admission must be able to take
+        // both locks while compact is waiting.
+        let gate = tokio::time::timeout(Duration::from_secs(1), state.inner.model_gate.lock())
+            .await
+            .unwrap();
+        let operation = tokio::time::timeout(Duration::from_secs(1), entry.operations.lock())
+            .await
+            .unwrap();
+        match blocker {
+            "execution" => entry
+                .snapshot
+                .update(|detail| detail.summary.status = RunStatus::Running)
+                .unwrap(),
+            "compaction" => entry
+                .snapshot
+                .update(|detail| detail.summary.compacting = true)
+                .unwrap(),
+            "shutdown" => state.inner.shutting_down.store(true, Ordering::Release),
+            _ => (),
+        }
+        drop(BackgroundExecution {
+            state: &state,
+            entry: &entry,
+        });
+        drop(operation);
+        drop(gate);
+        let result = tokio::time::timeout(Duration::from_secs(1), &mut compact)
+            .await
+            .unwrap();
+        if blocker == "none" {
+            result.unwrap();
+        } else {
+            assert!(
+                matches!(result, Err(ServiceError::Conflict(_))),
+                "{blocker}"
+            );
+            // Remove the simulated competing operation before cleanup.
+            entry
+                .snapshot
+                .update(|detail| {
+                    detail.summary.status = RunStatus::WaitingForInput;
+                    detail.summary.compacting = false;
+                })
+                .unwrap();
+        }
+        state.shutdown().await;
+        fs::remove_dir_all(directory).unwrap();
+    }
+}

@@ -29,12 +29,22 @@ export function verifyMacSignature(context, run = spawnSync) {
       `Signature identity mismatch: expected ${macBundleIdentifier}, received ${identifier ?? 'none'}`,
     )
   }
-  const computerApp = join(appPath, 'Contents', 'Resources', 'plugins', 'computer-use', 'bin', 'Open Harness Computer Use.app')
+  const computerApp = join(
+    appPath,
+    'Contents',
+    'Resources',
+    'plugins',
+    'computer-use',
+    'bin',
+    'Open Harness Computer Use.app',
+  )
   codesign(['--verify', '--strict', '--verbose=2'], computerApp)
   const computerSignature = codesign(['--display', '--verbose=2'], computerApp)
   const computerIdentifier = /^Identifier=(.+)$/m.exec(computerSignature)?.[1]?.trim()
   if (computerIdentifier !== 'dev.openharness.computeruse') {
-    throw new Error(`Computer Use signature identity mismatch: expected dev.openharness.computeruse, received ${computerIdentifier ?? 'none'}`)
+    throw new Error(
+      `Computer Use signature identity mismatch: expected dev.openharness.computeruse, received ${computerIdentifier ?? 'none'}`,
+    )
   }
 }
 

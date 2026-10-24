@@ -278,3 +278,81 @@ async fn shutdown_preserves_idle_outcomes_and_waits_for_worker_cleanup_without_o
         fixture.close().await;
     }
 }
+
+#[tokio::test]
+async fn revert_waits_for_worker_tail_and_rechecks_family_after_releasing_locks() {
+    for resumed in [false, true] {
+        let fixture = Fixture::new().await;
+        let tools = fixture.child.workspace.as_ref().unwrap();
+        tools
+            .execute(agent_runtime::ToolCall {
+                id: "child-edit".into(),
+                name: "apply_patch".into(),
+                arguments: serde_json::json!({
+                    "patch": "*** Begin Patch\n*** Add File: owned.txt\n+child result\n*** End Patch"
+                })
+                .to_string(),
+            })
+            .await
+            .unwrap();
+        for entry in [&fixture.parent, &fixture.child] {
+            entry
+                .snapshot
+                .update(|detail| detail.summary.status = RunStatus::WaitingForInput)
+                .unwrap();
+        }
+        let state = fixture.state.clone();
+        let mut reverting =
+            tokio::spawn(async move { state.revert_file("child", "owned.txt").await });
+        assert!(
+            tokio::time::timeout(Duration::from_millis(25), &mut reverting)
+                .await
+                .is_err(),
+            "a published outcome must wait for the worker's lease cleanup"
+        );
+        assert!(tools.root().join("owned.txt").exists());
+
+        // Pending undo must not block cancellation or fresh admission. A new
+        // turn admitted while waiting must be observed before undo can proceed.
+        let gate = tokio::time::timeout(
+            Duration::from_secs(1),
+            fixture.state.inner.model_gate.lock(),
+        )
+        .await
+        .expect("undo must release the admission gate while awaiting cleanup");
+        let operation =
+            tokio::time::timeout(Duration::from_secs(1), fixture.child.operations.lock())
+                .await
+                .expect("undo must release operation locks while awaiting cleanup");
+        if resumed {
+            fixture
+                .parent
+                .snapshot
+                .update(|detail| detail.summary.status = RunStatus::Running)
+                .unwrap();
+        }
+        fixture.access.release("child").await;
+        drop(BackgroundExecution {
+            state: &fixture.state,
+            entry: &fixture.child,
+        });
+        drop(operation);
+        drop(gate);
+
+        let result = tokio::time::timeout(Duration::from_secs(1), reverting)
+            .await
+            .expect("worker cleanup must wake pending undo")
+            .unwrap();
+        if resumed {
+            assert!(matches!(result, Err(ServiceError::Conflict(_))));
+            assert_eq!(
+                fs::read_to_string(tools.root().join("owned.txt")).unwrap(),
+                "child result\n"
+            );
+        } else {
+            assert!(result.unwrap().changes.is_empty());
+            assert!(!tools.root().join("owned.txt").exists());
+        }
+        fixture.close().await;
+    }
+}
