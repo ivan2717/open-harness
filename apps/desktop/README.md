@@ -282,7 +282,7 @@ the push. Ordinary code, documentation, and dependency updates keep running
 checks without creating an installer. Different main commits do not cancel each
 other's workflows, so a subsequent ordinary update cannot cancel a version build.
 
-When a test version is ready, update the desktop version and lockfile together:
+When a version is ready to publish, update the desktop version and lockfile together:
 
 ```bash
 cd apps/desktop
@@ -293,7 +293,11 @@ Use `minor`, `major`, or an explicit version when appropriate. Commit the two
 package files in a PR and merge it into `main` to build that version. The workflow
 compares the complete push's before/after commits, including multi-commit merges;
 an unreadable baseline or inconsistent lockfile fails the desktop check.
-This produces a test installer, without creating a version tag or GitHub Release.
+After the installer passes its smoke test, a separate publish job creates
+`v<version>` at the exact build commit and publishes a GitHub Release. Only this
+job has `contents: write`; build and test jobs keep read-only repository access.
+Versions with a prerelease suffix, such as `0.2.0-beta.1`, publish as prereleases.
+Ordinary merges with no desktop version change skip both packaging and publishing.
 
 The Windows job builds the Rust backend and Electron app on a Windows x64 runner.
 The release backend statically links the Visual C++ runtime. The installed
@@ -307,18 +311,27 @@ context compaction, renderer isolation, and persisted history after restarting.
 It then uninstalls the app before uploading the installer. This is a smoke test,
 not full coverage of every Windows feature or an upgrade test.
 
-Download **Open-Harness-windows-x64-<run number>** from the run's **Artifacts**
-section (or the link in its summary), unzip it, and run
-`Open-Harness-<version>-windows-x64-setup.exe`. The artifact also includes
-`SHA256SUMS.txt` and `build-info.json` with the source commit and workflow URL.
-Installers are retained for 14 days; smoke screenshots and logs for 7 days.
-Only a fully successful build and installed-app smoke test uploads an installer.
+Download `Open-Harness-<version>-windows-x64-setup.exe` directly from the
+[Release page](https://github.com/ivan2717/open-harness/releases). Each release
+also contains `SHA256SUMS.txt` and `build-info.json` with the source commit and
+workflow URL. Release assets do not use Actions artifact retention.
+
+Publishing verifies the commit, version, and installer checksum, uploads all three
+files to a draft, and makes it public only after verifying their remote hashes and
+sizes. Retrying the publish job resumes missing draft assets or accepts an already
+published identical release; it never moves an existing tag or overwrites conflicting
+assets. Reuse of a version for different content fails explicitly. Rerun the failed
+publish job to retry the same build, rather than rebuilding an existing version.
+
+The run's **Artifacts** section also provides
+**Open-Harness-windows-x64-<run number>** for 14 days; smoke screenshots and logs
+are retained for 7 days. Only a fully successful build and installed-app smoke test
+uploads an installer.
 
 These are **unsigned test builds**. No Apple account, Windows certificate, model
 API key, or publishing secret is needed. Windows can show an unknown-publisher or
 SmartScreen prompt. The installer is per-user and does not request administrator
-elevation. Builds are not automatically published to GitHub Releases and do not
-add an application auto-updater.
+elevation. Publishing to GitHub Releases does not add an application auto-updater.
 
 To build the same installer locally on **Windows x64**, install Node.js 24, Rust
 stable, and Visual Studio C++ Build Tools, then run:
@@ -332,8 +345,8 @@ pwsh -File scripts/test-windows-installer.ps1
 ```
 
 `package:win` refuses other host platforms/architectures so a macOS/Linux Rust
-binary cannot accidentally be bundled with Windows Electron. It disables
-automatic publishing explicitly. The existing macOS local packaging command
+binary cannot accidentally be bundled with Windows Electron. Local packaging does
+not publish a GitHub Release. The existing macOS local packaging command
 remains available without an Apple developer account.
 
 Windows currently supports the desktop conversation interface, model connections,

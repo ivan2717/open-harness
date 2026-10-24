@@ -25,10 +25,12 @@ API requests. See [desktop setup and architecture](apps/desktop/README.md)
 for state ownership, persistence, checks, and packaging.
 
 The **Checks** GitHub Actions workflow checks every merged update to `main`.
-It builds a Windows x64 test installer only when the desktop version changes,
+It builds a Windows x64 installer only when the desktop version changes,
 after Rust, desktop, and plugin checks pass. Each installer is installed, launched,
 tested with an offline task and restart, and uninstalled on the Windows runner.
-Download it from the successful run's **Artifacts** section (14-day retention).
+Download the installer and SHA-256 checksum from
+[GitHub Releases](https://github.com/ivan2717/open-harness/releases).
+The successful run's **Artifacts** section also keeps a copy for 14 days.
 These builds are unsigned and need no Apple developer account. See
 [Windows packaging and current feature limits](apps/desktop/README.md#windows-ci-installer).
 
