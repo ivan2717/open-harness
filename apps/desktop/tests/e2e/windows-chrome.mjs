@@ -3,6 +3,7 @@ import { spawn, execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import http from 'node:http'
 import net from 'node:net'
+import { appendFileSync } from 'node:fs'
 import { readFile, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -12,6 +13,44 @@ import { chromium, expect } from '@playwright/test'
 const execute = promisify(execFile)
 const hostName = 'dev.openharness.chrome'
 const registryKey = `HKCU\\Software\\Google\\Chrome\\NativeMessagingHosts\\${hostName}`
+
+function diagnosticSteps(artifacts) {
+  const started = Date.now()
+  const deadline = started + 180_000
+  const logPath = join(artifacts, 'windows-chrome-progress.log')
+  const log = (message) => {
+    const line = `[Windows Chrome +${((Date.now() - started) / 1_000).toFixed(1)}s] ${message}\n`
+    process.stdout.write(line)
+    appendFileSync(logPath, line)
+  }
+  return async (label, action, timeout = 20_000, cleanup = false) => {
+    const remaining = cleanup ? timeout : Math.min(timeout, deadline - Date.now())
+    log(`START ${label}`)
+    let timer
+    try {
+      if (remaining <= 0) throw new Error('Windows Chrome verification exceeded 180 seconds')
+      const value = await Promise.race([
+        Promise.resolve().then(action),
+        new Promise((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error(`Windows Chrome phase timed out: ${label}`)),
+            remaining,
+          )
+        }),
+      ])
+      if (!cleanup && Date.now() >= deadline)
+        throw new Error('Windows Chrome verification exceeded 180 seconds')
+      log(`PASS ${label}`)
+      return value
+    } catch (error) {
+      // Phase names contain no request payloads, credentials or profile contents.
+      log(`FAIL ${label}`)
+      throw error
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+}
 
 async function powershell(script, environment = {}) {
   const executable = join(
@@ -147,7 +186,7 @@ async function waitForExit(child, timeout = 10_000) {
   })
 }
 
-async function verifyNativeExecutable({ manifest, extensionId, configPath, pluginRoot }) {
+async function verifyNativeExecutable({ manifest, extensionId, configPath, pluginRoot, step }) {
   const { ChromeBridge } = await import(pathToFileURL(join(pluginRoot, 'bridge.mjs')).href)
   const { NativeDecoder, nativeFrame } = await import(
     pathToFileURL(join(pluginRoot, 'framing.mjs')).href
@@ -161,6 +200,9 @@ async function verifyNativeExecutable({ manifest, extensionId, configPath, plugi
   const bridge = new ChromeBridge({ configPath, timeoutMs: 5_000 })
   const ready = Promise.withResolvers()
   const failure = Promise.withResolvers()
+  // The overall deadline can expire before the phase starts awaiting these.
+  ready.promise.catch(() => {})
+  failure.promise.catch(() => {})
   let closing = false
   let stderr = ''
   const fail = (error) => {
@@ -195,25 +237,45 @@ async function verifyNativeExecutable({ manifest, extensionId, configPath, plugi
       fail(error)
     }
   })
+  let failureError
   try {
     // Reject immediately on malformed stdout, spawn failure or premature exit;
     // do not turn a broken native launcher into a polling timeout.
-    await Promise.race([
-      (async () => {
-        await ready.promise
-        assert.deepEqual(await bridge.request('chrome_status'), {
-          connected: true,
-          native_probe: true,
-        })
-      })(),
-      failure.promise,
-    ])
+    await step('native executable handshake and pipe round trip', () =>
+      Promise.race([
+        (async () => {
+          await ready.promise
+          if (closing) throw new Error('Native executable verification already ended')
+          assert.deepEqual(await bridge.request('chrome_status'), {
+            connected: true,
+            native_probe: true,
+          })
+        })(),
+        failure.promise,
+      ]),
+    )
+  } catch (error) {
+    failureError = error
+    throw error
   } finally {
     closing = true
+    ready.reject(failureError ?? new Error('Native executable verification ended'))
     clearTimeout(timer)
     bridge.close()
     host.stdin.end()
-    assert.equal(await waitForExit(host), 0, 'native host must exit cleanly after EOF')
+    try {
+      await step(
+        'native executable EOF and exit',
+        async () => {
+          assert.equal(await waitForExit(host), 0, 'native host must exit cleanly after EOF')
+        },
+        12_000,
+        true,
+      )
+    } catch (error) {
+      host.kill()
+      if (!failureError) throw error
+    }
   }
   const rejected = spawn(
     manifest.path,
@@ -229,15 +291,25 @@ async function verifyNativeExecutable({ manifest, extensionId, configPath, plugi
     outputBytes += chunk.length
   })
   rejected.stderr.resume()
-  assert.notEqual(
-    await waitForExit(rejected),
-    0,
-    'an unregistered extension origin must be rejected',
-  )
-  assert.equal(outputBytes, 0, 'a rejected origin must receive no native frames')
+  try {
+    await step(
+      'reject unregistered native origin',
+      async () => {
+        assert.notEqual(
+          await waitForExit(rejected),
+          0,
+          'an unregistered extension origin must be rejected',
+        )
+        assert.equal(outputBytes, 0, 'a rejected origin must receive no native frames')
+      },
+      12_000,
+    )
+  } finally {
+    if (rejected.exitCode === null && rejected.signalCode === null) rejected.kill()
+  }
 }
 
-async function verifyMcpExecutable({ pluginRoot, configPath, executable }) {
+async function verifyMcpExecutable({ pluginRoot, configPath, executable, step }) {
   const manifest = JSON.parse(await readFile(join(pluginRoot, 'mcp.json'), 'utf8'))
   assert.equal(manifest.mcpServers.chrome.command, './launch.exe')
   assert.deepEqual(manifest.mcpServers.chrome.args, ['--mcp'])
@@ -301,27 +373,51 @@ async function verifyMcpExecutable({ pluginRoot, configPath, executable }) {
       pending.set(id, { resolve, reject, timer })
       child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`)
     })
+  let failureError
   try {
-    const initialized = await request('initialize', {
-      protocolVersion: '2025-11-25',
-      capabilities: {},
-      clientInfo: { name: 'windows-packaged-smoke', version: '1' },
-    })
+    const initialized = await step('installed MCP initialize', () =>
+      request('initialize', {
+        protocolVersion: '2025-11-25',
+        capabilities: {},
+        clientInfo: { name: 'windows-packaged-smoke', version: '1' },
+      }),
+    )
     assert.equal(initialized.serverInfo.name, 'openharness-chrome')
     child.stdin.write(
       `${JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' })}\n`,
     )
-    assert.ok((await request('tools/list')).tools.some((tool) => tool.name === 'chrome_status'))
-    const status = await request('tools/call', { name: 'chrome_status', arguments: {} })
+    assert.ok(
+      (await step('installed MCP tools list', () => request('tools/list'))).tools.some(
+        (tool) => tool.name === 'chrome_status',
+      ),
+    )
+    const status = await step('installed MCP Chrome status', () =>
+      request('tools/call', { name: 'chrome_status', arguments: {} }),
+    )
     assert.notEqual(status.isError, true, JSON.stringify(status.content))
     assert.equal(
       JSON.parse(status.content.find((item) => item.type === 'text').text).connected,
       true,
     )
+  } catch (error) {
+    failureError = error
+    throw error
   } finally {
     fail(new Error('MCP smoke complete'))
     child.stdin.end()
-    assert.equal(await waitForExit(child), 0, 'MCP launcher must exit cleanly after EOF')
+    try {
+      await step(
+        'installed MCP EOF and exit',
+        async () => {
+          assert.equal(await waitForExit(child), 0, 'MCP launcher must exit cleanly after EOF')
+        },
+        12_000,
+        true,
+      )
+    } catch (error) {
+      child.kill()
+      if (!failureError) throw error
+    }
   }
 }
 
@@ -332,6 +428,7 @@ async function verifyBrowser({
   profile,
   artifacts,
   executable,
+  step,
 }) {
   const { ChromeBridge } = await import(pathToFileURL(join(pluginRoot, 'bridge.mjs')).href)
   const server = http.createServer((_request, response) => {
@@ -340,11 +437,6 @@ async function verifyBrowser({
       '<!doctype html><title>Open Harness Windows Chrome test</title><h1>Background fixture</h1><label>Name <input id="name"></label><button id="go">Save locally</button><p id="result">Waiting</p><script>go.onclick=()=>{result.textContent="Saved: "+document.querySelector("#name").value}</script>',
     )
   })
-  await new Promise((resolve, reject) => {
-    server.once('error', reject)
-    server.listen(0, '127.0.0.1', resolve)
-  })
-  const url = `http://127.0.0.1:${server.address().port}/`
   const launch = () =>
     chromium.launchPersistentContext(profile, {
       // Playwright's full Chromium distribution is Chrome for Testing. The
@@ -356,81 +448,150 @@ async function verifyBrowser({
     })
   let context
   let bridge
+  let browserPid
+  const recordBrowserPid = async () => {
+    let session
+    try {
+      browserPid = await step(
+        'record owned Chrome process for cleanup',
+        async () => {
+          session = await context.browser().newBrowserCDPSession()
+          const { processInfo } = await session.send('SystemInfo.getProcessInfo')
+          const pid = processInfo.find((item) => item.type === 'browser')?.id
+          assert.ok(Number.isSafeInteger(pid) && pid > 0, 'Chrome must report its browser PID')
+          return pid
+        },
+        5_000,
+      )
+    } catch {
+      // A diagnostic fallback is optional; normal browser checks still run.
+      // Its phase failure is recorded, and the outer CI deadline owns the tree.
+    } finally {
+      session?.detach().catch(() => {})
+    }
+  }
   const worker = async () =>
     context.serviceWorkers()[0] ??
     (await context.waitForEvent('serviceworker', { timeout: 15_000 }))
+  let failureError
   try {
-    context = await launch()
+    await step(
+      'start local browser fixture',
+      () =>
+        new Promise((resolve, reject) => {
+          server.once('error', reject)
+          server.listen(0, '127.0.0.1', resolve)
+        }),
+      5_000,
+    )
+    const url = `http://127.0.0.1:${server.address().port}/`
+    context = await step('launch Chrome for Testing consent profile', launch, 35_000)
+    await recordBrowserPid()
     // The CI profile explicitly opts into agent-created tabs. Restart to load
     // this persisted choice through the unmodified production background code.
-    await (await worker()).evaluate(() => chrome.storage.local.set({ allowNewTabs: true }))
-    await context.close()
+    const setupWorker = await step('find extension setup worker', worker)
+    await step('save CI background tab consent', () =>
+      setupWorker.evaluate(() => chrome.storage.local.set({ allowNewTabs: true })),
+    )
+    await step('close consent profile', () => context.close(), 15_000)
     context = undefined
+    browserPid = undefined
     const { socketPath } = JSON.parse(await readFile(configPath, 'utf8'))
-    await expect
-      .poll(
-        () =>
-          new Promise((resolve, reject) => {
-            const probe = net.createConnection(socketPath)
-            probe.once('connect', () => {
-              probe.destroy()
-              resolve(false)
-            })
-            probe.once('error', (error) => {
-              if (['ENOENT', 'ECONNREFUSED'].includes(error.code)) resolve(true)
-              else reject(error)
-            })
-          }),
-        { timeout: 10_000 },
-      )
-      .toBe(true)
-    context = await launch()
-    const background = await worker()
-    const userPage = context.pages()[0] ?? (await context.newPage())
-    await userPage.goto(`${url}?user=private`)
+    await step(
+      'wait for first native pipe to close',
+      () =>
+        expect
+          .poll(
+            () =>
+              new Promise((resolve, reject) => {
+                const probe = net.createConnection(socketPath)
+                const timer = setTimeout(() => {
+                  probe.destroy()
+                  reject(new Error('Native pipe closure probe timed out'))
+                }, 2_000)
+                probe.once('connect', () => {
+                  clearTimeout(timer)
+                  probe.destroy()
+                  resolve(false)
+                })
+                probe.once('error', (error) => {
+                  clearTimeout(timer)
+                  if (['ENOENT', 'ECONNREFUSED'].includes(error.code)) resolve(true)
+                  else reject(error)
+                })
+              }),
+            { timeout: 10_000 },
+          )
+          .toBe(true),
+      12_000,
+    )
+    context = await step('launch Chrome for Testing production extension', launch, 35_000)
+    await recordBrowserPid()
+    const background = await step('find production extension worker', worker)
+    const userPage =
+      context.pages()[0] ?? (await step('create private user page', () => context.newPage()))
+    await step('load private user fixture', () =>
+      userPage.goto(`${url}?user=private`, { timeout: 15_000 }),
+    )
     bridge = new ChromeBridge({ configPath, taskId: 'windows-installed-smoke', timeoutMs: 10_000 })
-    await expect
-      .poll(
-        async () => {
-          try {
-            return (await bridge.request('chrome_status')).allow_new_tabs
-          } catch {
-            bridge.close()
-            return false
-          }
-        },
-        { timeout: 25_000, intervals: [250, 500, 1_000] },
-      )
-      .toBe(true)
-    await verifyMcpExecutable({ pluginRoot, configPath, executable })
-    const activeBefore = await background.evaluate(
-      async () => (await chrome.tabs.query({ active: true }))[0].id,
+    await step(
+      'extension auto-connect over Native Messaging',
+      () =>
+        expect
+          .poll(
+            async () => {
+              try {
+                return (await bridge.request('chrome_status')).allow_new_tabs
+              } catch {
+                bridge.close()
+                return false
+              }
+            },
+            { timeout: 25_000, intervals: [250, 500, 1_000] },
+          )
+          .toBe(true),
+      30_000,
+    )
+    await verifyMcpExecutable({ pluginRoot, configPath, executable, step })
+    const rpc = (method, parameters = {}) =>
+      step(`browser RPC ${method}`, () => bridge.request(method, parameters), 12_000)
+    const activeBefore = await step('read active user tab', () =>
+      background.evaluate(async () => (await chrome.tabs.query({ active: true }))[0].id),
     )
     assert.equal(
-      (await bridge.request('chrome_tabs')).tabs.length,
+      (await rpc('chrome_tabs')).tabs.length,
       0,
       'unshared user tabs must remain private',
     )
-    const first = await bridge.request('chrome_open', { url: `${url}?agent=first` })
+    const first = await rpc('chrome_open', { url: `${url}?agent=first` })
     assert.notEqual(first.tab_id, activeBefore)
     assert.ok(Number.isInteger(first.group_id) && first.group_id >= 0)
     assert.match(
-      (await background.evaluate((id) => chrome.tabGroups.get(id), first.group_id)).title,
+      (
+        await step('read task tab group', () =>
+          background.evaluate((id) => chrome.tabGroups.get(id), first.group_id),
+        )
+      ).title,
       /Open Harness/,
     )
     let snapshot
-    await expect
-      .poll(
-        async () => {
-          snapshot = await bridge.request('chrome_snapshot')
-          return snapshot.text
-        },
-        { timeout: 15_000 },
-      )
-      .toContain('Background fixture')
+    await step(
+      'wait for background fixture snapshot',
+      () =>
+        expect
+          .poll(
+            async () => {
+              snapshot = await bridge.request('chrome_snapshot')
+              return snapshot.text
+            },
+            { timeout: 15_000 },
+          )
+          .toContain('Background fixture'),
+      20_000,
+    )
     const input = snapshot.elements.find((element) => element.role === 'input')
     assert.ok(input)
-    snapshot = await bridge.request('chrome_action', {
+    snapshot = await rpc('chrome_action', {
       revision: snapshot.revision,
       action: 'fill',
       ref: input.ref,
@@ -441,7 +602,7 @@ async function verifyBrowser({
     assert.ok(button)
     assert.equal(
       (
-        await bridge.request('chrome_action', {
+        await rpc('chrome_action', {
           revision: snapshot.revision,
           action: 'click',
           ref: button.ref,
@@ -449,31 +610,40 @@ async function verifyBrowser({
       ).dispatched,
       true,
     )
-    assert.match((await bridge.request('chrome_snapshot')).text, /Saved: WINDOWS-4827/)
-    const screenshot = await bridge.request('chrome_screenshot')
+    assert.match((await rpc('chrome_snapshot')).text, /Saved: WINDOWS-4827/)
+    const screenshot = await rpc('chrome_screenshot')
     assert.equal(screenshot.image.mimeType, 'image/jpeg')
     assert.ok(screenshot.image.data.length > 1_000)
     await writeFile(
       join(artifacts, 'windows-chrome-background.jpg'),
       Buffer.from(screenshot.image.data, 'base64'),
     )
-    const second = await bridge.request('chrome_open', { url: `${url}?agent=second` })
+    const second = await rpc('chrome_open', { url: `${url}?agent=second` })
     assert.equal(second.group_id, first.group_id, 'the same task must reuse its Chrome group')
-    assert.equal((await bridge.request('chrome_release', { close_owned: true })).closed, true)
-    await bridge.request('chrome_select_tab', { tab_id: first.tab_id, origin: new URL(url).origin })
-    assert.equal((await bridge.request('chrome_release', { close_owned: true })).closed, true)
-    const remaining = await background.evaluate(async () =>
-      (await chrome.tabs.query({})).map((tab) => tab.id),
+    assert.equal((await rpc('chrome_release', { close_owned: true })).closed, true)
+    await rpc('chrome_select_tab', { tab_id: first.tab_id, origin: new URL(url).origin })
+    assert.equal((await rpc('chrome_release', { close_owned: true })).closed, true)
+    const remaining = await step('read remaining tabs', () =>
+      background.evaluate(async () => (await chrome.tabs.query({})).map((tab) => tab.id)),
     )
     assert.ok(!remaining.includes(first.tab_id) && !remaining.includes(second.tab_id))
     assert.ok(remaining.includes(activeBefore))
-    assert.equal(await userPage.locator('#name').inputValue(), '')
     assert.equal(
-      await background.evaluate(async () => (await chrome.tabs.query({ active: true }))[0].id),
+      await step('check private user input unchanged', () =>
+        userPage.locator('#name').inputValue({ timeout: 5_000 }),
+      ),
+      '',
+    )
+    assert.equal(
+      await step('check active user tab unchanged', () =>
+        background.evaluate(async () => (await chrome.tabs.query({ active: true }))[0].id),
+      ),
       activeBefore,
     )
     assert.equal(
-      await background.evaluate(async (id) => (await chrome.tabs.get(id)).id, activeBefore),
+      await step('check user tab still exists', () =>
+        background.evaluate(async (id) => (await chrome.tabs.get(id)).id, activeBefore),
+      ),
       activeBefore,
     )
     return {
@@ -493,13 +663,50 @@ async function verifyBrowser({
         'active user tab unchanged',
       ],
     }
+  } catch (error) {
+    failureError = error
+    throw error
   } finally {
     bridge?.close()
+    let cleanupError
     try {
-      await context?.close()
-    } finally {
-      await new Promise((resolve) => server.close(resolve))
+      if (context) await step('close Chrome for Testing', () => context.close(), 15_000, true)
+    } catch (error) {
+      cleanupError = error
+      if (browserPid) {
+        try {
+          await step(
+            'terminate owned Chrome process after close failure',
+            () =>
+              execute('taskkill.exe', ['/PID', String(browserPid), '/T', '/F'], {
+                windowsHide: true,
+                timeout: 10_000,
+              }),
+            12_000,
+            true,
+          )
+        } catch {
+          // Preserve the close failure; the failed termination is in the log.
+        }
+      }
     }
+    try {
+      await step(
+        'close local browser fixture',
+        () =>
+          new Promise((resolve, reject) => {
+            server.close((error) =>
+              error && error.code !== 'ERR_SERVER_NOT_RUNNING' ? reject(error) : resolve(),
+            )
+            server.closeAllConnections()
+          }),
+        5_000,
+        true,
+      )
+    } catch (error) {
+      cleanupError ??= error
+    }
+    if (!failureError && cleanupError) throw cleanupError
   }
 }
 
@@ -512,22 +719,34 @@ export async function verifyWindowsChrome({ page, runtime, directory, artifacts 
     'true',
     'registry smoke runs only in the disposable CI Windows account',
   )
+  const step = diagnosticSteps(artifacts)
   for (const view of [32, 64]) {
     assert.equal(
-      await registration(view),
+      await step(`check initial HKCU ${view}-bit registration`, () => registration(view)),
       null,
       'refuse to replace a pre-existing Chrome host registration',
     )
   }
   const manifestPath = join(directory, 'chrome-use', `${hostName}.json`)
   const pluginRoot = join(runtime.resources, 'plugins', 'chrome-use')
+  let failureError
   try {
-    const chromePlugin = (await page.evaluate(() => window.harness.bundledPlugins())).find(
-      (plugin) => plugin.id === 'chrome-use',
-    )
+    const chromePlugin = (
+      await step('list installed bundled plugins', () =>
+        page.evaluate(() => window.harness.bundledPlugins()),
+      )
+    ).find((plugin) => plugin.id === 'chrome-use')
     assert.equal(chromePlugin.available, true, 'the installed Windows app must expose Chrome setup')
-    await page.evaluate(() => window.harness.connectChrome('repair'))
-    for (const view of [32, 64]) assert.equal(await registration(view), manifestPath)
+    await step(
+      'prepare Chrome through installed app IPC',
+      () => page.evaluate(() => window.harness.connectChrome('repair')),
+      30_000,
+    )
+    for (const view of [32, 64])
+      assert.equal(
+        await step(`read prepared HKCU ${view}-bit registration`, () => registration(view)),
+        manifestPath,
+      )
     const manifest = JSON.parse(await readFile(manifestPath, 'utf8'))
     assert.equal(manifest.name, hostName)
     assert.equal(manifest.type, 'stdio')
@@ -541,25 +760,35 @@ export async function verifyWindowsChrome({ page, runtime, directory, artifacts 
       .replace(/[0-9a-f]/g, (hex) => String.fromCharCode(97 + parseInt(hex, 16)))
     assert.deepEqual(manifest.allowed_origins, [`chrome-extension://${extensionId}/`])
     const configPath = join(directory, 'chrome-use', 'config.json')
-    const acl = await verifyPrivateAcl(dirname(configPath), configPath)
+    const acl = await step('verify private Windows directory and config ACL', () =>
+      verifyPrivateAcl(dirname(configPath), configPath),
+    )
     const config = JSON.parse(await readFile(configPath, 'utf8'))
-    const installedBeforeRepair = await page.evaluate(async () => {
-      const settings = await window.harness.extensionSettings()
-      return {
-        revision: settings.config.revision,
-        plugin: settings.plugins.find((plugin) => plugin.id === 'chrome-use'),
-      }
-    })
+    const installedBeforeRepair = await step('read plugin settings before repeat repair', () =>
+      page.evaluate(async () => {
+        const settings = await window.harness.extensionSettings()
+        return {
+          revision: settings.config.revision,
+          plugin: settings.plugins.find((plugin) => plugin.id === 'chrome-use'),
+        }
+      }),
+    )
     assert.equal(typeof installedBeforeRepair.revision, 'number')
     assert.equal(installedBeforeRepair.plugin?.enabled, true)
-    await page.evaluate(() => window.harness.connectChrome('repair'))
-    const installedAfterRepair = await page.evaluate(async () => {
-      const settings = await window.harness.extensionSettings()
-      return {
-        revision: settings.config.revision,
-        plugin: settings.plugins.find((plugin) => plugin.id === 'chrome-use'),
-      }
-    })
+    await step(
+      'repeat Chrome repair through installed app IPC',
+      () => page.evaluate(() => window.harness.connectChrome('repair')),
+      30_000,
+    )
+    const installedAfterRepair = await step('read plugin settings after repeat repair', () =>
+      page.evaluate(async () => {
+        const settings = await window.harness.extensionSettings()
+        return {
+          revision: settings.config.revision,
+          plugin: settings.plugins.find((plugin) => plugin.id === 'chrome-use'),
+        }
+      }),
+    )
     assert.deepEqual(
       installedAfterRepair,
       installedBeforeRepair,
@@ -569,16 +798,24 @@ export async function verifyWindowsChrome({ page, runtime, directory, artifacts 
     // Do not include either token in an assertion diagnostic or saved report.
     assert.ok(repairedConfig.token === config.token, 'repair must preserve the existing token')
     assert.equal(repairedConfig.socketPath, config.socketPath)
-    for (const view of [32, 64]) assert.equal(await registration(view), manifestPath)
+    for (const view of [32, 64])
+      assert.equal(
+        await step(`read repaired HKCU ${view}-bit registration`, () => registration(view)),
+        manifestPath,
+      )
     const pipeParts = config.socketPath.split(String.fromCharCode(92))
     assert.deepEqual(pipeParts.slice(0, 4), ['', '', '.', 'pipe'])
     assert.equal(pipeParts.length, 5)
     assert.match(pipeParts[4], /^openharness-chrome-[a-f0-9]{32}$/)
     assert.equal(
-      (await page.evaluate(() => window.harness.chromeConnectionStatus())).configured,
+      (
+        await step('read installed app connection status', () =>
+          page.evaluate(() => window.harness.chromeConnectionStatus()),
+        )
+      ).configured,
       true,
     )
-    await verifyNativeExecutable({ manifest, extensionId, configPath, pluginRoot })
+    await verifyNativeExecutable({ manifest, extensionId, configPath, pluginRoot, step })
     const browser = await verifyBrowser({
       extension,
       configPath,
@@ -586,19 +823,40 @@ export async function verifyWindowsChrome({ page, runtime, directory, artifacts 
       profile: join(directory, 'test-chrome-profile'),
       artifacts,
       executable: runtime.executable,
+      step,
     })
     return { ...browser, acl, repeatRepairPreservedRegistration: true }
+  } catch (error) {
+    failureError = error
+    throw error
   } finally {
+    let cleanupError
     for (const view of [32, 64]) {
-      const value = await registration(view)
-      if (value === manifestPath) {
-        await execute('reg.exe', ['delete', registryKey, '/f', `/reg:${view}`], {
-          windowsHide: true,
-          timeout: 5_000,
-        })
-      } else {
-        assert.equal(value, null, 'refuse to remove a registration changed by another process')
+      try {
+        await step(
+          `clean up HKCU ${view}-bit registration`,
+          async () => {
+            const value = await registration(view)
+            if (value === manifestPath) {
+              await execute('reg.exe', ['delete', registryKey, '/f', `/reg:${view}`], {
+                windowsHide: true,
+                timeout: 5_000,
+              })
+            } else {
+              assert.equal(
+                value,
+                null,
+                'refuse to remove a registration changed by another process',
+              )
+            }
+          },
+          17_000,
+          true,
+        )
+      } catch (error) {
+        cleanupError ??= error
       }
     }
+    if (!failureError && cleanupError) throw cleanupError
   }
 }
