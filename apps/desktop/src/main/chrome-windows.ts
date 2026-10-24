@@ -15,6 +15,33 @@ const encodedScript = (script: string) => [
   Buffer.from(script, 'utf16le').toString('base64'),
 ]
 
+/** Chrome still uses cmd.exe for native hosts unless its direct-launch feature is enabled. */
+export async function windowsNativeHostPath(launcher: string): Promise<string> {
+  if (!/[%!]/.test(launcher)) return launcher
+  try {
+    // Ask our native helper for a verified alias without involving a shell.
+    // It also confirms that the alias resolves to this exact executable.
+    const { stdout } = await execute(launcher, ['--native-path', launcher], {
+      timeout: 5_000,
+      maxBuffer: 16_384,
+      windowsHide: true,
+    })
+    const path: unknown = JSON.parse(stdout)
+    if (
+      typeof path !== 'string' ||
+      !win32.isAbsolute(path) ||
+      win32.extname(path).toLowerCase() !== '.exe' ||
+      /[%!\r\n"]/.test(path)
+    )
+      throw new Error('Invalid native host alias')
+    return path
+  } catch {
+    throw new Error(
+      'Chrome 无法从当前目录启动连接组件。请将 Open Harness 数据目录移到不含 % 或 ! 的路径后重试。',
+    )
+  }
+}
+
 /** Register only for this Windows account; no elevation or browser policies. */
 export async function registerWindowsChromeHost(manifest: string): Promise<void> {
   for (const view of ['32', '64']) {

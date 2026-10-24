@@ -87,6 +87,14 @@ runtime is included in the app; users do not install Node or elevate privileges.
 Repair updates the registration and preserves the connection token; versioned
 launcher filenames avoid overwriting a host that Chrome is still running.
 
+Chrome can still invoke native executables through `cmd.exe` on Windows. For
+paths containing `%` or `!`, setup asks the bundled helper for a Windows short
+path and verifies that it resolves to the same executable before registering
+it. If no safe alias exists, setup reports that the data directory must move to
+a path without those characters. It does not change Chrome policies. The
+launcher compares canonical configuration paths so a short path and its long
+form identify the same private configuration.
+
 `node status.mjs` prints one JSON object (`connected`, optional settings/error),
 using the same config environment. It never enumerates tabs or reads contents.
 `node server.mjs` serves MCP over JSONL stdio. On cancellation or EOF it closes

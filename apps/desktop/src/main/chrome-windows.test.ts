@@ -4,6 +4,7 @@ import {
   registerWindowsChromeHost,
   secureWindowsChromeDirectory,
   windowsChromeHostRegistered,
+  windowsNativeHostPath,
 } from './chrome-windows'
 
 vi.mock('node:child_process', () => ({ execFile: vi.fn() }))
@@ -68,5 +69,41 @@ describe('Windows Chrome system integration', () => {
       env: { OPENHARNESS_CHROME_PRIVATE_DIRECTORY: path },
       windowsHide: true,
     })
+  })
+
+  it('keeps ordinary native paths and resolves percent paths without a shell', async () => {
+    const ordinary = String.raw`C:\Users\测试 & user\chrome-use\native-host.exe`
+    expect(await windowsNativeHostPath(ordinary)).toBe(ordinary)
+    expect(execFile).not.toHaveBeenCalled()
+    const launcher = String.raw`C:\Users\%PATH%\chrome-use\native-host.exe`
+    const alias = String.raw`C:\Users\USER~1\CHROME~1\NATIVE~1.EXE`
+    vi.mocked(execFile).mockImplementation((...args: unknown[]) => {
+      const callback = args.at(-1) as (error: null, result: { stdout: string }) => void
+      callback(null, { stdout: JSON.stringify(alias) })
+      return {} as ReturnType<typeof execFile>
+    })
+    expect(await windowsNativeHostPath(launcher)).toBe(alias)
+    const call = vi.mocked(execFile).mock.calls[0]
+    expect(call[0]).toBe(launcher)
+    expect(call[1]).toEqual(['--native-path', launcher])
+    expect(call[2]).not.toHaveProperty('shell')
+  })
+
+  it('rejects an alias that Chrome would still expand or cannot execute', async () => {
+    for (const value of [
+      String.raw`C:\%PATH%\host.exe`,
+      String.raw`C:\!PATH!\host.exe`,
+      'host.exe',
+      null,
+    ]) {
+      vi.mocked(execFile).mockImplementation((...args: unknown[]) => {
+        const callback = args.at(-1) as (error: null, result: { stdout: string }) => void
+        callback(null, { stdout: JSON.stringify(value) })
+        return {} as ReturnType<typeof execFile>
+      })
+      await expect(windowsNativeHostPath(String.raw`C:\%PATH%\host.exe`)).rejects.toThrow(
+        'Chrome 无法从当前目录启动连接组件',
+      )
+    }
   })
 })

@@ -21,6 +21,7 @@ import {
   registerWindowsChromeHost,
   secureWindowsChromeDirectory,
   windowsChromeHostRegistered,
+  windowsNativeHostPath,
 } from './chrome-windows'
 
 const execute = promisify(execFile)
@@ -299,7 +300,7 @@ export class ChromeConnection {
       }) + '\n',
       0o600,
     )
-    return launcher
+    return windowsNativeHostPath(launcher)
   }
 }
 

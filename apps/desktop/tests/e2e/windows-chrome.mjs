@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto'
 import http from 'node:http'
 import net from 'node:net'
 import { appendFileSync } from 'node:fs'
-import { readFile, writeFile } from 'node:fs/promises'
+import { readFile, realpath, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { promisify } from 'node:util'
@@ -750,7 +750,8 @@ export async function verifyWindowsChrome({ page, runtime, directory, artifacts 
     const manifest = JSON.parse(await readFile(manifestPath, 'utf8'))
     assert.equal(manifest.name, hostName)
     assert.equal(manifest.type, 'stdio')
-    assert.match(manifest.path, /native-host-[a-f0-9]{16}\.exe$/i)
+    assert.doesNotMatch(manifest.path, /[%!]/, 'Chrome must receive a shell-safe host path')
+    assert.match(await realpath(manifest.path), /native-host-[a-f0-9]{16}\.exe$/i)
     const extension = join(directory, 'chrome-use', 'extension')
     const extensionManifest = JSON.parse(await readFile(join(extension, 'manifest.json'), 'utf8'))
     const extensionId = createHash('sha256')
