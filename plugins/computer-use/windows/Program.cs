@@ -161,6 +161,11 @@ namespace OpenHarness.ComputerUse {
             try {
                 if (IntPtr.Size != 8 || Marshal.SizeOf(typeof(Native.Input)) != 40) throw new Exception("input layout");
                 if (Json.Text("A\uD83D\uDE00B", 3) != "A\uD83D\uDE00" || Json.Text("\uD800", 10) != "\uFFFD") throw new Exception("Unicode limits");
+                string bundle = AppIdentity.BundleId("Example App", "C:\\Example\\app.exe");
+                if (!bundle.StartsWith("win32:Example App:") || bundle.Length != "win32:Example App:".Length + 64 || AppIdentity.ApplicationName(new string('A', 140)).Length != 128) throw new Exception("application identity");
+                bool invalidName = false;
+                try { AppIdentity.ApplicationName("spoof:app"); } catch (ComputerError) { invalidName = true; }
+                if (!invalidName) throw new Exception("application identity delimiter");
                 foreach (var bad in new[] { Json.Object("pid", 0), Json.Object("pid", 1.5), Json.Object("pid", "1") }) {
                     bool rejected = false;
                     try { Arguments.Integer(bad, "pid", 1, Int32.MaxValue); } catch (ComputerError) { rejected = true; }
@@ -172,7 +177,7 @@ namespace OpenHarness.ComputerUse {
                     try { session.Handle(method, Json.Object("snapshot_id", "unissued")); } catch (ComputerError error) { rejected = error.Code == "STALE_SNAPSHOT"; }
                     if (!rejected) throw new Exception("snapshot validation");
                 }
-                Emit(Json.Object("self_test", true, "checks", new[] { "native input layout", "Unicode truncation", "strict numeric validation", "unissued snapshots rejected" }));
+                Emit(Json.Object("self_test", true, "checks", new[] { "native input layout", "Unicode truncation", "readable bound application identity", "strict numeric validation", "unissued snapshots rejected" }));
                 return 0;
             } catch { Emit(Json.Object("self_test", false)); return 1; }
         }

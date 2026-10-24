@@ -46,7 +46,7 @@ test('large Windows UI Automation observations keep focused edits and exact Wind
   const long = 'Windows 中文🙂\\"\n'.repeat(400);
   const source = {
     snapshot_id: 'windows-snapshot',
-    selected_app: { bundle_id: `win32:${'a'.repeat(64)}`, pid: 123 },
+    selected_app: { bundle_id: `win32:ComputerUseFixture:${'a'.repeat(64)}`, pid: 123 },
     coordinate_space: 'window-local physical pixels; origin top left',
     screenshot: { width: 800, height: 600, window_width_points: 1600, window_height_points: 1200 },
     elements: Array.from({ length: 250 }, (_, index) => ({

@@ -48,6 +48,7 @@ namespace OpenHarness.ComputerUse {
         [DllImport("user32.dll")] internal static extern bool ShowWindowAsync(IntPtr window, int command);
         [DllImport("user32.dll")] internal static extern IntPtr WindowFromPoint(Point point);
         [DllImport("user32.dll")] internal static extern bool PrintWindow(IntPtr window, IntPtr dc, uint flags);
+        [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)] internal static extern IntPtr SendMessageTimeout(IntPtr window, uint message, UIntPtr wparam, IntPtr lparam, uint flags, uint timeout, out UIntPtr result);
         [DllImport("user32.dll")] internal static extern uint SendInput(uint count, Input[] inputs, int size);
         [DllImport("user32.dll")] internal static extern short GetAsyncKeyState(int key);
         [DllImport("user32.dll")] internal static extern int GetSystemMetrics(int index);

@@ -5,9 +5,15 @@ import { InlineError } from './Feedback'
 import '../extensions.css'
 import type { ControlScope } from '../../shared/extensions'
 
+function applicationLabel(scope: Extract<ControlScope, { kind: 'application' }>): string {
+  // Windows keeps a canonical executable digest in the identity while exposing
+  // its process name for review. The complete identity stays in tool arguments.
+  return /^win32:([^:]{1,128}):[a-f0-9]{64}$/.exec(scope.bundle_id)?.[1] ?? scope.bundle_id
+}
+
 function controlLabel(scope: ControlScope): string {
   if (scope.kind === 'browser') return '独立浏览器'
-  if (scope.kind === 'application') return scope.bundle_id
+  if (scope.kind === 'application') return applicationLabel(scope)
   return `Chrome · ${scope.origin}${scope.kind === 'chrome_tab' ? ` · 标签页 ${scope.tab_id}` : ''}`
 }
 
@@ -86,7 +92,7 @@ export function ExtensionApprovals({
                 {approval.session_scope?.kind === 'browser'
                   ? '使用独立浏览器。会话授权允许连续浏览和操作，直到你停止控制或关闭应用。'
                   : approval.session_scope?.kind === 'application'
-                    ? `控制应用 ${approval.session_scope.bundle_id}（进程 ${approval.session_scope.pid}）。首次控制其他应用时会另行请求授权。`
+                    ? `控制应用 ${applicationLabel(approval.session_scope)}（进程 ${approval.session_scope.pid}）。首次控制其他应用时会另行请求授权。`
                     : approval.session_scope?.kind === 'chrome_tab'
                       ? `在后台操作 Chrome 标签页 ${approval.session_scope.tab_id}，网站 ${approval.session_scope.origin}。其他标签页和网站需另行授权。`
                       : approval.session_scope?.kind === 'chrome_new_tab'

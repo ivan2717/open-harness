@@ -12,6 +12,10 @@ On Windows the same tools use a native UI Automation helper. Application selecti
 keeps the existing host approval contract, `bundle_id` plus `pid`; Windows
 `bundle_id` is an opaque executable identity. It is not a permission to control
 all processes that happen to have the same displayed name.
+Its Windows form is `win32:<process name>:<executable path hash>` so approval can
+show the application name. The name is only a display hint: authorization still
+matches the complete returned identity and PID, and the helper rechecks the
+executable path and process creation time before acting.
 
 ## Windows build and runtime
 
