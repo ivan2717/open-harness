@@ -93,7 +93,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: windows-x64-rust-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          key: windows-x64-rust-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/desktop/scripts/backend.mjs') }}
           restore-keys: windows-x64-rust-
       - run: npm ci
       - name: Build Windows installer

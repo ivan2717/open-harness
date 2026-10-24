@@ -6,12 +6,39 @@ import { fileURLToPath } from 'node:url'
 const desktop = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const workspace = resolve(desktop, '../..')
 const release = process.argv[2] === 'release'
+const windowsTarget = release && process.platform === 'win32' ? 'x86_64-pc-windows-msvc' : undefined
+if (windowsTarget && process.arch !== 'x64') {
+  throw new Error('Windows release packaging currently requires a Windows x64 host')
+}
+const environment = { ...process.env }
+if (windowsTarget) {
+  // Keep user flags, but make the shipped backend independent of an installed
+  // Visual C++ redistributable. An explicit target separates host build scripts
+  // and procedural macros from the statically linked application dependencies.
+  const flags =
+    environment.CARGO_ENCODED_RUSTFLAGS !== undefined
+      ? environment.CARGO_ENCODED_RUSTFLAGS.split('\u001f').filter(Boolean)
+      : (environment.RUSTFLAGS ?? environment.CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS ?? '')
+          .split(/\s+/)
+          .filter(Boolean)
+  environment.CARGO_ENCODED_RUSTFLAGS = [...flags, '-C', 'target-feature=+crt-static'].join(
+    '\u001f',
+  )
+}
 const build = spawnSync(
   'cargo',
-  ['build', '--locked', '-p', 'api', ...(release ? ['--release'] : [])],
+  [
+    'build',
+    '--locked',
+    '-p',
+    'api',
+    ...(release ? ['--release'] : []),
+    ...(windowsTarget ? ['--target', windowsTarget] : []),
+  ],
   {
     cwd: workspace,
     stdio: 'inherit',
+    env: environment,
   },
 )
 if (build.error) throw build.error
@@ -23,6 +50,9 @@ if (release) {
     : resolve(workspace, 'target')
   const resources = resolve(desktop, 'resources/bin')
   await mkdir(resources, { recursive: true })
-  await copyFile(resolve(targetDirectory, 'release', filename), resolve(resources, filename))
+  await copyFile(
+    resolve(targetDirectory, ...(windowsTarget ? [windowsTarget] : []), 'release', filename),
+    resolve(resources, filename),
+  )
   if (process.platform !== 'win32') await chmod(resolve(resources, filename), 0o755)
 }

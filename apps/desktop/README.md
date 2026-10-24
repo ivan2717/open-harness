@@ -273,6 +273,9 @@ The GitHub Actions **Checks** workflow runs on pushes, pull requests, and manual
 The browser plugin tests install headless Chromium and use local fixtures; no
 provider API keys are required. When all checks pass, **Windows x64 installer**
 builds the Rust backend and Electron app on a Windows x64 runner.
+The release backend statically links the Visual C++ runtime. The installed
+`api.exe` is also inspected with `dumpbin` to reject separate VC runtime DLL
+dependencies that a Visual Studio-equipped runner could otherwise hide.
 
 The Windows job creates an NSIS installer, installs it into a temporary directory
 with spaces in its name, and launches the installed executable with a fresh data
@@ -301,7 +304,7 @@ stable, and Visual Studio C++ Build Tools, then run:
 cd apps/desktop
 npm ci
 npm run package:win
-# Optional: silently install, smoke-test, and uninstall using a temporary profile.
+# Optional (PowerShell 7): install, smoke-test, and uninstall with a temporary profile.
 pwsh -File scripts/test-windows-installer.ps1
 ```
 
