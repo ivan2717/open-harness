@@ -159,3 +159,26 @@ jobs:
           path: apps/desktop/test-results/packaged/
           if-no-files-found: ignore
           retention-days: 7
+
+  release:
+    name: Publish GitHub Release
+    needs: [windows]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@v8
+        with:
+          name: Open-Harness-windows-x64-${{ github.run_number }}
+          path: release-assets
+      - name: Publish verified Windows installer
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node apps/desktop/scripts/publish-github-release.mjs release-assets
