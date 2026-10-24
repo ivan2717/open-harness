@@ -69,6 +69,84 @@ fn a_new_run_starts_with_one_event() {
 }
 
 #[test]
+fn pause_is_recoverable_and_cannot_interrupt_a_pending_model_or_tool_effect() {
+    use agent_core::agent::RunPauseReason;
+
+    let pause = RunEvent::RunPaused {
+        reason: RunPauseReason::StepLimit { max_steps: 2 },
+    };
+    let mut run = test_run();
+    run.begin_step().unwrap();
+    assert_rejected_without_changes(&mut run, pause.clone());
+    respond(&mut run);
+    run.record(request("call-1")).unwrap();
+    assert_rejected_without_changes(&mut run, pause.clone());
+    run.record(succeed("call-1")).unwrap();
+    run.record(pause).unwrap();
+    assert_eq!(run.status(), RunStatus::Paused);
+    assert!(!run.status().is_terminal());
+    assert!(!run.can_begin_step());
+    let mut restored = AgentRun::restore("run-1", "agent-1", run.events().to_vec()).unwrap();
+    restored
+        .record(RunEvent::RunResumed {
+            content: "Continue".into(),
+            files: vec![],
+            interrupted_calls: vec![],
+        })
+        .unwrap();
+    assert_eq!(restored.begin_step().unwrap(), 2);
+}
+
+#[test]
+fn agent_delivery_is_deduplicated_on_restore_and_cannot_skip_declared_model_calls() {
+    use agent_core::{AgentMessage, ModelResponse, provider_state::ProviderToolCall};
+
+    let delivery = RunEvent::AgentMessageReceived {
+        message: AgentMessage {
+            id: "report-1".into(),
+            sender: "worker".into(),
+            text: "Progress report".into(),
+        },
+    };
+    let mut run = test_run();
+    run.record(delivery.clone()).unwrap();
+    let mut restored = AgentRun::restore("run-1", "agent-1", run.events().to_vec()).unwrap();
+    assert!(restored.has_agent_message("report-1"));
+    assert_rejected_without_changes(&mut restored, delivery);
+    restored.begin_step().unwrap();
+    let response = ModelResponse::tool_calls(
+        "Read".into(),
+        vec![ProviderToolCall {
+            id: "call-1".into(),
+            name: "read_file".into(),
+            arguments: "{}".into(),
+        }],
+    );
+    restored
+        .record(RunEvent::ModelResponseReceived {
+            content: response.text(),
+            response: Some(response),
+            token_usage: None,
+            provider_state: None,
+            provider_continuation: None,
+        })
+        .unwrap();
+    let delivery = RunEvent::AgentMessageReceived {
+        message: AgentMessage {
+            id: "report-2".into(),
+            sender: "worker".into(),
+            text: "Another report".into(),
+        },
+    };
+    assert_rejected_without_changes(&mut restored, delivery.clone());
+    restored.record(request("call-1")).unwrap();
+    assert_rejected_without_changes(&mut restored, delivery.clone());
+    restored.record(succeed("call-1")).unwrap();
+    restored.record(delivery).unwrap();
+    assert!(restored.can_begin_step());
+}
+
+#[test]
 fn events_are_ordered_and_grouped_by_step() {
     let mut run = test_run();
 

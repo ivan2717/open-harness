@@ -18,6 +18,24 @@ function run(id: string, workspace_path?: string, overrides: Partial<RunSummary>
 }
 
 describe('sidebar project organization', () => {
+  it('omits delegated tasks from all navigation groups and search counts', () => {
+    const delegation = {
+      parent_run_id: 'root',
+      root_run_id: 'root',
+      task_name: 'child',
+      write_paths: [],
+    }
+    const runs = [
+      run('root', '/work/root'),
+      run('child', '/work/child', { delegation }),
+      run('independent-child', undefined, { delegation }),
+    ]
+    const groups = sidebarConversations(runs, [], '')
+    expect(groups.independentTotal).toBe(0)
+    expect(groups.projects.map((group) => [group.path, group.total])).toEqual([['/work/root', 1]])
+    expect(sidebarConversations(runs, [], 'child').projects).toEqual([])
+  })
+
   it('keeps project conversations out of the independent list and preserves empty folders', () => {
     const result = sidebarConversations(
       [run('general'), run('in-a', '/projects/a'), run('in-b', '/projects/b')],

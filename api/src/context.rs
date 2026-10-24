@@ -517,6 +517,8 @@ mod tests {
         let snapshot = Snapshot::new(
             RunDetail {
                 summary: RunSummary {
+                    delegation: None,
+                    execution_policy: Default::default(),
                     compacting: false,
                     id: "fallback".into(),
                     revision: 0,
@@ -631,6 +633,8 @@ mod tests {
         fs::create_dir_all(&directory).unwrap();
         let detail = RunDetail {
             summary: RunSummary {
+                delegation: None,
+                execution_policy: Default::default(),
                 compacting: false,
                 id: "meter".into(),
                 revision: 0,
@@ -702,6 +706,8 @@ mod tests {
         let snapshot = Snapshot::new(
             RunDetail {
                 summary: RunSummary {
+                    delegation: None,
+                    execution_policy: Default::default(),
                     compacting: false,
                     id: "disk".into(),
                     revision: 0,

@@ -62,14 +62,88 @@ pre-existing user modifications and refuses to overwrite later external edits.
 Command changes are recorded for review but require manual resolution, because
 the host cannot reliably distinguish command writes from concurrent user edits.
 Review snapshots exclude dependency/build directories and are bounded; they are
-not a full filesystem backup or a Git reset. Overlapping project directories
-cannot execute in two sessions concurrently within the application service.
+not a full filesystem backup or a Git reset. Independent conversations cannot
+execute in overlapping project directories concurrently. Coordinated child tasks
+share their parent's workspace under the file-ownership rules below.
 
 Interrupted, cancelled, failed, and completed conversations can continue in place.
 Recovery commits an explicit event, keeps completed results, and marks missing
 tool outcomes as unknown or not started. It never re-executes old tool calls.
 The model is instructed to inspect actual state before taking further action.
 Missing project directories disable execution without making history unreadable.
+
+### Long-running tasks and delegated agents
+
+Real-model conversations have **no default 12-step cutoff**. The runtime keeps
+executing until the model finishes, requests input, encounters an error, or the
+user stops it. Repeated tool calls produce progress warnings rather than a hidden
+fixed limit. Context compaction manages the model's input window independently
+of the number of execution steps. The synthetic offline demo keeps its bounded
+script; it is not the production execution policy.
+
+API callers can set `execution_policy` when creating a run with `POST /api/runs`:
+
+```json
+{
+  "model_id": "your-configured-model-id",
+  "prompt": "Investigate the independent parts of this task and verify the combined result.",
+  "execution_policy": { "max_steps": 80, "max_agents": 4 }
+}
+```
+
+`max_steps` is optional: omission or `null` leaves the turn unlimited. A positive
+value limits model steps in one execution turn, not individual tool calls or the
+conversation's lifetime. Reaching it saves a **paused** state rather than a
+failure; an explicit resume starts a fresh step allowance with the existing
+history. Children inherit this policy independently; it is not a shared total
+step budget. `max_agents` limits concurrently active children, excluding the parent:
+the default is 4, and accepted values are 1–8. A full pool rejects another spawn;
+it does not silently queue it. These settings are currently API options, without
+a desktop configuration form.
+
+The coordinator uses `spawn_agent` for independent work and `agent_control` to
+list, send messages, wait, read results, resume or cancel members. Each child uses
+the same configured model and project, but starts a fresh conversation with its
+own persisted history and context budget. The parent supplies the task and relevant
+evidence explicitly; parent conversation history and provider reasoning state are
+not copied. Child results are saved and delivered automatically at model
+boundaries. The parent waits for active children before normal turn completion and can
+verify their conclusions before answering. Messages are evidence, not user
+authorization. Sending to an idle child does not restart it; the coordinator must
+explicitly resume it with a task. Child agents cannot create further agents.
+
+Children are read-only by default. If the parent already has project-write
+permission, `write_paths` can reserve up to 32 exact project files for a child.
+Disjoint children can edit concurrently; conflicting assignments, writes outside
+the assigned files, and parent writes into a child's active reservation are
+refused. Commands are refused while file reservations remain active; the
+coordinator must wait for their release before requesting a command. Children
+do not inherit command approvals, MCP access, browser grants or computer-control
+grants, and cannot execute those operations. A coordinator handles required
+integration commands or external actions through its existing approval flow.
+Finishing or cancelling a child releases its file reservations. Stopping the
+parent cancels its children; a child explicitly stopped by the user cannot be
+automatically restarted by an agent.
+
+The desktop keeps child tasks in a collapsible **协作任务** list within their
+parent conversation. Open a child to inspect its output, then **返回父任务** to
+continue the overall task. Children do not clutter the conversation sidebar.
+Restarting retains their relationship and unconsumed result messages, without
+automatically executing interrupted work. Files share one checkout: this is not
+Git worktree isolation or a complete Teams/task-board system. Each run's observed
+token usage covers recorded successful responses; summing those samples is not
+a shared context size, complete billing record, or enforced monetary/token budget.
+
+Related designs: [Codex subagents](https://learn.chatgpt.com/docs/agent-configuration/subagents),
+[Claude Code subagents](https://code.claude.com/docs/en/sub-agents), and
+[DeepSeek Harness agent loop](https://github.com/deepseek-ai/deepseek-harness/blob/22ddee3792402c3e70ec5f86a63c3e3e895a2f60/packages/core/agent-loop/README.md).
+The implemented limits and permissions above describe Open Harness itself.
+
+The [collaboration integration tests](api/tests/collaboration.rs) exercise the
+real service and provider adapter with a local HTTP model fixture, including
+concurrency, message delivery, cancellation, restart, file ownership and pause/resume.
+Run them with `cargo test -p api --test collaboration --locked`; no paid model
+request or browser is involved.
 
 ### Browser and computer operation
 

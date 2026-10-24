@@ -1,6 +1,8 @@
 mod driver;
 mod execution;
+mod inbox;
 mod maintenance;
+mod tool_repetition;
 
 use std::{error::Error, fmt};
 
@@ -525,6 +527,9 @@ pub enum AgentRuntimeError<ModelError> {
         call_id: String,
     },
     EmptyToolCalls,
+    Coordination(String),
+    /// Retained for callers that matched older runtime errors. Step budgets now
+    /// return `RunStatus::Paused` with a durable `RunEvent::RunPaused` reason.
     StepLimitExceeded {
         max_steps: u32,
     },
@@ -597,6 +602,9 @@ where
                 write!(formatter, "model reused tool call id {call_id:?}")
             }
             Self::EmptyToolCalls => formatter.write_str("model returned an empty tool-call list"),
+            Self::Coordination(message) => {
+                write!(formatter, "agent coordination failed: {message}")
+            }
             Self::StepLimitExceeded { max_steps } => {
                 write!(formatter, "maximum number of steps ({max_steps}) reached")
             }
@@ -632,6 +640,7 @@ where
             | Self::DuplicateToolName { .. }
             | Self::DuplicateToolCallId { .. }
             | Self::EmptyToolCalls
+            | Self::Coordination(_)
             | Self::StepLimitExceeded { .. } => None,
         }
     }

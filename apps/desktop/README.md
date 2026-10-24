@@ -157,6 +157,50 @@ explicitly resumes it while retaining its history and project. Already committed
 tool effects are not automatically repeated during recovery. Completed, failed,
 and cancelled sessions can also receive a follow-up in place.
 
+Real-model tasks have no default 12-step limit. They continue until an answer,
+input request, error or cancellation; context compaction separately keeps the
+model input within its window. API clients may set a positive
+`execution_policy.max_steps` when creating a task. Reaching that limit displays
+a neutral paused notice and **继续任务**, retaining the previous work. Resuming
+starts a new step allowance. The desktop has no execution-policy settings form;
+ordinary tasks use the unlimited default. The offline diagnostic demo remains
+bounded.
+
+### Collaboration within a task
+
+For independent parts of a task, the agent can create delegated tasks using the
+same model. A compact **协作任务** row appears below the parent conversation's
+header; expand it to see task names and activity, open a task's transcript, or
+stop an active child. While the parent page is open, the list refreshes once per
+second only while the parent or a child is active; polling stops when all are idle.
+A spinner means active work, and a green dot means idle. Opening a child
+keeps the parent selected in the sidebar and offers **返回父任务**. Child detail
+pages have no separate composer: send new directions in the parent conversation,
+which coordinates messages and follow-up work.
+
+Each child has a fresh context and independent persisted history. It receives
+the task supplied by its parent, rather than a copy of the entire conversation
+or the parent's private reasoning. Results return automatically, and the parent
+waits for active children before normal turn completion. Stopping the parent also stops
+its children. Stopping an individual child prevents the agent from automatically
+restarting it. Restarting the app preserves relationships and pending results,
+but never resumes interrupted work automatically.
+
+Children use the same project checkout, read-only by default. A parent with
+write permission may assign exact files through `write_paths`; active assignments
+exclude conflicting edits by the parent or siblings and release when the child
+finishes. Children cannot execute commands, MCP operations or computer/browser
+controls, and cannot delegate further. Required integration tests and external
+actions return to the coordinator's normal approval flow. This provides local
+coordination, not separate Git worktrees or a shared Teams task board.
+
+The concurrent-child limit defaults to 4. API clients may choose 1–8 through
+`execution_policy.max_agents`; the parent does not count toward this limit.
+Each run keeps its own context window. Recorded token usage is observation of
+successful provider responses, not a cross-agent context size or a hard billing
+budget. See the [execution-policy details](../../README.md#long-running-tasks-and-delegated-agents)
+and [service integration tests](../../api/tests/collaboration.rs).
+
 An idle conversation offers **运行详情 → 上下文 → 压缩上下文**. The conversation header
 contains the run details and project results controls. Compaction preserves original events, reuses the
 normal context policy, and can be cancelled without ending the conversation. A

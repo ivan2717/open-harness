@@ -89,6 +89,7 @@ impl Fixture {
 
     fn input(&self, model_id: String, permission_mode: PermissionMode) -> CreateRunInput {
         CreateRunInput {
+            execution_policy: Default::default(),
             prompt: "Fix answer.txt and preserve my existing changes.".into(),
             files: Vec::new(),
             model_id,
@@ -188,11 +189,13 @@ async fn real_provider_transport_edits_reviews_restores_and_conditionally_revert
         .collect();
     tool_names.sort();
     let mut expected_tools = vec![
+        "agent_control",
         "apply_patch",
         "list_files",
         "read_file",
         "search_files",
         "session_memory",
+        "spawn_agent",
     ];
     if review.sandbox_available {
         expected_tools.push("run_command");

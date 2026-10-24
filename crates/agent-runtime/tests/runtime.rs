@@ -151,6 +151,9 @@ fn event_names(run: &AgentRun) -> Vec<&'static str> {
             RunEvent::RunFailed { .. } => "RunFailed",
             RunEvent::RunCancelled => "RunCancelled",
             RunEvent::RunResumed { .. } => "RunResumed",
+            RunEvent::RunPaused { .. } => "RunPaused",
+            RunEvent::ToolLoopWarning { .. } => "ToolLoopWarning",
+            RunEvent::AgentMessageReceived { .. } => "AgentMessageReceived",
         })
         .collect()
 }
@@ -328,7 +331,7 @@ async fn a_model_failure_fails_the_run() {
 }
 
 #[tokio::test]
-async fn the_step_limit_stops_an_infinite_tool_loop() {
+async fn the_step_limit_pauses_an_infinite_tool_loop() {
     let agent = test_agent();
     let mut run = test_run(&agent);
     let runtime = AgentRuntime::new(
@@ -345,17 +348,11 @@ async fn the_step_limit_stops_an_infinite_tool_loop() {
         Some(1),
     );
 
-    let error = runtime
-        .run_until_blocked(&agent, &mut run)
-        .await
-        .unwrap_err();
+    let status = runtime.run_until_blocked(&agent, &mut run).await.unwrap();
 
-    assert!(matches!(
-        error,
-        AgentRuntimeError::StepLimitExceeded { max_steps: 1 }
-    ));
-    assert_eq!(run.status(), RunStatus::Failed);
-    assert_eq!(event_names(&run).last(), Some(&"RunFailed"));
+    assert_eq!(status, RunStatus::Paused);
+    assert_eq!(run.status(), RunStatus::Paused);
+    assert_eq!(event_names(&run).last(), Some(&"RunPaused"));
 }
 
 #[tokio::test]
@@ -391,7 +388,7 @@ async fn an_absent_step_limit_is_preserved_while_a_run_resumes() {
 }
 
 #[tokio::test]
-async fn a_zero_step_limit_fails_before_requesting_the_model() {
+async fn a_zero_step_limit_pauses_before_requesting_the_model() {
     let agent = test_agent();
     let mut run = test_run(&agent);
     let runtime = AgentRuntime::new(
@@ -404,11 +401,11 @@ async fn a_zero_step_limit_fails_before_requesting_the_model() {
     assert_eq!(runtime.max_steps(), Some(0));
     assert!(matches!(
         runtime.run_until_blocked(&agent, &mut run).await,
-        Err(AgentRuntimeError::StepLimitExceeded { max_steps: 0 })
+        Ok(RunStatus::Paused)
     ));
     assert_eq!(run.current_step(), 0);
-    assert_eq!(run.status(), RunStatus::Failed);
-    assert_eq!(event_names(&run), vec!["RunStarted", "RunFailed"]);
+    assert_eq!(run.status(), RunStatus::Paused);
+    assert_eq!(event_names(&run), vec!["RunStarted", "RunPaused"]);
     assert!(runtime.model().requests().is_empty());
     assert!(runtime.tools().calls().is_empty());
 }

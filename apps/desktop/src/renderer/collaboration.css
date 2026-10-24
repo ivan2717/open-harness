@@ -1,0 +1,83 @@
+.collaboration-tasks {
+  flex-shrink: 0;
+  border-bottom: 1px solid #edf0e7;
+  padding: 0 30px;
+  color: #677267;
+  font-size: 11px;
+}
+.collaboration-tasks > summary {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 34px;
+  cursor: pointer;
+  list-style: none;
+}
+.collaboration-tasks > summary::-webkit-details-marker {
+  display: none;
+}
+.collaboration-tasks[open] .collaboration-chevron {
+  transform: rotate(90deg);
+}
+.collaboration-count {
+  color: #87917f;
+}
+.collaboration-list {
+  max-height: 180px;
+  overflow-y: auto;
+  list-style: none;
+  padding: 0 0 7px 20px;
+  margin: 0;
+}
+.collaboration-list > li,
+.collaboration-task-link {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.collaboration-task-link {
+  flex: 1;
+  min-height: 32px;
+  padding: 4px 6px;
+  border-radius: 5px;
+  color: #39463c;
+}
+.collaboration-task-link:hover,
+.collaboration-task-link:focus-visible {
+  background: #eef2e8;
+}
+.collaboration-task-link > span.truncate {
+  flex: 1;
+}
+.delegation-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-bottom: 6px;
+  color: #677267;
+  font-size: 11px;
+}
+.delegation-back:hover {
+  color: #303c34;
+}
+.delegation-footer,
+.run-pause-note {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: #677267;
+  font-size: 11px;
+  padding: 10px 0;
+}
+.run-pause-note {
+  align-items: flex-start;
+}
+.run-pause-note > span {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.run-pause-note .resume-button {
+  flex-shrink: 0;
+}

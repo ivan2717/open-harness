@@ -21,6 +21,10 @@ export function ChatSidebar({ visible, pathname }: { visible: boolean; pathname:
   const navigate = useNavigate()
   const router = useRouter()
   const isMac = window.harness?.platform === 'darwin'
+  const currentRun = runs.data?.find((run) => pathname === `/runs/${encodeURIComponent(run.id)}`)
+  const conversationPath = currentRun?.delegation
+    ? `/runs/${encodeURIComponent(currentRun.delegation.root_run_id)}`
+    : pathname
   const groups = useMemo(
     () =>
       sidebarConversations(
@@ -117,7 +121,7 @@ export function ChatSidebar({ visible, pathname }: { visible: boolean; pathname:
             <SidebarProject
               key={group.path}
               project={group}
-              pathname={pathname}
+              pathname={conversationPath}
               selected={pathname === '/' && project?.path === group.path}
               search={search.trim()}
               busy={selecting.isPending}
@@ -136,7 +140,7 @@ export function ChatSidebar({ visible, pathname }: { visible: boolean; pathname:
             </div>
             <nav className="run-list" aria-label="会话">
               {groups.independent.map((run) => (
-                <SidebarRunLink key={run.id} run={run} pathname={pathname} />
+                <SidebarRunLink key={run.id} run={run} pathname={conversationPath} />
               ))}
             </nav>
           </section>

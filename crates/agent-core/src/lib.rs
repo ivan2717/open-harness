@@ -1,9 +1,11 @@
 pub mod agent;
+mod agent_message;
 pub mod model_protocol;
 pub mod provider_state;
 pub mod token_usage;
 mod tool_output;
 mod user_input;
+pub use agent_message::AgentMessage;
 pub use model_protocol::{
     ContentBlock, MessageContext, ModelFinishReason, ModelMessage, ModelResponse, ModelRole,
 };

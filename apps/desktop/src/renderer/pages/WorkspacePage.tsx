@@ -1,14 +1,26 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { Link } from '@tanstack/react-router'
 import { useState } from 'react'
-import { FlaskConical, PanelRightOpen, FileDiff, FolderOpen, Play, Minimize2 } from 'lucide-react'
+import {
+  ArrowLeft,
+  FlaskConical,
+  PanelRightOpen,
+  FileDiff,
+  FolderOpen,
+  Play,
+  Minimize2,
+  Square,
+} from 'lucide-react'
 import { Composer } from '../components/Composer'
 import { RunActivity } from '../components/RunActivity'
 import { ContextInspector } from '../components/ContextInspector'
 import { Conversation } from '../components/Conversation'
+import { CollaborationTasks } from '../components/CollaborationTasks'
 import { CommandApprovals, WorkspaceReviewPanel } from '../components/WorkspaceReview'
 import { ExtensionApprovals } from '../components/ExtensionApprovals'
 import { ErrorState, InlineError, Loading } from '../components/Feedback'
 import { errorMessage } from '../lib/format'
+import { pauseMessage } from '../lib/collaboration'
 import { configOptions, storeSnapshot, useRun, useWorkspace } from '../lib/queries'
 import { taskModels } from '../lib/task-models'
 import { useCreateRun } from '../lib/use-create-run'
@@ -149,6 +161,7 @@ export function RunPage({ runId }: { runId: string }) {
   if (!run) return null
   const running = run.status === 'running'
   const waiting = run.status === 'waiting_for_input'
+  const delegated = Boolean(run.delegation)
   const compacting = run.compacting || compact.isPending
   const active = running || compacting || input.isPending || resume.isPending
   const mutationError =
@@ -164,6 +177,16 @@ export function RunPage({ runId }: { runId: string }) {
       <section className="main-pane">
         <header className="workspace-header">
           <div className="min-w-0 flex-1">
+            {run.delegation && (
+              <Link
+                to="/runs/$runId"
+                params={{ runId: run.delegation.parent_run_id }}
+                className="delegation-back"
+              >
+                <ArrowLeft size={12} aria-hidden="true" />
+                返回父任务
+              </Link>
+            )}
             <div className="workspace-heading">
               <RunActivity active={Boolean(active)} />
               <span className="truncate">{run.title || run.prompt}</span>
@@ -197,6 +220,7 @@ export function RunPage({ runId }: { runId: string }) {
             <InspectorToggle onOpen={() => setReviewRun(null)} />
           </div>
         </header>
+        {!delegated && <CollaborationTasks key={runId} rootId={runId} />}
         {query.streamError && (
           <div className="run-alert">
             <InlineError
@@ -225,9 +249,24 @@ export function RunPage({ runId }: { runId: string }) {
               retry={() => void workspace.refetch()}
             />
           )}
-          {run.error && <InlineError message={run.error} />}
+          {run.error && run.status !== 'paused' && <InlineError message={run.error} />}
           {mutationError && <InlineError message={errorMessage(mutationError)} />}
-          {!running && !waiting && run.status !== 'completed' && (
+          {run.status === 'paused' && (
+            <div className="run-pause-note" role="status">
+              <span>{pauseMessage(run)}</span>
+              {!delegated && (
+                <button
+                  className="resume-button"
+                  disabled={resume.isPending || compacting || !model?.available}
+                  onClick={() => resume.mutate({})}
+                >
+                  <Play size={12} />
+                  继续任务
+                </button>
+              )}
+            </div>
+          )}
+          {!delegated && !running && !waiting && !['completed', 'paused'].includes(run.status) && (
             <div className="finished-note">
               {run.status === 'interrupted' && <span>执行已中断，消息已保存。</span>}
               <button
@@ -240,31 +279,50 @@ export function RunPage({ runId }: { runId: string }) {
               </button>
             </div>
           )}
-          <Composer
-            key={runId}
-            runId={runId}
-            draftKey={`run:${runId}`}
-            models={config.data?.models ?? []}
-            modelId={run.model_id}
-            project={
-              run.workspace_path
-                ? {
-                    path: run.workspace_path,
-                    permission: run.permission_mode ?? 'read_only',
-                  }
-                : null
-            }
-            running={running}
-            onStop={() => cancel.mutate()}
-            stopping={cancel.isPending}
-            pending={input.isPending || resume.isPending}
-            disabled={compacting || (!running && !model?.available)}
-            onSubmit={async (prompt, files) => {
-              if (waiting) await input.mutateAsync({ message: prompt, files })
-              else await resume.mutateAsync({ message: prompt, files })
-            }}
-          />
-          <p className="composer-bottom-note">Enter 发送 · Shift + Enter 换行</p>
+          {run.delegation ? (
+            <div className="delegation-footer">
+              <span>在主任务中继续协作。</span>
+              {running && (
+                <button
+                  type="button"
+                  className="resume-button"
+                  disabled={cancel.isPending}
+                  onClick={() => cancel.mutate()}
+                >
+                  <Square size={12} />
+                  {cancel.isPending ? '正在停止…' : '停止任务'}
+                </button>
+              )}
+            </div>
+          ) : (
+            <>
+              <Composer
+                key={runId}
+                runId={runId}
+                draftKey={`run:${runId}`}
+                models={config.data?.models ?? []}
+                modelId={run.model_id}
+                project={
+                  run.workspace_path
+                    ? {
+                        path: run.workspace_path,
+                        permission: run.permission_mode ?? 'read_only',
+                      }
+                    : null
+                }
+                running={running}
+                onStop={() => cancel.mutate()}
+                stopping={cancel.isPending}
+                pending={input.isPending || resume.isPending}
+                disabled={compacting || (!running && !model?.available)}
+                onSubmit={async (prompt, files) => {
+                  if (waiting) await input.mutateAsync({ message: prompt, files })
+                  else await resume.mutateAsync({ message: prompt, files })
+                }}
+              />
+              <p className="composer-bottom-note">Enter 发送 · Shift + Enter 换行</p>
+            </>
+          )}
         </div>
       </section>
       {inspectorOpen && (
@@ -272,29 +330,31 @@ export function RunPage({ runId }: { runId: string }) {
           run={run}
           windowTokens={model?.context_window}
           compactionAction={
-            <button
-              type="button"
-              className="inspector-toggle"
-              disabled={
-                input.isPending ||
-                resume.isPending ||
-                (compacting
-                  ? cancelCompaction.isPending
-                  : running ||
-                    !run.messages.length ||
-                    !['waiting_for_input', 'completed'].includes(run.status) ||
-                    !model?.available)
-              }
-              title={
-                compacting
-                  ? '取消当前的上下文压缩。'
-                  : '汇总较早的历史，保留原始记录。真实模型会产生摘要请求。'
-              }
-              onClick={() => (compacting ? cancelCompaction.mutate() : compact.mutate())}
-            >
-              <Minimize2 size={15} />
-              {compacting ? '取消压缩' : '压缩上下文'}
-            </button>
+            !delegated && (
+              <button
+                type="button"
+                className="inspector-toggle"
+                disabled={
+                  input.isPending ||
+                  resume.isPending ||
+                  (compacting
+                    ? cancelCompaction.isPending
+                    : running ||
+                      !run.messages.length ||
+                      !['waiting_for_input', 'completed'].includes(run.status) ||
+                      !model?.available)
+                }
+                title={
+                  compacting
+                    ? '取消当前的上下文压缩。'
+                    : '汇总较早的历史，保留原始记录。真实模型会产生摘要请求。'
+                }
+                onClick={() => (compacting ? cancelCompaction.mutate() : compact.mutate())}
+              >
+                <Minimize2 size={15} />
+                {compacting ? '取消压缩' : '压缩上下文'}
+              </button>
+            )
           }
         />
       )}

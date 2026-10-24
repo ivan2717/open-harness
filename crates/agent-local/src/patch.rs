@@ -32,7 +32,7 @@ impl LocalTools {
         let input: Input = files::parse(arguments)?;
         let mut changes: Vec<Change> = Vec::new();
         for operation in patch_format::parse(&input.patch)? {
-            let target = paths::resolve(self.root(), operation.path())?;
+            let target = self.authorize_write(operation.path())?;
             if target == self.root() {
                 return Err(paths::denied("cannot replace the workspace"));
             }
@@ -205,7 +205,7 @@ impl LocalTools {
 
     fn check_patch_target(&self, change: &Change) -> io::Result<()> {
         self.verify_root()?;
-        let target = paths::resolve(self.root(), &change.path)?;
+        let target = self.authorize_write(&change.path)?;
         if paths::text_file(&target)? != change.before {
             return Err(io::Error::new(
                 io::ErrorKind::WouldBlock,

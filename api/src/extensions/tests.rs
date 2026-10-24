@@ -279,12 +279,7 @@ async fn new_snapshots_refresh_enabled_capabilities_without_mutating_earlier_sna
     fs::create_dir_all(&project).unwrap();
     let project = fs::canonicalize(project).unwrap();
     let host = ExtensionHost::open(&dir.0.join("state")).unwrap();
-    let tools = crate::model::ServiceTools::Host(ExtensionTools::new(
-        host.clone(),
-        "run-a".into(),
-        Some(project.clone()),
-        None,
-    ));
+    let tools = ExtensionTools::new(host.clone(), "run-a".into(), Some(project.clone()), None);
     let initial = tools.snapshot_definitions();
     assert_eq!(initial, [agent_memory::tool_definition()]);
 

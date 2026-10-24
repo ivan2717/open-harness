@@ -151,7 +151,12 @@ impl LocalTools {
                 "file content exceeds 256 KiB or contains NUL",
             ));
         }
-        let target = paths::resolve(self.root(), path)?;
+        let target = self.authorize_write(path)?;
+        let path = target
+            .strip_prefix(self.root())
+            .unwrap()
+            .to_str()
+            .ok_or_else(|| paths::denied("path must be UTF-8"))?;
         let before = paths::text_file(&target)?;
         if before != expected {
             return Err(io::Error::new(

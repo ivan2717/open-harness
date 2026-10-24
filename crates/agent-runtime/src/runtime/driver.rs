@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use agent_core::agent::{Agent, AgentRun, RunEvent, RunStatus};
+use agent_core::agent::{Agent, AgentRun, RunEvent, RunPauseReason, RunStatus};
 
 use crate::{
     ContextInputRef, ContextManager, EventStore, HistoryAccess, HistoryContext, Model,
@@ -9,7 +9,9 @@ use crate::{
     ToolDefinition, ToolExecutor,
 };
 
-use super::{AgentRuntime, AgentRuntimeError, execution::RunControl};
+use super::{
+    AgentRuntime, AgentRuntimeError, execution::RunControl, tool_repetition::ToolRepetitionMonitor,
+};
 
 impl<M, T, C, S, H> AgentRuntime<M, T, C, S, H>
 where
@@ -66,29 +68,38 @@ where
             .iter()
             .rev()
             .find_map(|event| {
-                (matches!(event.event, RunEvent::RunResumed { .. })
-                    || (self.continue_after_response
-                        && matches!(event.event, RunEvent::InputReceived { .. })))
+                matches!(
+                    event.event,
+                    RunEvent::RunResumed { .. } | RunEvent::InputReceived { .. }
+                )
                 .then_some(event.step)
             })
             .unwrap_or(0);
 
+        let mut repetition_monitor = ToolRepetitionMonitor::default();
         while run.is_running() {
             if control.is_cancelled() {
                 return self.finish_cancellation(run).await;
+            }
+            for warning in repetition_monitor.pending_warnings(run.events()) {
+                self.record_persisted(run, warning).await?;
+            }
+            self.receive_agent_messages(run, control, false).await?;
+            if !run.is_running() {
+                return Ok(run.status());
             }
             if let Some(max_steps) = self.max_steps
                 && run.current_step().saturating_sub(turn_start_step) >= max_steps
             {
                 self.record_persisted(
                     run,
-                    RunEvent::RunFailed {
-                        message: format!("maximum number of steps ({max_steps}) reached"),
+                    RunEvent::RunPaused {
+                        reason: RunPauseReason::StepLimit { max_steps },
                     },
                 )
                 .await?;
 
-                return Err(AgentRuntimeError::StepLimitExceeded { max_steps });
+                return Ok(RunStatus::Paused);
             }
 
             let preparation = control
@@ -396,6 +407,12 @@ where
                         .observe_model_output(agent, run, control, &tools, &response)
                         .await?
                     {
+                        return Ok(run.status());
+                    }
+                    if self.receive_agent_messages(run, control, true).await? {
+                        continue;
+                    }
+                    if !run.is_running() {
                         return Ok(run.status());
                     }
                     let event = if response.response.finish_reason == ModelFinishReason::Stop

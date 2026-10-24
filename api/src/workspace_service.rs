@@ -57,6 +57,15 @@ impl AppState {
                 PathBuf::from(root),
                 directory.clone(),
                 detail.summary.permission_mode,
+            )?
+            .with_collaboration(
+                self.workspace_access(root)?,
+                detail.summary.id.clone(),
+                detail
+                    .summary
+                    .delegation
+                    .as_ref()
+                    .map(|d| d.write_paths.clone()),
             )?;
             let instructions_path = directory.join("instructions.json");
             // Instructions are part of provider replay bindings. Freeze them
@@ -97,17 +106,30 @@ impl AppState {
         except: Option<&str>,
     ) -> Result<(), ServiceError> {
         let root = Path::new(root);
+        let caller_root = except.map(|id| self.root_id(id)).transpose()?;
         for (id, entry) in self.inner.runs.read().expect("runs lock poisoned").iter() {
             if except == Some(id.as_str()) {
                 continue;
             }
             let detail = entry.snapshot.get();
+            if let Some(caller_root) = &caller_root {
+                let other_root = detail
+                    .summary
+                    .delegation
+                    .as_ref()
+                    .map_or(id.as_str(), |d| d.root_run_id.as_str());
+                if caller_root == other_root {
+                    continue;
+                }
+            }
             let Some(other) = &detail.summary.workspace_path else {
                 continue;
             };
             let other = Path::new(other);
             if (root.starts_with(other) || other.starts_with(root))
-                && (entry.runtime.is_executing(id) || detail.summary.status == RunStatus::Running)
+                && (entry.background.load(Ordering::Acquire)
+                    || entry.runtime.is_executing(id)
+                    || detail.summary.status == RunStatus::Running)
             {
                 return Err(ServiceError::Conflict(
                     "此项目或其子目录已有正在执行的会话，请先停止或等待完成".into(),
@@ -147,16 +169,27 @@ impl AppState {
     }
 
     pub async fn revert_file(&self, id: &str, path: &str) -> Result<WorkspaceReview, ServiceError> {
+        // Once admitted, finish the file mutation and release its temporary
+        // lease even if the HTTP client disconnects while receiving the result.
+        let state = self.clone();
+        let id = id.to_owned();
+        let path = path.to_owned();
+        tokio::spawn(async move { state.revert_file_inner(&id, &path).await })
+            .await
+            .map_err(ServiceError::internal)?
+    }
+
+    async fn revert_file_inner(
+        &self,
+        id: &str,
+        path: &str,
+    ) -> Result<WorkspaceReview, ServiceError> {
         let _gate = self.inner.model_gate.lock().await;
         let entry = self.entry(id)?;
         let _operation = entry.operations.lock().await;
         Self::require_workspace_available(&entry)?;
         let detail = entry.snapshot.get();
-        if entry.runtime.is_executing(id) || detail.summary.status == RunStatus::Running {
-            return Err(ServiceError::Conflict(
-                "请先停止运行，再撤销文件改动".into(),
-            ));
-        }
+        self.ensure_family_idle_for_revert(id)?;
         let tools = entry
             .workspace
             .as_ref()
@@ -164,8 +197,54 @@ impl AppState {
         if let Some(root) = &detail.summary.workspace_path {
             self.ensure_workspace_idle(root, Some(id))?;
         }
-        tools.revert(path).map_err(workspace_error)?;
+        // A completed delegate no longer holds its write lease. Only this
+        // user-controlled endpoint may reacquire the exact file for conditional
+        // undo; the tool's original allowlist and journal remain authoritative.
+        let access = if detail.summary.delegation.is_some() {
+            let root = detail
+                .summary
+                .workspace_path
+                .as_deref()
+                .ok_or_else(|| ServiceError::BadRequest("此会话没有绑定本地项目".into()))?;
+            let access = self.workspace_access(root).map_err(workspace_error)?;
+            access
+                .try_acquire(id, &[path.to_owned()])
+                .map_err(workspace_error)?;
+            Some(access)
+        } else {
+            None
+        };
+        let result = tools.revert(path);
+        if let Some(access) = access {
+            access.release(id).await;
+        }
+        result.map_err(workspace_error)?;
         self.workspace_review(id).await
+    }
+
+    fn ensure_family_idle_for_revert(&self, id: &str) -> Result<(), ServiceError> {
+        let root = self.root_id(id)?;
+        for (other_id, entry) in self.inner.runs.read().expect("runs lock poisoned").iter() {
+            let detail = entry.snapshot.get();
+            let other_root = detail
+                .summary
+                .delegation
+                .as_ref()
+                .map_or(other_id.as_str(), |delegation| {
+                    delegation.root_run_id.as_str()
+                });
+            if root == other_root
+                && (entry.background.load(Ordering::Acquire)
+                    || entry.runtime.is_executing(other_id)
+                    || detail.summary.status == RunStatus::Running
+                    || detail.summary.compacting)
+            {
+                return Err(ServiceError::Conflict(
+                    "请先停止此任务及其子任务，等待当前操作结束后再撤销文件改动".into(),
+                ));
+            }
+        }
+        Ok(())
     }
 
     pub async fn resume(
@@ -173,6 +252,7 @@ impl AppState {
         id: &str,
         message: Option<String>,
     ) -> Result<RunDetail, ServiceError> {
+        self.reject_direct_child_input(id)?;
         self.resume_with_files(id, message, Vec::new()).await
     }
 
@@ -182,6 +262,7 @@ impl AppState {
         message: Option<String>,
         files: Vec<TextFileReference>,
     ) -> Result<RunDetail, ServiceError> {
+        self.reject_direct_child_input(id)?;
         let message = message.unwrap_or_else(|| {
             if files.is_empty() {
                 "继续这个任务。请先检查当前文件和已记录的结果；中断时结果未知的操作不要直接重复执行。".into()
@@ -201,12 +282,19 @@ impl AppState {
             ));
         }
         Self::require_workspace_available(&entry)?;
-        if detail.summary.compacting
-            || entry.runtime.is_executing(id)
-            || detail.summary.status == RunStatus::Running
-        {
+        if detail.summary.compacting || detail.summary.status == RunStatus::Running {
             return Err(ServiceError::Conflict("请等待当前操作结束后继续".into()));
         }
+        // Completion is visible just before result delivery and lease cleanup
+        // finish. A user's immediate follow-up must wait for that short tail,
+        // without overlapping it or requiring another click.
+        let mut changed = self.inner.mailboxes.subscribe();
+        while entry.background.load(Ordering::Acquire) || entry.runtime.is_executing(id) {
+            if changed.changed().await.is_err() {
+                break;
+            }
+        }
+        self.ensure_accepting_work()?;
         if let Some(root) = &detail.summary.workspace_path {
             self.ensure_workspace_idle(root, Some(id))?;
         }
@@ -238,7 +326,7 @@ impl AppState {
             }
         }
         let snapshot = entry.snapshot.get();
-        execute(entry.clone(), run);
+        execute(self.clone(), entry.clone(), run);
         Ok(snapshot)
     }
 }

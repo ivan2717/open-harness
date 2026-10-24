@@ -1,5 +1,6 @@
 //! Local execution host. Model-facing tools share the same permissions,
 //! journal and cancellation boundary as the review APIs.
+mod collaboration;
 mod command;
 mod contracts;
 pub mod documents;
@@ -13,6 +14,7 @@ mod reader;
 mod search;
 
 use agent_runtime::{ToolCall, ToolDefinition, ToolExecutor};
+pub use collaboration::WorkspaceAccess;
 pub use contracts::*;
 use std::{
     collections::BTreeMap,
@@ -28,6 +30,7 @@ use tokio::sync::oneshot;
 #[derive(Clone)]
 pub struct LocalTools {
     inner: Arc<Inner>,
+    collaboration: Option<Arc<collaboration::Collaboration>>,
 }
 struct Inner {
     root: PathBuf,
@@ -92,6 +95,7 @@ impl LocalTools {
         }
         journal.save(&state_dir)?;
         let tools = Self {
+            collaboration: None,
             inner: Arc::new(Inner {
                 #[cfg(unix)]
                 root_identity: root_metadata,
@@ -169,8 +173,13 @@ impl LocalTools {
     pub fn review(&self) -> io::Result<WorkspaceReview> {
         self.verify_root()?;
         let operation = self.inner.operation.try_lock().ok();
+        let shared_operation = self
+            .collaboration
+            .as_ref()
+            .and_then(|binding| binding.access.try_read());
         let mut journal = self.inner.journal.lock().map_err(lock_error)?;
         if operation.is_some()
+            && (self.collaboration.is_none() || shared_operation.is_some())
             && let Some(before) = journal.command_baseline.as_ref()
             && let Ok(after) = journal::snapshot(self.root())
         {
@@ -201,6 +210,11 @@ impl LocalTools {
     }
 
     pub fn revert(&self, path: &str) -> io::Result<()> {
+        let _shared_operation = self
+            .collaboration
+            .as_ref()
+            .map(|binding| binding.access.try_write())
+            .transpose()?;
         self.verify_root()?;
         if self.inner.mode != PermissionMode::WorkspaceWrite {
             return Err(paths::denied("workspace is read-only"));
@@ -211,7 +225,12 @@ impl LocalTools {
                 "wait for the running tool before reverting",
             )
         })?;
-        let target = paths::resolve(self.root(), path)?;
+        let target = self.authorize_write(path)?;
+        let path = target
+            .strip_prefix(self.root())
+            .unwrap()
+            .to_str()
+            .ok_or_else(|| paths::denied("path must be UTF-8"))?;
         let mut journal = self.inner.journal.lock().map_err(lock_error)?;
         let change = journal
             .files
@@ -243,13 +262,24 @@ impl LocalTools {
 impl ToolExecutor for LocalTools {
     type Error = io::Error;
     fn definitions(&self) -> &[ToolDefinition] {
-        &self.inner.definitions
+        self.collaboration
+            .as_ref()
+            .map_or(&self.inner.definitions, |binding| &binding.definitions)
     }
     async fn execute(&self, call: ToolCall) -> io::Result<String> {
         let _operation = self.inner.operation.lock().await;
+        let write = !matches!(
+            call.name.as_str(),
+            "list_files" | "read_file" | "search_files" | "read_document" | "search_document"
+        );
+        let _shared_operation = match &self.collaboration {
+            Some(binding) => Some(binding.access.operation(write).await),
+            None => None,
+        };
         self.verify_root()?;
         let _busy = Busy::new(&self.inner.busy);
         if call.name == "run_command" {
+            self.authorize_command()?;
             self.command(call).await
         } else {
             self.file_call(call)

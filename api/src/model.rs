@@ -95,7 +95,7 @@ impl Model for ServiceModel {
 
 pub enum ServiceTools {
     Demo(DemoTools),
-    Host(crate::extensions::ExtensionTools),
+    Host(Box<crate::service::collaboration::tools::RunTools>),
 }
 impl ToolExecutor for ServiceTools {
     type Error = io::Error;
@@ -121,6 +121,24 @@ impl ToolExecutor for ServiceTools {
         match self {
             Self::Demo(tools) => tools.execute_output(call).await,
             Self::Host(tools) => tools.execute_output(call).await,
+        }
+    }
+    async fn pending_messages(&self) -> Result<Vec<agent_core::AgentMessage>, Self::Error> {
+        match self {
+            Self::Demo(_) => Ok(Vec::new()),
+            Self::Host(tools) => tools.pending_messages().await,
+        }
+    }
+    async fn wait_for_messages(&self) -> Result<Vec<agent_core::AgentMessage>, Self::Error> {
+        match self {
+            Self::Demo(_) => Ok(Vec::new()),
+            Self::Host(tools) => tools.wait_for_messages().await,
+        }
+    }
+    async fn acknowledge_messages(&self, ids: &[String]) -> Result<(), Self::Error> {
+        match self {
+            Self::Demo(_) => Ok(()),
+            Self::Host(tools) => tools.acknowledge_messages(ids).await,
         }
     }
 }

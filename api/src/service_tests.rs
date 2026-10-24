@@ -17,6 +17,8 @@ async fn cancellation_reconciles_completion_or_failure_after_its_initial_read() 
         let now = time::now();
         let detail = RunDetail {
             summary: RunSummary {
+                delegation: None,
+                execution_policy: Default::default(),
                 compacting: false,
                 id: id.clone(),
                 revision: 0,
@@ -115,6 +117,7 @@ async fn shutdown_settles_active_work_and_rejects_new_execution() {
         .await
         .unwrap();
     let input = || CreateRunInput {
+        execution_policy: Default::default(),
         prompt: "shutdown".into(),
         files: Vec::new(),
         model_id: MODEL_ID.into(),

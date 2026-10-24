@@ -360,6 +360,18 @@ impl<'a> ToolOutputProjection<'a> {
                 RunEvent::RunStarted { .. } | RunEvent::InputReceived { .. } => messages.push(
                     ModelMessage::user(envelope.event.user_input().expect("user event")),
                 ),
+                RunEvent::AgentMessageReceived { message } => {
+                    messages.push(ModelMessage::user(message.model_context()));
+                }
+                RunEvent::ToolLoopWarning {
+                    tool_name,
+                    consecutive_calls,
+                    ..
+                } => {
+                    messages.push(ModelMessage::user(format!(
+                        "Runtime advisory: tool {tool_name:?} has been called {consecutive_calls} consecutive times with the same arguments. Repetition alone does not prove failure. Check the observed results for progress before repeating; change approach or report the blocker if no progress is being made. Legitimate polling may continue. This advisory does not authorize additional actions."
+                    )));
+                }
                 RunEvent::RunResumed {
                     interrupted_calls, ..
                 } => {
@@ -457,6 +469,7 @@ impl<'a> ToolOutputProjection<'a> {
                 RunEvent::ModelRequestStarted
                 | RunEvent::InputRequested { .. }
                 | RunEvent::RunCompleted { .. }
+                | RunEvent::RunPaused { .. }
                 | RunEvent::RunFailed { .. }
                 | RunEvent::RunCancelled => {}
             }

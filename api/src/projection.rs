@@ -178,6 +178,43 @@ pub fn apply(detail: &mut RunDetail, envelope: &RunEventEnvelope) {
             detail.summary.status = RunStatus::Cancelled;
             ("run_cancelled", "运行已停止", String::new())
         }
+        RunEvent::RunPaused { reason } => {
+            detail.summary.status = RunStatus::Paused;
+            detail.error = None;
+            (
+                "run_paused",
+                "任务已暂停",
+                match reason {
+                    agent_core::agent::RunPauseReason::StepLimit { max_steps } => {
+                        format!("已达到配置的 {max_steps} 步执行预算，进度已保存，可以继续任务。")
+                    }
+                    agent_core::agent::RunPauseReason::SharedTokenBudget { max_tokens } => {
+                        format!("已达到配置的 {max_tokens} token 任务预算，进度已保存。")
+                    }
+                },
+            )
+        }
+        RunEvent::ToolLoopWarning {
+            tool_name,
+            consecutive_calls,
+            ..
+        } => (
+            "tool_loop_warning",
+            "重复操作提醒",
+            format!(
+                "{tool_name} 已连续以相同参数调用 {consecutive_calls} 次，请核实进展并调整方法。"
+            ),
+        ),
+        RunEvent::AgentMessageReceived { message } => {
+            let mut item = ChatMessage::complete(id, "tool", message.text.clone());
+            item.tool_name = Some(format!("协作 · {}", message.sender));
+            detail.messages.push(item);
+            (
+                "agent_message_received",
+                "协作消息",
+                message.text.chars().take(350).collect(),
+            )
+        }
     };
     if matches!(
         detail.summary.status,
@@ -245,6 +282,8 @@ mod tests {
     fn detail() -> RunDetail {
         RunDetail {
             summary: RunSummary {
+                delegation: None,
+                execution_policy: Default::default(),
                 compacting: false,
                 id: "test".into(),
                 revision: 0,

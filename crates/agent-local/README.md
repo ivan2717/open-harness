@@ -66,6 +66,29 @@ inside another restrictive sandbox can return `sandbox_apply: Operation not
 permitted`. These tests use temporary directories and local loopback only;
 no model API or external network access is required.
 
+## Delegated runs
+
+The host can bind every run in one project to a shared `WorkspaceAccess` using
+`LocalTools::with_collaboration`. Pass `None` for the parent, `Some(files)` for a
+delegate that may edit those exact files, or `Some(vec![])` for a read-only
+delegate. These restrictions never widen the original permission mode. The host
+must acquire the delegate's file lease before execution and stop/await its
+execution before releasing that lease. Released tool handles cannot keep writing.
+
+Lease acquisition normalizes workspace-relative paths and rejects protected
+paths, symlinks, directories and overlapping reservations, including case aliases.
+Parent edits and undo cannot touch files leased to another run. All patch targets
+are authorized before any edit is applied, including legacy write/edit entry
+points. Delegates cannot execute shell commands; parent commands are refused
+while any write lease exists. Shared operation locks allow concurrent readers
+and serialize writes, commands, lease acquisition and release. Cancelling a lease
+request while it waits creates no reservation.
+`try_acquire` performs the same validation without waiting, returning `WouldBlock`
+when an operation is active; use it while holding a short service admission lock.
+Leases are in-memory coordination; they must be reconstructed deliberately after recovery, not inferred from old
+tool results. Independent `WorkspaceAccess` instances do not coordinate with one
+another or with external processes.
+
 ## Reading and searching
 
 - `read_file {path, cursor?}` reads text or supported document formats. Pass

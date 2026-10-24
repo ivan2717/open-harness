@@ -104,6 +104,8 @@ impl Fixture {
         let snapshot = Snapshot::new(
             RunDetail {
                 summary: RunSummary {
+                    delegation: None,
+                    execution_policy: Default::default(),
                     compacting: false,
                     id: run_id.into(),
                     revision: 0,

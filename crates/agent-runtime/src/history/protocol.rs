@@ -43,6 +43,9 @@ pub(super) fn event_type(event: &RunEvent) -> &'static str {
         RunEvent::InputReceived { .. } => "input_received",
         RunEvent::RunResumed { .. } => "run_resumed",
         RunEvent::RunCompleted { .. } => "run_completed",
+        RunEvent::RunPaused { .. } => "run_paused",
+        RunEvent::ToolLoopWarning { .. } => "tool_loop_warning",
+        RunEvent::AgentMessageReceived { .. } => "agent_message_received",
         RunEvent::RunFailed { .. } => "run_failed",
         RunEvent::RunCancelled => "run_cancelled",
     }

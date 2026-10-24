@@ -199,6 +199,7 @@ async fn settled(state: &AppState, id: &str) -> RunDetail {
 async fn create(state: &AppState, model_id: &str, prompt: String) -> String {
     let run = state
         .create(CreateRunInput {
+            execution_policy: Default::default(),
             prompt,
             files: Vec::new(),
             model_id: model_id.into(),

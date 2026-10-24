@@ -49,6 +49,7 @@ pub struct AgentRun {
     phase: StepPhase,
     tool_call_ids: HashSet<String>,
     pending_tool_calls: HashSet<String>,
+    agent_message_ids: HashSet<String>,
     revision: Arc<()>,
     events: Vec<RunEventEnvelope>,
 }
@@ -107,6 +108,7 @@ impl AgentRun {
             phase: StepPhase::Ready,
             tool_call_ids: HashSet::new(),
             pending_tool_calls: HashSet::new(),
+            agent_message_ids: HashSet::new(),
             revision: Arc::new(()),
             events: vec![RunEventEnvelope {
                 sequence: 0,
@@ -149,6 +151,7 @@ impl AgentRun {
             phase: StepPhase::Ready,
             tool_call_ids: HashSet::new(),
             pending_tool_calls: HashSet::new(),
+            agent_message_ids: HashSet::new(),
             revision: Arc::new(()),
             events: vec![first],
         };
@@ -234,6 +237,10 @@ impl AgentRun {
 
     pub fn has_tool_call(&self, call_id: &str) -> bool {
         self.tool_call_ids.contains(call_id)
+    }
+
+    pub fn has_agent_message(&self, message_id: &str) -> bool {
+        self.agent_message_ids.contains(message_id)
     }
 
     /// Calls without a durable result at the interrupted boundary. Canonical
@@ -418,6 +425,25 @@ impl AgentRun {
         self.validate_canonical_event(event)?;
 
         let phase = match event {
+            RunEvent::RunPaused { .. }
+                if matches!(self.phase, StepPhase::Ready | StepPhase::ToolsCompleted) =>
+            {
+                return Ok((RunStatus::Paused, self.phase));
+            }
+            RunEvent::ToolLoopWarning { .. } if self.phase == StepPhase::ToolsCompleted => {
+                self.phase
+            }
+            RunEvent::AgentMessageReceived { message }
+                if matches!(
+                    self.phase,
+                    StepPhase::Ready | StepPhase::ToolsCompleted | StepPhase::ModelResponded
+                ) && !message.id.trim().is_empty()
+                    && !message.sender.trim().is_empty()
+                    && !message.text.trim().is_empty()
+                    && !self.has_agent_message(&message.id) =>
+            {
+                StepPhase::Ready
+            }
             RunEvent::ModelResponseReceived { .. }
                 if self.phase == StepPhase::AwaitingModelResponse =>
             {
@@ -507,6 +533,15 @@ impl AgentRun {
             .filter(|entry| matches!(entry.event, RunEvent::ToolCallRequested { .. }))
             .count();
         match event {
+            RunEvent::AgentMessageReceived { .. }
+                if self.phase == StepPhase::ModelResponded
+                    && !matches!(
+                        response.finish_reason,
+                        ModelFinishReason::Stop | ModelFinishReason::InputRequired
+                    ) =>
+            {
+                return Err(AgentRunError::InvalidCanonicalResponse);
+            }
             RunEvent::ToolCallRequested {
                 call_id,
                 tool_name,
@@ -572,6 +607,9 @@ impl AgentRun {
 
     fn apply_event(&mut self, envelope: RunEventEnvelope, status: RunStatus, phase: StepPhase) {
         match &envelope.event {
+            RunEvent::AgentMessageReceived { message } => {
+                self.agent_message_ids.insert(message.id.clone());
+            }
             RunEvent::ToolCallRequested { call_id, .. } => {
                 self.tool_call_ids.insert(call_id.clone());
                 self.pending_tool_calls.insert(call_id.clone());
@@ -717,6 +755,20 @@ pub enum RunEvent {
     RunCompleted {
         answer: String,
     },
+    /// A policy boundary with all tool effects settled; explicit continuation
+    /// can resume it without treating the task as an execution failure.
+    RunPaused {
+        reason: RunPauseReason,
+    },
+    /// Advisory only. The corresponding tool calls have already completed.
+    ToolLoopWarning {
+        call_id: String,
+        tool_name: String,
+        consecutive_calls: u32,
+    },
+    AgentMessageReceived {
+        message: crate::AgentMessage,
+    },
     RunFailed {
         message: String,
     },
@@ -780,6 +832,9 @@ impl RunEvent {
             Self::InputReceived { .. } => "InputReceived",
             Self::RunResumed { .. } => "RunResumed",
             Self::RunCompleted { .. } => "RunCompleted",
+            Self::RunPaused { .. } => "RunPaused",
+            Self::ToolLoopWarning { .. } => "ToolLoopWarning",
+            Self::AgentMessageReceived { .. } => "AgentMessageReceived",
             Self::RunFailed { .. } => "RunFailed",
             Self::RunCancelled => "RunCancelled",
         }
@@ -790,6 +845,8 @@ impl RunEvent {
             Self::RunStarted { .. }
             | Self::ModelRequestStarted
             | Self::RunResumed { .. }
+            | Self::RunPaused { .. }
+            | Self::AgentMessageReceived { .. }
             | Self::RunFailed { .. }
             | Self::RunCancelled => false,
 
@@ -797,6 +854,7 @@ impl RunEvent {
             | Self::ToolCallRequested { .. }
             | Self::ToolCallSucceeded { .. }
             | Self::ToolCallFailed { .. }
+            | Self::ToolLoopWarning { .. }
             | Self::InputRequested { .. }
             | Self::InputReceived { .. }
             | Self::RunCompleted { .. } => true,
@@ -836,9 +894,17 @@ impl InterruptedToolOutcome {
 pub enum RunStatus {
     Running,
     WaitingForInput,
+    Paused,
     Completed,
     Failed,
     Cancelled,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum RunPauseReason {
+    StepLimit { max_steps: u32 },
+    SharedTokenBudget { max_tokens: u64 },
 }
 
 impl RunStatus {

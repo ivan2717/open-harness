@@ -26,6 +26,7 @@ export function sidebarConversations(runs: RunSummary[], projectPaths: string[],
   }
   const independent: RunSummary[] = []
   for (const run of runs) {
+    if (run.delegation) continue
     if (!run.workspace_path) {
       independent.push(run)
       continue

@@ -47,6 +47,23 @@ describe('snapshot ordering', () => {
 })
 
 describe('session list updates', () => {
+  it('retains child identity and execution policy across streaming and pause updates', () => {
+    const child = snapshot({
+      delegation: {
+        parent_run_id: 'root',
+        root_run_id: 'root',
+        task_name: 'Review',
+        write_paths: [],
+      },
+      execution_policy: { max_steps: 200, max_agents: 4 },
+    })
+    const paused = { ...child, revision: 2, status: 'paused' as const }
+    const list = updateRunList(updateRunList([], child), paused)
+    expect(list[0].delegation).toEqual(child.delegation)
+    expect(list[0].execution_policy).toEqual(child.execution_policy)
+    expect(mergeRunLists(list, [child])[0].status).toBe('paused')
+  })
+
   it('keeps one summary per run without copying detail blocks into the list cache', () => {
     const run = snapshot({
       messages: [{ id: 'answer', role: 'assistant', text: 'output', status: 'complete' }],

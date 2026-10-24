@@ -41,6 +41,10 @@ static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 #[path = "service_tests.rs"]
 mod tests;
 
+#[cfg(test)]
+#[path = "execution_lifecycle_tests.rs"]
+mod execution_lifecycle_tests;
+
 #[path = "workspace_service.rs"]
 mod workspace;
 
@@ -53,11 +57,16 @@ mod extensions;
 #[path = "plugin_service.rs"]
 mod plugins;
 
+#[path = "collaboration/mod.rs"]
+pub(crate) mod collaboration;
+
 #[derive(Clone)]
 pub struct AppState {
     inner: Arc<Service>,
 }
 struct Service {
+    mailboxes: collaboration::Mailboxes,
+    workspace_access: std::sync::Mutex<HashMap<String, agent_local::WorkspaceAccess>>,
     extensions: Arc<crate::extensions::ExtensionHost>,
     directory: PathBuf,
     token: Option<String>,
@@ -68,6 +77,7 @@ struct Service {
     shutting_down: AtomicBool,
 }
 struct RunEntry {
+    background: AtomicBool,
     runtime: Arc<Runtime>,
     agent: Agent,
     workspace: Option<agent_local::LocalTools>,
@@ -91,6 +101,8 @@ impl AppState {
         let directory = fs::canonicalize(directory)?;
         let state = Self {
             inner: Arc::new(Service {
+                mailboxes: collaboration::Mailboxes::open(directory.join("collaboration.json"))?,
+                workspace_access: std::sync::Mutex::new(HashMap::new()),
                 extensions: crate::extensions::ExtensionHost::open(&directory)?,
                 directory,
                 token: token.filter(|token| !token.is_empty()),
@@ -144,6 +156,17 @@ impl AppState {
                 .expect("runs lock poisoned")
                 .insert(run.id().into(), entry);
         }
+        let restored: Vec<_> = state
+            .inner
+            .runs
+            .read()
+            .expect("runs lock poisoned")
+            .values()
+            .cloned()
+            .collect();
+        for entry in restored {
+            state.settle_child(&entry).await?;
+        }
         Ok(state)
     }
     pub fn token(&self) -> Option<&str> {
@@ -196,7 +219,8 @@ impl AppState {
             .collect();
         for entry in &entries {
             let detail = entry.snapshot.get();
-            if entry.runtime.is_executing(&detail.summary.id)
+            if entry.background.load(Ordering::Acquire)
+                || entry.runtime.is_executing(&detail.summary.id)
                 || detail.summary.compacting
                 || detail.summary.status == RunStatus::Running
             {
@@ -281,6 +305,8 @@ impl AppState {
         configured: Option<&agent_providers::HttpModel>,
     ) -> io::Result<Arc<RunEntry>> {
         let id = detail.summary.id.clone();
+        let child = detail.summary.delegation.is_some();
+        let max_steps = detail.summary.execution_policy.max_steps;
         let demo = detail.summary.model_id == MODEL_ID;
         let ask = detail.summary.prompt.trim_start().starts_with("/ask");
         let model = if demo {
@@ -325,7 +351,11 @@ impl AppState {
         } else {
             ServiceCompactor::Http(Box::new(ModelContextCompactor::new(model.clone())))
         };
-        let (workspace, workspace_error, agent) = self.workspace_entry(&detail);
+        let (workspace, workspace_error, mut agent) = self.workspace_entry(&detail);
+        agent.instructions.push_str("\n\n");
+        agent
+            .instructions
+            .push_str(collaboration::instructions(child));
         let project = detail.summary.workspace_path.as_ref().map(PathBuf::from);
         let snapshot = match existing {
             Some(snapshot) => snapshot,
@@ -356,19 +386,24 @@ impl AppState {
             if demo {
                 ServiceTools::Demo(DemoTools::new(self.inner.delay.saturating_mul(3)))
             } else {
-                ServiceTools::Host(crate::extensions::ExtensionTools::new(
-                    self.inner.extensions.clone(),
+                ServiceTools::Host(Box::new(collaboration::tools::RunTools::new(
+                    self,
                     id.clone(),
-                    project,
-                    workspace.clone(),
-                ))
+                    crate::extensions::ExtensionTools::new(
+                        self.inner.extensions.clone(),
+                        id.clone(),
+                        project,
+                        workspace.clone(),
+                    ),
+                    child,
+                )))
             },
             context,
             ObservedEventStore {
                 inner: JsonlEventStore::new(self.inner.directory.join("events")),
                 snapshot: snapshot.clone(),
             },
-            Some(12),
+            if demo { Some(12) } else { max_steps },
         )
         .with_history_access(ToggleHistoryAccess::new(
             // Original-history recovery is a core capability, independent of
@@ -376,8 +411,9 @@ impl AppState {
             EventStoreHistoryAccess::new().with_excluded_tools(["session_memory".to_owned()]),
             !demo,
         ))
-        .with_continue_after_response(!demo);
+        .with_continue_after_response(!demo && !child);
         Ok(Arc::new(RunEntry {
+            background: AtomicBool::new(false),
             runtime: Arc::new(runtime),
             agent,
             workspace,
@@ -389,6 +425,7 @@ impl AppState {
     pub async fn create(&self, input: CreateRunInput) -> Result<RunDetail, ServiceError> {
         let _gate = self.inner.model_gate.lock().await;
         self.ensure_accepting_work()?;
+        collaboration::validate_policy(&input.execution_policy)?;
         if input.model_id != MODEL_ID
             && !self
                 .inner
@@ -404,18 +441,12 @@ impl AppState {
         if let Some(path) = &workspace_path {
             self.ensure_workspace_idle(path, None)?;
         }
-        let id = format!(
-            "run-{:x}-{:x}-{:x}",
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos(),
-            std::process::id(),
-            NEXT_ID.fetch_add(1, Ordering::Relaxed)
-        );
+        let id = new_run_id();
         let now = time::now();
         let detail = RunDetail {
             summary: RunSummary {
+                delegation: None,
+                execution_policy: input.execution_policy,
                 compacting: false,
                 id: id.clone(),
                 revision: 0,
@@ -447,22 +478,36 @@ impl AppState {
             .write()
             .expect("runs lock poisoned")
             .insert(id, entry.clone());
-        execute(entry, run);
+        execute(self.clone(), entry, run);
         Ok(snapshot)
     }
     pub async fn cancel(&self, id: &str) -> Result<RunDetail, ServiceError> {
         self.get(id)?;
         self.inner.extensions.revoke_run(id);
         let _gate = self.inner.model_gate.lock().await;
-        let entry = self.entry(id)?;
-        let _operation = entry.operations.lock().await;
-        let run = entry
-            .runtime
-            .restore_run(id)
-            .await
-            .map_err(ServiceError::internal)?
-            .ok_or(ServiceError::NotFound)?;
-        cancel_restored(&entry, run).await
+        // Stop the coordinator first so no new delegation can be admitted.
+        let detail = self.cancel_member(id, true).await?;
+        let children: Vec<_> = self
+            .inner
+            .runs
+            .read()
+            .expect("runs lock poisoned")
+            .values()
+            .filter(|entry| {
+                entry
+                    .snapshot
+                    .get()
+                    .summary
+                    .delegation
+                    .as_ref()
+                    .is_some_and(|d| d.root_run_id == id)
+            })
+            .map(|entry| entry.snapshot.get().summary.id)
+            .collect();
+        for child in children {
+            self.cancel_member(&child, false).await?;
+        }
+        Ok(detail)
     }
     pub async fn input(&self, id: &str, message: String) -> Result<RunDetail, ServiceError> {
         self.input_with_files(id, message, Vec::new()).await
@@ -473,6 +518,7 @@ impl AppState {
         message: String,
         files: Vec<TextFileReference>,
     ) -> Result<RunDetail, ServiceError> {
+        self.reject_direct_child_input(id)?;
         crate::input::validate(&message, &files)?;
         let _gate = self.inner.model_gate.lock().await;
         self.ensure_accepting_work()?;
@@ -501,9 +547,13 @@ impl AppState {
         }
         // The waiting event is published just before the execution guard drops.
         // A fast UI may submit input in that small interval.
-        while entry.runtime.is_executing(id) {
-            tokio::task::yield_now().await;
+        let mut changed = self.inner.mailboxes.subscribe();
+        while entry.background.load(Ordering::Acquire) || entry.runtime.is_executing(id) {
+            if changed.changed().await.is_err() {
+                break;
+            }
         }
+        self.ensure_accepting_work()?;
         if let Err(error) = entry
             .runtime
             .submit_input_with_files(&mut run, message, files)
@@ -519,7 +569,7 @@ impl AppState {
             }
         }
         let snapshot = entry.snapshot.get();
-        execute(entry.clone(), run);
+        execute(self.clone(), entry.clone(), run);
         Ok(snapshot)
     }
     pub async fn compact(&self, id: &str) -> Result<RunDetail, ServiceError> {
@@ -529,6 +579,7 @@ impl AppState {
         let operation = entry.operations.lock().await;
         let detail = entry.snapshot.get();
         if detail.summary.compacting
+            || entry.background.load(Ordering::Acquire)
             || entry.runtime.is_executing(id)
             || detail.summary.status == RunStatus::Running
         {
@@ -627,7 +678,7 @@ impl AppState {
             .values()
             .cloned()
             .collect();
-        futures_util::future::join_all(entries.into_iter().map(|entry| async move {
+        futures_util::future::join_all(entries.iter().map(|entry| async move {
             let _operation = entry.operations.lock().await;
             let detail = entry.snapshot.get();
             let id = &detail.summary.id;
@@ -635,19 +686,34 @@ impl AppState {
                 entry.runtime.cancel_compaction(id).await;
                 let _ = entry.snapshot.update(|detail| detail.summary.compacting = false);
             }
-            if entry.runtime.is_executing(id) || detail.summary.status == RunStatus::Running {
+            // A published waiting/paused outcome can precede the worker's
+            // final bookkeeping. Exiting must preserve that resumable state.
+            if detail.summary.status == RunStatus::Running {
                 match entry.runtime.restore_run(id).await {
-                    Ok(Some(run)) => {
-                        if let Err(error) = cancel_restored(&entry, run).await {
+                    Ok(Some(run)) if run.status() == CoreStatus::Running => {
+                        if let Err(error) = cancel_restored(entry, run).await {
                             tracing::error!(?error, run_id = id, "could not settle run during shutdown");
                         }
                     }
                     Err(error) => tracing::error!(%error, run_id = id, "could not restore run during shutdown"),
-                    Ok(None) => (),
+                    Ok(_) => (),
                 }
             }
             entry.runtime.context_manager().stop_memory_background().await;
         })).await;
+        drop(_gate);
+        // The root worker may acquire child operation locks while cascading
+        // cancellation. Never retain those locks while waiting for its tail.
+        // No old worker may keep writing after a replacement host is opened.
+        let mut changed = self.inner.mailboxes.subscribe();
+        while entries.iter().any(|entry| {
+            entry.background.load(Ordering::Acquire)
+                || entry.runtime.is_executing(&entry.snapshot.get().summary.id)
+        }) {
+            if changed.changed().await.is_err() {
+                break;
+            }
+        }
         self.inner.extensions.shutdown().await;
     }
 }
@@ -675,32 +741,102 @@ async fn cancel_restored(entry: &RunEntry, mut run: AgentRun) -> Result<RunDetai
     Ok(entry.snapshot.get())
 }
 
-fn execute(entry: Arc<RunEntry>, mut run: AgentRun) {
+fn execute(state: AppState, entry: Arc<RunEntry>, mut run: AgentRun) {
+    entry.background.store(true, Ordering::Release);
     tokio::spawn(async move {
         let mut sink = entry.snapshot.clone();
         let agent = entry.agent.clone();
-        let result = entry
-            .runtime
-            .run_until_blocked_with_stream(&agent, &mut run, &mut sink)
-            .await;
-        if let Ok(Some(restored)) = entry.runtime.restore_run(run.id()).await {
-            for event in restored.events() {
-                let _ = entry.snapshot.event(event);
-            }
-            if !restored.status().is_terminal()
-                && restored.status() != CoreStatus::WaitingForInput
-                && let Err(error) = result
-            {
-                let _ = entry.snapshot.update(|detail| {
-                    detail.summary.status = RunStatus::Failed;
-                    detail.error = Some(error.to_string());
-                    detail
-                        .messages
-                        .retain(|message| message.status != "streaming");
-                });
-            }
-        }
+        let id = run.id().to_owned();
+        execute_and_settle(
+            &state,
+            &entry,
+            &id,
+            entry
+                .runtime
+                .run_until_blocked_with_stream(&agent, &mut run, &mut sink),
+        )
+        .await;
     });
+}
+
+/// Host bookkeeping must survive an execution panic just as it survives an
+/// ordinary model error. Catch only execution, not unrelated service work.
+async fn execute_and_settle<E: std::fmt::Display>(
+    state: &AppState,
+    entry: &RunEntry,
+    id: &str,
+    execution: impl std::future::Future<Output = Result<CoreStatus, E>>,
+) {
+    use futures_util::FutureExt;
+    let _activity = BackgroundExecution { state, entry };
+    let execution_error = match std::panic::AssertUnwindSafe(execution).catch_unwind().await {
+        Ok(Ok(_)) => None,
+        Ok(Err(error)) => Some(error.to_string()),
+        Err(_) => Some("执行过程中发生内部异常".into()),
+    };
+    let recovery_error = match entry.runtime.restore_run(id).await {
+        Ok(Some(restored)) => {
+            for event in restored.events() {
+                if let Err(error) = entry.snapshot.event(event) {
+                    tracing::error!(%error, run_id = id, "could not publish final execution history");
+                }
+            }
+            execution_error
+        }
+        Ok(None) => Some("执行结束后未找到持久化历史".into()),
+        Err(error) => Some(format!("无法核实最终持久化历史：{error}")),
+    };
+    // Never invent success from the in-memory driver after failed readback.
+    // Preserve any already-published terminal outcome; a stranded Running run
+    // becomes explicitly recoverable, with possibly committed effects unknown.
+    if entry.snapshot.get().summary.status == RunStatus::Running {
+        let reason = recovery_error
+            .as_deref()
+            .unwrap_or("执行已结束但未记录结束状态");
+        if let Err(error) = entry.snapshot.update(|detail| {
+            detail.summary.status = RunStatus::Interrupted;
+            detail.summary.compacting = false;
+            detail.error = Some(format!("运行已中断：{reason}。部分操作可能已经生效；继续前请核实历史和实际结果，不要直接重试。"));
+            detail.messages.retain(|message| message.status != "streaming");
+        }) {
+            tracing::error!(%error, run_id = id, "could not persist interrupted execution snapshot");
+        }
+    }
+    let outcome = entry.snapshot.get();
+    if outcome.summary.delegation.is_none()
+        && matches!(
+            outcome.summary.status,
+            RunStatus::Failed | RunStatus::Cancelled | RunStatus::Interrupted | RunStatus::Paused
+        )
+    {
+        state.stop_children(&outcome.summary.id).await;
+    }
+    if let Err(error) = state.settle_child(entry).await {
+        tracing::error!(%error, run_id = id, "could not deliver delegated result");
+    }
+}
+
+struct BackgroundExecution<'a> {
+    state: &'a AppState,
+    entry: &'a RunEntry,
+}
+impl Drop for BackgroundExecution<'_> {
+    fn drop(&mut self) {
+        self.entry.background.store(false, Ordering::Release);
+        self.state.inner.mailboxes.notify();
+    }
+}
+
+fn new_run_id() -> String {
+    format!(
+        "run-{:x}-{:x}-{:x}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos(),
+        std::process::id(),
+        NEXT_ID.fetch_add(1, Ordering::Relaxed)
+    )
 }
 
 fn agent_for(model_id: &str) -> Agent {
@@ -735,6 +871,16 @@ pub enum ServiceError {
     BadRequest(String),
     Conflict(String),
     Internal(String),
+}
+impl std::fmt::Display for ServiceError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotFound => formatter.write_str("Run not found"),
+            Self::BadRequest(message) | Self::Conflict(message) | Self::Internal(message) => {
+                formatter.write_str(message)
+            }
+        }
+    }
 }
 impl ServiceError {
     fn internal(error: impl std::fmt::Display) -> Self {

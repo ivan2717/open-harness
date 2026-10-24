@@ -282,6 +282,8 @@ fn visible_sources(events: &[RunEventEnvelope]) -> BTreeSet<u64> {
             RunEvent::InputRequested { prompt } => !prompt.trim().is_empty(),
             RunEvent::RunCompleted { answer } => !answer.trim().is_empty(),
             RunEvent::RunFailed { message } => !message.trim().is_empty(),
+            RunEvent::AgentMessageReceived { message } => !message.text.trim().is_empty(),
+            RunEvent::RunPaused { .. } | RunEvent::ToolLoopWarning { .. } => false,
             RunEvent::ModelRequestStarted | RunEvent::RunCancelled => false,
         };
         if is_visible {

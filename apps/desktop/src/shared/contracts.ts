@@ -12,7 +12,19 @@ import type { ResolvedResource, ResourceAction, ResourceReference } from './mess
 import type { RunMemory } from './memory'
 
 export type RunStatus =
-  'running' | 'waiting_for_input' | 'completed' | 'failed' | 'cancelled' | 'interrupted'
+  'running' | 'waiting_for_input' | 'completed' | 'failed' | 'cancelled' | 'interrupted' | 'paused'
+
+export interface RunDelegation {
+  parent_run_id: string
+  root_run_id: string
+  task_name: string
+  write_paths: string[]
+}
+
+export interface ExecutionPolicy {
+  max_steps?: number | null
+  max_agents?: number
+}
 
 export type PermissionMode = 'read_only' | 'workspace_write'
 
@@ -70,6 +82,8 @@ export interface RunSummary {
   status: RunStatus
   /** Manual context work remains active even while the run is waiting for input. */
   compacting?: boolean
+  delegation?: RunDelegation | null
+  execution_policy?: ExecutionPolicy
   model_id: string
   workspace_path?: string | null
   permission_mode?: PermissionMode

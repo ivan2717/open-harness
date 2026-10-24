@@ -314,6 +314,11 @@ fn event_matches_query(event: &RunEvent, folded_query: &str) -> bool {
         RunEvent::InputRequested { prompt } => matches(prompt),
         RunEvent::RunCompleted { answer } => matches(answer),
         RunEvent::RunFailed { message } => matches(message),
+        RunEvent::AgentMessageReceived { message } => {
+            matches(&message.sender) || matches(&message.text)
+        }
+        RunEvent::ToolLoopWarning { tool_name, .. } => matches(tool_name),
+        RunEvent::RunPaused { .. } => false,
         RunEvent::ModelRequestStarted | RunEvent::RunCancelled => false,
     }
 }

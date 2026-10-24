@@ -57,4 +57,29 @@ pub trait ToolExecutor: Send + Sync {
     ) -> impl Future<Output = Result<agent_core::ToolOutput, Self::Error>> + Send {
         async move { self.execute(call).await.map(Into::into) }
     }
+
+    /// Return unacknowledged collaboration messages without consuming them.
+    /// The runtime persists delivery before acknowledging any message IDs.
+    fn pending_messages(
+        &self,
+    ) -> impl Future<Output = Result<Vec<agent_core::AgentMessage>, Self::Error>> + Send {
+        async { Ok(Vec::new()) }
+    }
+
+    /// Before finishing a response, wait for work this agent still owns.
+    /// Return empty when no work remains; never wait forever in that case.
+    /// Dropping the future must cancel the wait without consuming messages.
+    fn wait_for_messages(
+        &self,
+    ) -> impl Future<Output = Result<Vec<agent_core::AgentMessage>, Self::Error>> + Send {
+        self.pending_messages()
+    }
+
+    /// Idempotently acknowledge messages that are already durably recorded.
+    fn acknowledge_messages(
+        &self,
+        _ids: &[String],
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send {
+        async { Ok(()) }
+    }
 }

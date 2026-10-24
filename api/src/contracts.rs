@@ -26,10 +26,34 @@ pub enum RunStatus {
     Failed,
     Cancelled,
     Interrupted,
+    Paused,
+}
+
+/// Persisted ownership; children never become independent roots on reload.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Delegation {
+    pub parent_run_id: String,
+    pub root_run_id: String,
+    pub task_name: String,
+    pub write_paths: Vec<String>,
+    pub spawn_call_id: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExecutionPolicy {
+    /// Optional per-turn model step limit. Interactive conversations default to none.
+    pub max_steps: Option<u32>,
+    /// Number of concurrently active direct children; the coordinator is excluded.
+    pub max_agents: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunSummary {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delegation: Option<Delegation>,
+    #[serde(default)]
+    pub execution_policy: ExecutionPolicy,
     pub id: String,
     pub revision: u64,
     pub title: String,
@@ -155,6 +179,8 @@ pub struct RunDetail {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CreateRunInput {
+    #[serde(default)]
+    pub execution_policy: ExecutionPolicy,
     pub prompt: String,
     #[serde(default)]
     pub files: Vec<agent_core::TextFileReference>,
