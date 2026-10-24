@@ -16,6 +16,15 @@ namespace OpenHarness.ComputerUse {
             internal int X, Y;
             internal Point(int x, int y) { X = x; Y = y; }
         }
+        [StructLayout(LayoutKind.Sequential)] internal struct Message {
+            internal IntPtr Window;
+            internal uint Id;
+            internal UIntPtr WParam;
+            internal IntPtr LParam;
+            internal uint Time;
+            internal Point Position;
+            internal uint Private;
+        }
         [StructLayout(LayoutKind.Sequential)] internal struct MouseInput {
             internal int X, Y;
             internal uint Data, Flags, Time;
@@ -45,9 +54,12 @@ namespace OpenHarness.ComputerUse {
         [DllImport("user32.dll")] internal static extern IntPtr GetAncestor(IntPtr window, uint flags);
         [DllImport("user32.dll")] internal static extern bool GetWindowRect(IntPtr window, out Rect rectangle);
         [DllImport("user32.dll")] internal static extern bool SetForegroundWindow(IntPtr window);
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)] internal static extern bool PeekMessage(out Message message, IntPtr window, uint minimum, uint maximum, uint flags);
+        [DllImport("user32.dll", SetLastError = true)] internal static extern bool AttachThreadInput(uint thread, uint otherThread, bool attach);
         [DllImport("user32.dll")] internal static extern bool ShowWindowAsync(IntPtr window, int command);
         [DllImport("user32.dll")] internal static extern IntPtr WindowFromPoint(Point point);
         [DllImport("user32.dll")] internal static extern bool PrintWindow(IntPtr window, IntPtr dc, uint flags);
+        [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)] internal static extern IntPtr SendMessageTimeout(IntPtr window, uint message, UIntPtr wparam, IntPtr lparam, uint flags, uint timeout, out UIntPtr result);
         [DllImport("user32.dll")] internal static extern uint SendInput(uint count, Input[] inputs, int size);
         [DllImport("user32.dll")] internal static extern short GetAsyncKeyState(int key);
         [DllImport("user32.dll")] internal static extern int GetSystemMetrics(int index);

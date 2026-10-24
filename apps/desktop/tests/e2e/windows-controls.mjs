@@ -346,11 +346,21 @@ export async function verifyWindowsControls({ page, runtime, directory, artifact
     assert.equal(status.accessibility, undefined)
     const apps = await tool('computer_apps')
     const firstApp = apps.applications.find((item) => item.pid === first.pid)
-    assert.match(firstApp.bundle_id, /^win32:[a-f0-9]{64}$/)
+    const identity = /^win32:([^:]{1,128}):([a-f0-9]{64})$/.exec(firstApp.bundle_id)
+    assert.ok(
+      identity,
+      'Windows application identity must include its process name and executable hash',
+    )
+    assert.equal(
+      identity[1],
+      firstApp.name,
+      'the displayed process name must match the identity returned by native discovery',
+    )
+    const differentHash = `${identity[2][0] === '0' ? '1' : '0'}${identity[2].slice(1)}`
     await step('reject incorrect executable identity', () =>
       assert.rejects(
         computerClient.tool('computer_select_app', {
-          bundle_id: `win32:${'0'.repeat(64)}`,
+          bundle_id: `win32:${identity[1]}:${differentHash}`,
           pid: first.pid,
         }),
         /APP_NOT_FOUND|IDENTITY/,
@@ -459,6 +469,11 @@ export async function verifyWindowsControls({ page, runtime, directory, artifact
     await step('select separate private fixture', () =>
       secondary.tool('computer_select_app', { bundle_id: firstApp.bundle_id, pid: other.pid }),
     )
+    await step('verify foreground moved to selected fixture', async () => {
+      const selected = await secondary.tool('computer_observe')
+      assert.equal(selected.selected_app?.pid, other.pid)
+      assert.equal(selected.selected_app?.bundle_id, firstApp.bundle_id)
+    })
     await step('reject input after foreground moves', () =>
       assert.rejects(
         computerClient.tool('computer_type', {

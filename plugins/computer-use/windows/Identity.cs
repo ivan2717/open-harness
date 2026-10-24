@@ -14,6 +14,15 @@ namespace OpenHarness.ComputerUse {
         internal uint WindowThread;
         internal string WindowRuntime;
 
+        internal static string ApplicationName(string processName) {
+            string name = Json.Text(processName, 128);
+            if (name.Length == 0 || name.IndexOf(':') >= 0) throw new ComputerError("APP_UNAVAILABLE", "Cannot represent this application's identity safely.");
+            return name;
+        }
+        internal static string BundleId(string name, string canonicalPath) {
+            return "win32:" + ApplicationName(name) + ":" + Json.Hash(canonicalPath.ToUpperInvariant());
+        }
+
         internal static AppIdentity Read(int pid) {
             IntPtr process = Native.OpenProcess(0x1000, false, pid);
             if (process == IntPtr.Zero) throw new ComputerError("APP_NOT_FOUND", "The selected application is unavailable.");
@@ -32,8 +41,9 @@ namespace OpenHarness.ComputerUse {
                 if (integrity > 0x2000 || integrity > Native.Integrity(Native.GetCurrentProcess())) throw new ComputerError("ELEVATED_APP", "Elevated applications and UAC prompts require direct user interaction. No elevation is requested.");
                 using (Process target = Process.GetProcessById(pid)) {
                     if (target.HasExited || target.SessionId != Process.GetCurrentProcess().SessionId) throw new ComputerError("APP_UNAVAILABLE", "The application is outside this interactive session.");
+                    string name = ApplicationName(target.ProcessName);
                     return new AppIdentity { Pid = pid, Started = target.StartTime.ToUniversalTime().Ticks, Session = target.SessionId, Path = canonical,
-                        Bundle = "win32:" + Json.Hash(canonical.ToUpperInvariant()), Name = Json.Text(target.ProcessName, 200) };
+                        Bundle = BundleId(name, canonical), Name = name };
                 }
             } finally { Native.CloseHandle(process); }
         }
@@ -72,9 +82,10 @@ namespace OpenHarness.ComputerUse {
             identity.WindowThread = Native.GetWindowThreadProcessId(chosen, out owner);
             var element = AutomationElement.FromHandle(chosen);
             identity.WindowRuntime = Observation.Runtime(element);
+            Input.IdleInput();
             if (Native.IsIconic(chosen)) Native.ShowWindowAsync(chosen, 9);
-            if (Native.GetForegroundWindow() != chosen) Native.SetForegroundWindow(chosen);
-            for (int i = 0; i < 20 && Native.GetForegroundWindow() != chosen; i++) Thread.Sleep(25);
+            for (int i = 0; i < 20 && Native.IsIconic(chosen); i++) Thread.Sleep(25);
+            Foreground.Activate(identity);
             identity.RequireForeground();
             return identity;
         }

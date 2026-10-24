@@ -36,7 +36,8 @@ Keep stdin open while awaiting a response. EOF terminates the process even when
 a target UI Automation provider or capture call hangs. Each request also has a
 10-second hard deadline, after which the helper reports a timeout and exits.
 
-Application IDs are opaque `win32:` identifiers derived from the canonical
+Application IDs use `win32:<process-name>:<canonical-path-hash>`. The bounded
+process name makes approval readable, while the hash binds the canonical
 executable path. Selection additionally binds the PID, process creation time,
 session, top-level HWND, owning thread and UIA runtime identity. An HWND is not
 implicitly replaced if a dialog or another window appears. Input requires the
@@ -45,6 +46,23 @@ valid for 60 seconds. Ref actions address verified elements. Coordinate actions
 require unchanged window-only pixels and a hit test inside the selected window.
 All coordinates are physical pixels relative to the window's top-left corner,
 not the pixels of the potentially resized screenshot.
+
+Only explicit application selection requests foreground activation. If normal
+activation is refused, the helper tries the selected UIA window's `SetFocus`,
+then one temporary `AttachThreadInput` handoff from the verified foreground
+thread. The attached section performs only Win32 checks and activation; it
+never waits on a UIA provider and always detaches before further validation.
+Held mouse buttons/modifiers, secure desktops, and elevated foreground apps
+prevent this handoff. Input operations never steal focus back. Windows can
+still deny activation; `FOCUS_CHANGED` then asks the user to bring the intended
+app forward once. No synthetic Alt key or global Windows setting is used.
+
+Scrolling uses a vertically scrollable UIA target or ancestor without changing
+focus. UIA supplies small/large semantic increments, so the magnitude is not an
+exact pixel distance. Traditional controls without ScrollPattern receive one
+bounded `WM_MOUSEWHEEL` message at the verified same-process HWND and screen
+coordinate. This avoids reliance on the user's global focus/hover wheel routing
+setting. A failed or timed-out dispatch is never retried through another path.
 
 The helper uses `PrintWindow` for the selected HWND only, with no screen-capture
 fallback. Unsupported or empty GPU captures report `CAPTURE_UNAVAILABLE`.
@@ -59,4 +77,7 @@ Implementation references:
 - [UI Automation threading](https://learn.microsoft.com/en-us/dotnet/framework/ui-automation/ui-automation-threading-issues)
 - [PrintWindow](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-printwindow)
 - [SendInput and UIPI](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-sendinput)
+- [Foreground activation restrictions](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setforegroundwindow)
+- [Input queue attachment](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-attachthreadinput)
+- [UIA focus and provider behavior](https://learn.microsoft.com/en-us/dotnet/api/system.windows.automation.automationelement.setfocus)
 - [DPI awareness](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setprocessdpiawarenesscontext)

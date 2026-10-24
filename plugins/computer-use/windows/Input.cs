@@ -17,7 +17,7 @@ namespace OpenHarness.ComputerUse {
                 pendingReleases = null;
             }
         }
-        private static void IdleInput() {
+        internal static void IdleInput() {
             foreach (int key in new[] { 1, 2, 4, 16, 17, 18, 91, 92 })
                 if ((Native.GetAsyncKeyState(key) & 0x8000) != 0) throw new ComputerError("INPUT_BUSY", "A mouse button or modifier is held. Release it before the next computer action.");
         }
@@ -65,6 +65,57 @@ namespace OpenHarness.ComputerUse {
         private static void ExposedPoint(Native.Point point, AppIdentity identity) {
             IntPtr hit = Native.WindowFromPoint(point);
             if (hit == IntPtr.Zero || Native.GetAncestor(hit, 2) != identity.Window || Native.WindowProcess(hit) != identity.Pid) throw new ComputerError("TARGET_OBSCURED", "The point is obscured or outside the selected window. No input was dispatched.");
+        }
+        private static void Scroll(Dictionary<string, object> args, Observation state, AppIdentity identity) {
+            int delta = Arguments.Integer(args, "delta_y", -1000, 1000);
+            Native.Point point = Point(args, state, identity);
+            if (delta == 0) return;
+            AutomationElement target = AutomationElement.FromPoint(new System.Windows.Point(point.X, point.Y));
+            var visited = new HashSet<string>();
+            for (int depth = 0; target != null && depth < 32; depth++) {
+                Observation.RequireSafeElement(target, identity);
+                string runtime = Observation.Runtime(target);
+                if (!visited.Add(runtime)) throw new ComputerError("TARGET_UNAVAILABLE", "The scroll target's accessibility ancestry is not stable.");
+                object value;
+                if (target.TryGetCurrentPattern(ScrollPattern.Pattern, out value)) {
+                    var pattern = (ScrollPattern)value;
+                    if (pattern.Current.VerticallyScrollable) {
+                        // UIA exposes semantic increments rather than pixel or
+                        // wheel distances. Dispatch one increment without focus
+                        // changes, mouse movement or an implicit second attempt.
+                        bool large = Math.Abs(delta) >= 360;
+                        ScrollAmount amount = delta > 0
+                            ? (large ? ScrollAmount.LargeDecrement : ScrollAmount.SmallDecrement)
+                            : (large ? ScrollAmount.LargeIncrement : ScrollAmount.SmallIncrement);
+                        identity.RequireForeground();
+                        Point(args, state, identity);
+                        Observation.RequireSafeElement(target, identity);
+                        if (Observation.Runtime(target) != runtime) throw new ComputerError("STATE_CHANGED", "The scroll container changed before input.");
+                        ForegroundNow(identity); IdleInput(); ExposedPoint(point, identity);
+                        pattern.Scroll(ScrollAmount.NoAmount, amount);
+                        return;
+                    }
+                }
+                if (runtime == identity.WindowRuntime) break;
+                target = TreeWalker.RawViewWalker.GetParent(target);
+            }
+            // Traditional controls may not expose ScrollPattern. Send precisely
+            // one wheel message to the hit HWND; DefWindowProc can propagate it
+            // within its parent chain. SendInput would use the user's global
+            // focus/hover wheel setting and could scroll a different control.
+            if (point.X < Int16.MinValue || point.X > Int16.MaxValue || point.Y < Int16.MinValue || point.Y > Int16.MaxValue) throw new ComputerError("INVALID_COORDINATES", "This control requires wheel-message coordinates within the signed 16-bit screen range.");
+            identity.RequireForeground();
+            Point(args, state, identity);
+            ForegroundNow(identity); IdleInput();
+            IntPtr window = Native.WindowFromPoint(point);
+            if (window == IntPtr.Zero || Native.GetAncestor(window, 2) != identity.Window || Native.WindowProcess(window) != identity.Pid) throw new ComputerError("TARGET_OBSCURED", "The wheel target is no longer inside the selected window.");
+            uint position = unchecked((uint)(ushort)(short)point.X | ((uint)(ushort)(short)point.Y << 16));
+            uint wheel = unchecked((uint)(ushort)(short)delta << 16);
+            UIntPtr ignored;
+            // SMTO_BLOCK | SMTO_ABORTIFHUNG | SMTO_ERRORONEXIT; never retry a
+            // timed-out dispatch because the target may already have acted.
+            if (Native.SendMessageTimeout(window, 0x020A, new UIntPtr(wheel), new IntPtr(unchecked((int)position)), 0x23, 1500, out ignored) == IntPtr.Zero)
+                throw new ComputerError("INPUT_UNCERTAIN", "The target did not acknowledge the wheel message. It may already have scrolled. Observe before continuing; this action is not retried.");
         }
         internal static void Dispatch(string method, Dictionary<string, object> args, Observation state, AppIdentity identity) {
             identity.RequireForeground(); IdleInput();
@@ -116,6 +167,8 @@ namespace OpenHarness.ComputerUse {
                 Send(new[] { Key(code, 0, extended), up }, new[] { up }, identity, delegate { Focus(state, identity); });
                 return;
             }
+            if (method == "scroll") { Scroll(args, state, identity); return; }
+            if (method != "click") throw new ComputerError("UNKNOWN_METHOD", "Unknown input operation.");
             Native.Point point = Point(args, state, identity);
             int left = Native.GetSystemMetrics(76), top = Native.GetSystemMetrics(77), width = Native.GetSystemMetrics(78), height = Native.GetSystemMetrics(79);
             if (width <= 1 || height <= 1 || point.X < left || point.Y < top || point.X >= left + width || point.Y >= top + height) throw new ComputerError("INVALID_COORDINATES", "The observed point is outside the virtual display.");
@@ -123,13 +176,8 @@ namespace OpenHarness.ComputerUse {
             int absoluteY = (int)Math.Round((point.Y - top) * 65535.0 / (height - 1));
             Native.Input move = Mouse(0xC001, absoluteX, absoluteY, 0); // ABSOLUTE | VIRTUALDESK | MOVE
             Action checkPoint = delegate { Point(args, state, identity); ExposedPoint(point, identity); };
-            if (method == "click") {
-                Native.Input up = Mouse(4, 0, 0, 0);
-                Send(new[] { move, Mouse(2, 0, 0, 0), up }, new[] { up }, identity, checkPoint);
-            } else if (method == "scroll") {
-                int delta = Arguments.Integer(args, "delta_y", -1000, 1000);
-                Send(new[] { move, Mouse(0x800, 0, 0, unchecked((uint)delta)) }, new Native.Input[0], identity, checkPoint);
-            } else throw new ComputerError("UNKNOWN_METHOD", "Unknown input operation.");
+            Native.Input mouseUp = Mouse(4, 0, 0, 0);
+            Send(new[] { move, Mouse(2, 0, 0, 0), mouseUp }, new[] { mouseUp }, identity, checkPoint);
         }
     }
 }

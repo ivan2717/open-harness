@@ -22,7 +22,12 @@ export async function stagePluginResources({ source, destination, platform, wind
       filter: (path) => {
         const filename = basename(path)
         if (['tests', 'dist', 'node_modules', '.DS_Store', 'obj'].includes(filename)) return false
-        if (filename.startsWith('ComputerUseFixture.') || filename.endsWith('.pdb')) return false
+        if (
+          filename === 'Fixture.cs' ||
+          filename.startsWith('ComputerUseFixture.') ||
+          filename.endsWith('.pdb')
+        )
+          return false
         const first = relative(pluginSource, path).split(sep)[0]
         if (name === 'computer-use' && first === 'windows' && platform !== 'win32') return false
         if (name === 'computer-use' && first === 'bin' && platform !== 'darwin') return false
