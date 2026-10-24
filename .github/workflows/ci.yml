@@ -8,7 +8,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: checks-${{ github.ref }}
+  group: checks-${{ github.ref }}-${{ github.sha }}
   cancel-in-progress: true
 
 jobs:
@@ -31,17 +31,26 @@ jobs:
   desktop:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    outputs:
+      package_windows: ${{ steps.package-version.outputs.changed }}
     defaults:
       run:
         working-directory: apps/desktop
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v6
         with:
           node-version: 24
           cache: npm
           cache-dependency-path: apps/desktop/package-lock.json
       - run: npm ci
+      - name: Check desktop version change
+        id: package-version
+        env:
+          BASE_SHA: ${{ github.event.before }}
+        run: node scripts/ci-package-version.mjs
       - run: npm run format:check
       - run: npm run typecheck
       - run: npm test
@@ -69,6 +78,7 @@ jobs:
   windows:
     name: Windows x64 installer
     needs: [check, desktop, plugins]
+    if: needs.desktop.outputs.package_windows == 'true'
     runs-on: windows-2022
     timeout-minutes: 45
     env:

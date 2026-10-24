@@ -274,10 +274,28 @@ administrators; a second reviewer's approval is not required. CI validates the
 merged commit. Other branch pushes, pull request updates, tags, and manual
 dispatch do not trigger the workflow.
 
-Rust, desktop, and plugin checks run on Linux first.
+Rust, desktop, and plugin checks run on Linux for every update to `main`.
 The browser plugin tests install headless Chromium and use local fixtures; no
-provider API keys are required. When all checks pass, **Windows x64 installer**
-builds the Rust backend and Electron app on a Windows x64 runner.
+provider API keys are required. **Windows x64 installer** runs only when all
+checks pass and `apps/desktop/package.json` has a different version than before
+the push. Ordinary code, documentation, and dependency updates keep running
+checks without creating an installer. Different main commits do not cancel each
+other's workflows, so a subsequent ordinary update cannot cancel a version build.
+
+When a test version is ready, update the desktop version and lockfile together:
+
+```bash
+cd apps/desktop
+npm version patch --no-git-tag-version
+```
+
+Use `minor`, `major`, or an explicit version when appropriate. Commit the two
+package files in a PR and merge it into `main` to build that version. The workflow
+compares the complete push's before/after commits, including multi-commit merges;
+an unreadable baseline or inconsistent lockfile fails the desktop check.
+This produces a test installer, without creating a version tag or GitHub Release.
+
+The Windows job builds the Rust backend and Electron app on a Windows x64 runner.
 The release backend statically links the Visual C++ runtime. The installed
 `api.exe` is also inspected with `dumpbin` to reject separate VC runtime DLL
 dependencies that a Visual Studio-equipped runner could otherwise hide.
