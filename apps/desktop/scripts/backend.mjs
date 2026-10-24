@@ -6,6 +6,10 @@ import { fileURLToPath } from 'node:url'
 const desktop = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const workspace = resolve(desktop, '../..')
 const release = process.argv[2] === 'release'
+const chromeHostOnly = process.argv.includes('--chrome-host-only')
+if (chromeHostOnly && process.platform !== 'win32') {
+  throw new Error('The Chrome executable launcher is packaged only on Windows')
+}
 const windowsTarget = release && process.platform === 'win32' ? 'x86_64-pc-windows-msvc' : undefined
 if (windowsTarget && process.arch !== 'x64') {
   throw new Error('Windows release packaging currently requires a Windows x64 host')
@@ -30,8 +34,8 @@ const build = spawnSync(
   [
     'build',
     '--locked',
-    '-p',
-    'api',
+    ...(!chromeHostOnly ? ['-p', 'api'] : []),
+    ...(process.platform === 'win32' ? ['-p', 'chrome-native-host'] : []),
     ...(release ? ['--release'] : []),
     ...(windowsTarget ? ['--target', windowsTarget] : []),
   ],
@@ -43,16 +47,26 @@ const build = spawnSync(
 )
 if (build.error) throw build.error
 if (build.status !== 0) process.exit(build.status ?? 1)
-if (release) {
-  const filename = process.platform === 'win32' ? 'api.exe' : 'api'
+if (release || process.platform === 'win32') {
   const targetDirectory = process.env.CARGO_TARGET_DIR
     ? resolve(workspace, process.env.CARGO_TARGET_DIR)
     : resolve(workspace, 'target')
   const resources = resolve(desktop, 'resources/bin')
   await mkdir(resources, { recursive: true })
-  await copyFile(
-    resolve(targetDirectory, ...(windowsTarget ? [windowsTarget] : []), 'release', filename),
-    resolve(resources, filename),
-  )
-  if (process.platform !== 'win32') await chmod(resolve(resources, filename), 0o755)
+  const filenames = [
+    ...(release && !chromeHostOnly ? [process.platform === 'win32' ? 'api.exe' : 'api'] : []),
+    ...(process.platform === 'win32' ? ['openharness-chrome-host.exe'] : []),
+  ]
+  for (const filename of filenames) {
+    await copyFile(
+      resolve(
+        targetDirectory,
+        ...(windowsTarget ? [windowsTarget] : []),
+        release ? 'release' : 'debug',
+        filename,
+      ),
+      resolve(resources, filename),
+    )
+    if (process.platform !== 'win32') await chmod(resolve(resources, filename), 0o755)
+  }
 }

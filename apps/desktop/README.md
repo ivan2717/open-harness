@@ -301,13 +301,17 @@ Ordinary merges with no desktop version change skip both packaging and publishin
 
 The Windows job builds the Rust backend and Electron app on a Windows x64 runner.
 The release backend statically links the Visual C++ runtime. The installed
-`api.exe` is also inspected with `dumpbin` to reject separate VC runtime DLL
+`api.exe` and the Chrome host launcher are inspected with `dumpbin` to reject separate VC runtime DLL
 dependencies that a Visual Studio-equipped runner could otherwise hide.
 
 The Windows job creates an NSIS installer, installs it into a temporary directory
 with spaces in its name, and launches the installed executable with a fresh data
 profile. It checks the IPC/backend connection, an offline task with tool calls and
 context compaction, renderer isolation, and persisted history after restarting.
+It also prepares the real current-user Chrome registration, starts the packaged
+native host and MCP launcher, and tests the extension in an isolated Chrome for
+Testing profile. This covers authenticated named-pipe communication, background
+tab groups, page input/clicks and screenshots without switching the user's tab.
 It then uninstalls the app before uploading the installer. This is a smoke test,
 not full coverage of every Windows feature or an upgrade test.
 
@@ -350,7 +354,7 @@ not publish a GitHub Release. The existing macOS local packaging command
 remains available without an Apple developer account.
 
 Windows currently supports the desktop conversation interface, model connections,
-context management, history, and local file tools. Chrome connection, the isolated
+context management, history, local file tools, and Chrome connection. The isolated
 browser launcher, native Computer Use, and sandboxed shell commands still require
 platform work and remain unavailable on Windows; packaging does not enable them.
 
@@ -456,8 +460,11 @@ plugin's publication documentation before setting a real store URL. From the
 extension popup, allow agent-created background tabs or share a specific existing
 tab; connection alone does not grant either permission. The agent uses the profile's login
 state through tab-scoped Chrome APIs; it does not inject OS keyboard events or
-require Chrome to be in front. An approved open can start Chrome on macOS if it
-is closed. This release's extension has not yet been published to the Web Store.
+require Chrome to be in front. An approved open can start Chrome on macOS or
+Windows if it is closed. Windows registers the host under the current user's
+Chrome registry key, uses a bundled executable and authenticated named pipe,
+and requires neither administrator rights nor a separately installed Node.js.
+This release's extension has not yet been published to the Web Store.
 
 For **Browser Use**, click **准备浏览器** to explicitly download matching Chromium,
 then **安装**. Subsequent use opens an isolated browser with temporary cookies,

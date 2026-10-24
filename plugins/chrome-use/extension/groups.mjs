@@ -40,7 +40,23 @@ export class TaskTabGroups {
     if (!this.api.tabGroups) throw new Error('Reload the Open Harness Chrome extension to enable task tab groups.');
     await this.ready;
     const existing = await this.existing(key);
-    const tab = await this.api.tabs.create({ url, active: false, ...(existing ? { windowId: existing.windowId } : {}) });
+    let tab;
+    if (existing) tab = await this.api.tabs.create({ url, active: false, windowId: existing.windowId });
+    else {
+      // A background browser process can have no normal windows (for example
+      // after Windows --no-startup-window). Do not require the user to focus or
+      // open one, and never reuse an incognito or popup window.
+      const windows = (await this.api.windows.getAll({ windowTypes: ['normal'] })).filter(window => !window.incognito);
+      const target = windows.find(window => window.focused) ?? windows[0];
+      if (target) tab = await this.api.tabs.create({ url, active: false, windowId: target.id });
+      else {
+        const window = await this.api.windows.create({ url, type: 'normal', focused: false, incognito: false });
+        tab = window?.tabs?.[0];
+        if (!Number.isInteger(tab?.id) || tab.incognito || tab.windowId !== window.id) throw new Error(`Created Chrome window ${window?.id ?? 'unknown'}, but its tab could not be identified. Inspect Chrome before retrying; do not repeat chrome_open.`);
+        // Its single tab is active within an unfocused window. Preserve that
+        // state: close_owned must continue to protect active tabs from closing.
+      }
+    }
     try {
       const groupId = await this.api.tabs.group({ tabIds: [tab.id], ...(existing ? { groupId: existing.id } : {}) });
       if (!existing) await this.api.tabGroups.update(groupId, { title: `Open Harness · ${key.slice(0, 6)}`, color: 'green' });

@@ -6,9 +6,20 @@ const B = '22222222-2222-4222-8222-222222222222';
 function fixture() {
   const pages = new Map([[1, { id: 1, windowId: 1, groupId: -1, url: 'https://private.example/inbox', title: 'Private inbox', active: true }], [2, { id: 2, windowId: 1, groupId: -1, url: 'https://shared.example/start', title: 'Shared', active: false }]]);
   const groups = new Map(); const stored = {};
+  const windows = new Map([[1, { id: 1, type: 'normal', focused: true, incognito: false }]]); const createdWindows = [];
   const commands = []; const created = []; const detached = []; const removed = []; let nextId = 3; let nextGroupId = 20; let revision = 0;
   const pruneGroups = () => { for (const id of groups.keys()) if (![...pages.values()].some(tab => tab.groupId === id)) groups.delete(id); };
   const api = {
+    windows: {
+      async getAll({ windowTypes }) { return [...windows.values()].filter(window => windowTypes.includes(window.type)); },
+      async create(args) {
+        createdWindows.push(args);
+        const window = { id: 100 + createdWindows.length, ...args };
+        const tab = { id: nextId++, windowId: window.id, groupId: -1, url: args.url, active: true, incognito: args.incognito, title: 'Agent page' };
+        pages.set(tab.id, tab); windows.set(window.id, window);
+        return { ...window, tabs: [tab] };
+      },
+    },
     tabs: {
       async query(filter = {}) { return [...pages.values()].filter(tab => Object.entries(filter).every(([key, value]) => key === 'currentWindow' || tab[key] === value)); },
       async get(id) { if (!pages.has(id)) throw new Error('Missing tab'); return pages.get(id); },
@@ -53,7 +64,7 @@ function fixture() {
     },
   };
   const controller = new ChromeController(api, { id: () => `revision-${++revision}` });
-  return { controller, api, pages, groups, stored, commands, created, detached, removed };
+  return { controller, api, pages, groups, stored, commands, created, detached, removed, windows, createdWindows };
 }
 test('private tabs are never enumerated; sharing exposes only the current exact origin', async () => {
   const { controller, pages } = fixture();
@@ -64,15 +75,45 @@ test('private tabs are never enumerated; sharing exposes only the current exact 
   assert.deepEqual(await controller.call(A, 'chrome_tabs'), { tabs: [] });
 });
 test('new tabs require explicit extension opt-in and are created in background without changing user tab', async () => {
-  const { controller, pages, created, commands } = fixture();
+  const { controller, pages, created, commands, createdWindows } = fixture();
   await assert.rejects(controller.call(A, 'chrome_open', { url: 'https://example.com' }), /Enable background/);
   controller.allowNewTabs = true;
   const result = await controller.call(A, 'chrome_open', { url: 'https://example.com' });
   assert.equal(result.selected, true); assert.equal(result.origin, 'https://example.com');
   assert.equal(created[0].url, 'https://example.com/'); assert.equal(created[0].active, false);
   assert.equal(pages.get(1).active, true);
+  assert.deepEqual(createdWindows, []);
   assert.deepEqual(commands.map(item => item.method), ['attach']); // Opening does not read page contents.
   const snapshot = await controller.call(A, 'chrome_snapshot'); assert.equal(snapshot.tab_id, result.tab_id);
+});
+test('a browser with no normal window creates one unfocused task window and protects its active tab', async () => {
+  const { controller, windows, pages, created, createdWindows, groups, removed } = fixture();
+  windows.clear(); pages.clear(); controller.allowNewTabs = true;
+  const result = await controller.call(A, 'chrome_open', { url: 'https://example.com' });
+  assert.deepEqual(createdWindows, [{ url: 'https://example.com/', type: 'normal', focused: false, incognito: false }]);
+  assert.deepEqual(created, []); // Never create the requested page twice.
+  assert.equal(pages.get(result.tab_id).windowId, 101);
+  assert.equal(groups.get(result.group_id).windowId, 101);
+  assert.equal(windows.get(101).focused, false);
+  assert.equal((await controller.call(A, 'chrome_snapshot')).tab_id, result.tab_id);
+  const released = await controller.call(A, 'chrome_release', { close_owned: true });
+  assert.equal(released.closed, false); assert.deepEqual(removed, []);
+  const next = await controller.call(A, 'chrome_open', { url: 'https://example.com/next' });
+  assert.equal(next.group_id, result.group_id); assert.equal(createdWindows.length, 1);
+  assert.equal(created[0].active, false); assert.equal(created[0].windowId, 101);
+});
+test('only private or popup windows cause a separate normal unfocused window', async () => {
+  const { controller, windows, createdWindows, pages } = fixture(); controller.allowNewTabs = true;
+  windows.clear(); windows.set(1, { id: 1, type: 'normal', incognito: true, focused: true }); windows.set(2, { id: 2, type: 'popup', incognito: false });
+  const result = await controller.call(A, 'chrome_open', { url: 'https://example.com' });
+  assert.equal(createdWindows.length, 1); assert.equal(pages.get(result.tab_id).windowId, 101);
+  assert.equal(pages.get(1).windowId, 1); assert.equal(pages.get(1).active, true);
+});
+test('an unidentified newly created window fails without opening another page or attaching', async () => {
+  const { controller, api, windows, commands, created } = fixture(); controller.allowNewTabs = true; windows.clear();
+  let creations = 0; api.windows.create = async () => { creations++; return { id: 101 }; };
+  await assert.rejects(controller.call(A, 'chrome_open', { url: 'https://example.com' }), /Created Chrome window 101.*do not repeat chrome_open/);
+  assert.equal(creations, 1); assert.deepEqual(created, []); assert.deepEqual(commands, []);
 });
 test('session ownership and explicit tab targets prevent cross-session or cross-tab access', async () => {
   const { controller } = fixture(); controller.allowNewTabs = true;

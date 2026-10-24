@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process'
-import { access } from 'node:fs/promises'
+import { access, realpath } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { BundledPlugin, ExtensionSettings } from '../shared/extensions'
 import type { Backend } from './backend'
@@ -58,7 +58,7 @@ export class BundledPlugins {
       (await exists(this.environment.OPENHARNESS_COMPUTER_APP!)) &&
       (await exists(join(this.options.root, 'computer-use', 'host.mjs')))
     const chrome =
-      this.options.platform !== 'win32' &&
+      ['darwin', 'linux', 'win32'].includes(this.options.platform) &&
       (await exists(join(this.options.root, 'chrome-use', 'extension', 'manifest.json'))) &&
       !!this.options.chrome
     const browserReady = browser && (await this.checkBrowser())
@@ -127,7 +127,17 @@ export class BundledPlugins {
       await this.install('chrome-use', backend)
       return
     }
-    if (installed.source_path !== join(this.options.root, 'chrome-use'))
+    const expected = join(this.options.root, 'chrome-use')
+    // Rust canonical paths use the extended \\?\ prefix on Windows, whereas
+    // Electron's paths usually do not. Compare filesystem identities there.
+    const sameSource =
+      installed.source_path === expected ||
+      (this.options.platform === 'win32' &&
+        (await Promise.all([realpath(installed.source_path), realpath(expected)]).then(
+          ([source, bundled]) => source === bundled,
+          () => false,
+        )))
+    if (!sameSource)
       throw new Error('已有 Chrome 插件来自其他位置，请先在插件管理中更新为内置版本。')
     // Reinstalling revokes active MCP clients and conversation approvals. A
     // connection repair must leave an already enabled bundled plugin alone.
