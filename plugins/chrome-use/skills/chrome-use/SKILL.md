@@ -10,7 +10,7 @@ Extensions page prepares the connection; the user loads Open Harness Chrome in
 Chrome and explicitly enables agent-created background tabs or shares a tab.
 
 Start with `chrome_status`. For an authorized URL, `chrome_open` can start
-Chrome in the background on macOS and wait for the installed extension to
+Chrome in the background on macOS or Windows and wait for the installed extension to
 connect. Do not require the user to start Chrome manually. If setup is missing,
 explain the specific extension connection step. Do not fall back to foreground computer typing without user intent. This
 connection does not require Screen Recording or Accessibility permissions.
@@ -28,6 +28,10 @@ requires fresh approval and selecting the new origin. Existing user tabs also
 need the new origin shared in the popup; agent-created tabs do not need that
 extra popup step. Never activate tabs or
 windows just to operate them.
+
+If Chrome has no normal window, opening a task creates an unfocused window.
+Its only tab is necessarily active within that window; the window itself does
+not take focus. Automatic closure still refuses active tabs.
 
 Read the snapshot before acting. `chrome_action` supports click, fill, select,
 press and scroll; use only refs and revision from the latest snapshot. Every

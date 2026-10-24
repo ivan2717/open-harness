@@ -1,10 +1,22 @@
 import { spawn } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
+import { findChromeExecutable } from './windows-chrome.mjs';
 
 // Only an approved chrome_open may launch the user's browser. Status checks and
 // other observation methods must never start apps as a side effect.
-export async function launchChrome({ platform = process.platform, spawnProcess = spawn } = {}) {
-  if (platform !== 'darwin') throw new Error('Automatic Chrome launch currently requires macOS.');
+export async function launchChrome({ platform = process.platform, spawnProcess = spawn, findExecutable = findChromeExecutable } = {}) {
+  if (platform === 'win32') {
+    const executable = await findExecutable();
+    await new Promise((resolve, reject) => {
+      // Starting the browser process must not open a foreground user tab. The
+      // extension creates the requested tab only after it has connected.
+      const child = spawnProcess(executable, ['--no-startup-window'], { detached: true, stdio: 'ignore', windowsHide: true });
+      child.once('error', () => reject(new Error('Google Chrome could not be started.')));
+      child.once('spawn', () => { child.unref(); resolve(); });
+    });
+    return;
+  }
+  if (platform !== 'darwin') throw new Error('Automatic Chrome launch currently requires macOS or Windows.');
   await new Promise((resolve, reject) => {
     const child = spawnProcess('/usr/bin/open', ['-g', '-b', 'com.google.Chrome'], { stdio: 'ignore' });
     const timer = setTimeout(() => { child.kill('SIGTERM'); reject(new Error('Chrome launch timed out.')); }, 5000);

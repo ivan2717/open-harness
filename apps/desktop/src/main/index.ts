@@ -122,6 +122,25 @@ function installBridge(): void {
           await promisify(execFile)('/usr/bin/open', ['-a', 'Google Chrome', url], {
             timeout: 10_000,
           })
+        } else if (process.platform === 'win32') {
+          await promisify(execFile)(
+            process.execPath,
+            [
+              join(
+                app.isPackaged
+                  ? join(process.resourcesPath, 'plugins')
+                  : join(app.getAppPath(), 'resources/plugins'),
+                'chrome-use',
+                'open-url.mjs',
+              ),
+              url,
+            ],
+            {
+              env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+              timeout: 20_000,
+              windowsHide: true,
+            },
+          )
         } else {
           await new Promise<void>((resolve, reject) => {
             const chrome = spawn('google-chrome', [url], { detached: true, stdio: 'ignore' })
@@ -328,7 +347,9 @@ if (!app.requestSingleInstanceLock()) {
       : join(targetDirectory, 'debug', binaryName)
     const pluginRoot = app.isPackaged
       ? join(process.resourcesPath, 'plugins')
-      : join(workspace, 'plugins')
+      : process.platform === 'win32'
+        ? join(app.getAppPath(), 'resources/plugins')
+        : join(workspace, 'plugins')
     chromeConnection = new ChromeConnection({
       root: pluginRoot,
       executable: process.execPath,

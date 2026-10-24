@@ -17,6 +17,11 @@ import { createHash, randomBytes } from 'node:crypto'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 import type { BundledPlugin } from '../shared/extensions'
+import {
+  registerWindowsChromeHost,
+  secureWindowsChromeDirectory,
+  windowsChromeHostRegistered,
+} from './chrome-windows'
 
 const execute = promisify(execFile)
 const EXTENSION_ID = 'keibjmjjimfgkikahpjgbfebiglbjkee'
@@ -63,6 +68,11 @@ export class ChromeConnection {
     try {
       await access(this.configPath)
       await access(this.manifestPath())
+      if (
+        this.options.platform === 'win32' &&
+        !(await windowsChromeHostRegistered(this.manifestPath()))
+      )
+        return base
     } catch {
       return base
     }
@@ -160,6 +170,7 @@ export class ChromeConnection {
   }
 
   private manifestPath(): string {
+    if (this.options.platform === 'win32') return join(this.directory, `${HOST_NAME}.json`)
     const directory =
       this.options.platform === 'darwin'
         ? join(
@@ -175,15 +186,17 @@ export class ChromeConnection {
   }
 
   private async register(): Promise<void> {
-    if (!['darwin', 'linux'].includes(this.options.platform))
-      throw new Error('目前支持 macOS 和 Linux 上的 Chrome。')
+    if (!['darwin', 'linux', 'win32'].includes(this.options.platform))
+      throw new Error('目前支持 Windows、macOS 和 Linux 上的 Chrome。')
     await ordinaryDirectory(this.options.root)
     await ordinaryDirectory(join(this.options.root, 'chrome-use'))
     await ordinaryDirectory(this.bundledExtensionPath)
     const nativeHost = join(this.options.root, 'chrome-use', 'native-host.mjs')
     if (!(await lstat(nativeHost)).isFile()) throw new Error('Chrome 连接程序无效。')
     await validateExtensionIdentity(this.bundledExtensionPath)
-    await privateDirectory(this.directory)
+    const windows = this.options.platform === 'win32'
+    await privateDirectory(this.directory, windows)
+    if (windows) await secureWindowsChromeDirectory(this.directory)
     // A short private path avoids macOS sockaddr_un's path limit, even when
     // userData lives in a deeply nested folder. Each desktop profile is isolated.
     const hash = createHash('sha256').update(this.options.userData).digest('hex').slice(0, 16)
@@ -191,13 +204,18 @@ export class ChromeConnection {
       this.options.socketRoot ?? '/tmp',
       `oh-chrome-${process.getuid?.() ?? 'user'}-${hash}`,
     )
-    await privateDirectory(socketDirectory)
+    if (!windows) await privateDirectory(socketDirectory)
     let token = randomBytes(32).toString('hex')
     try {
-      const handle = await open(this.configPath, constants.O_RDONLY | constants.O_NOFOLLOW)
+      const existing = await lstat(this.configPath)
+      if (existing.isSymbolicLink()) throw new Error('Unsafe config')
+      const handle = await open(
+        this.configPath,
+        constants.O_RDONLY | (windows ? 0 : constants.O_NOFOLLOW),
+      )
       try {
         const stat = await handle.stat()
-        if (!stat.isFile() || stat.uid !== process.getuid?.() || stat.mode & 0o077)
+        if (!stat.isFile() || (!windows && (stat.uid !== process.getuid?.() || stat.mode & 0o077)))
           throw new Error('Unsafe config')
         const previous = JSON.parse(await handle.readFile('utf8'))
         if (previous.extensionId === EXTENSION_ID && /^[a-f0-9]{64}$/.test(previous.token))
@@ -214,24 +232,29 @@ export class ChromeConnection {
       this.configPath,
       JSON.stringify({
         version: 1,
-        socketPath: join(socketDirectory, 'bridge.sock'),
+        socketPath: windows
+          ? `\\\\.\\pipe\\openharness-chrome-${createHash('sha256').update(this.options.userData).update(token).digest('hex').slice(0, 32)}`
+          : join(socketDirectory, 'bridge.sock'),
         token,
         extensionId: EXTENSION_ID,
       }) + '\n',
       0o600,
     )
-    const launcher = join(this.directory, 'native-host')
-    await atomicWrite(
-      launcher,
-      [
-        '#!/bin/sh',
-        `export ELECTRON_RUN_AS_NODE=1`,
-        `export OPENHARNESS_CHROME_CONFIG=${shellQuote(this.configPath)}`,
-        `exec ${shellQuote(this.options.executable)} ${shellQuote(nativeHost)} "$@"`,
-        '',
-      ].join('\n'),
-      0o700,
-    )
+    const launcher = windows
+      ? await this.windowsLauncher(nativeHost)
+      : join(this.directory, 'native-host')
+    if (!windows)
+      await atomicWrite(
+        launcher,
+        [
+          '#!/bin/sh',
+          `export ELECTRON_RUN_AS_NODE=1`,
+          `export OPENHARNESS_CHROME_CONFIG=${shellQuote(this.configPath)}`,
+          `exec ${shellQuote(this.options.executable)} ${shellQuote(nativeHost)} "$@"`,
+          '',
+        ].join('\n'),
+        0o700,
+      )
     const manifest = this.manifestPath()
     await mkdir(join(manifest, '..'), { recursive: true })
     await atomicWrite(
@@ -249,6 +272,34 @@ export class ChromeConnection {
       ) + '\n',
       0o600,
     )
+    if (windows) await registerWindowsChromeHost(manifest)
+  }
+
+  private async windowsLauncher(script: string): Promise<string> {
+    const bytes = await regularFile(
+      join(this.options.root, '..', 'bin', 'openharness-chrome-host.exe'),
+    )
+    // A versioned name permits upgrades while Chrome still owns an older host.
+    const hash = createHash('sha256').update(bytes).digest('hex').slice(0, 16)
+    const launcher = join(this.directory, `native-host-${hash}.exe`)
+    try {
+      const existing = await regularFile(launcher)
+      if (!existing.equals(bytes)) throw new Error('Chrome 连接程序校验失败。')
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+      await writeFile(launcher, bytes, { flag: 'wx', mode: 0o700 })
+    }
+    await atomicWrite(
+      join(this.directory, 'native-launcher.json'),
+      JSON.stringify({
+        version: 1,
+        executable: this.options.executable,
+        script,
+        config: this.configPath,
+      }) + '\n',
+      0o600,
+    )
+    return launcher
   }
 }
 
@@ -271,7 +322,10 @@ async function validateExtensionIdentity(path: string): Promise<void> {
 
 /** Do not follow links or read devices from either the package or an export. */
 async function regularFile(path: string): Promise<Buffer> {
-  const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
+  const stat = await lstat(path)
+  if (!stat.isFile() || stat.isSymbolicLink()) throw new Error('Chrome 扩展包含无效文件。')
+  const flags = process.platform === 'win32' ? 0 : constants.O_NOFOLLOW | constants.O_NONBLOCK
+  const handle = await open(path, constants.O_RDONLY | flags)
   try {
     if (!(await handle.stat()).isFile()) throw new Error('Chrome 扩展包含无效文件。')
     return await handle.readFile()
@@ -326,12 +380,12 @@ async function exportExtension(source: string, target: string): Promise<void> {
   }
 }
 
-async function privateDirectory(path: string): Promise<void> {
+async function privateDirectory(path: string, windows = false): Promise<void> {
   await mkdir(path, { recursive: true, mode: 0o700 })
   const stat = await lstat(path)
-  if (!stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== process.getuid?.())
+  if (!stat.isDirectory() || stat.isSymbolicLink() || (!windows && stat.uid !== process.getuid?.()))
     throw new Error('Chrome 连接目录不安全。')
-  await chmod(path, 0o700)
+  if (!windows) await chmod(path, 0o700)
 }
 
 async function atomicWrite(path: string, text: string, mode: number): Promise<void> {

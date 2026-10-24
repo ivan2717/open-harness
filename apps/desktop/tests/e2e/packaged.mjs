@@ -3,6 +3,7 @@ import { access, mkdir, mkdtemp, realpath, rm, stat, writeFile } from 'node:fs/p
 import { tmpdir } from 'node:os'
 import { isAbsolute, join, resolve } from 'node:path'
 import { _electron, expect } from '@playwright/test'
+import { verifyWindowsChrome } from './windows-chrome.mjs'
 
 const executable = process.env.OPENHARNESS_E2E_EXECUTABLE
 if (!executable || !isAbsolute(executable)) {
@@ -12,7 +13,9 @@ await access(executable)
 
 // A fresh profile exercises the installed bundle without reading a real user's
 // credentials, changing their projects, or calling an external model provider.
-const directory = await mkdtemp(join(tmpdir(), 'openharness-packaged-'))
+const profilePrefix =
+  process.platform === 'win32' ? 'Open Harness 中文 & %PATH% packaged-' : 'openharness-packaged-'
+const directory = await mkdtemp(join(tmpdir(), profilePrefix))
 const artifacts = resolve(process.env.OPENHARNESS_E2E_ARTIFACTS ?? 'test-results/packaged')
 await mkdir(artifacts, { recursive: true })
 const environment = { ...process.env, OPENHARNESS_DESKTOP_DATA_DIR: directory }
@@ -90,6 +93,14 @@ async function close() {
 
 try {
   await launch()
+  if (process.platform === 'win32') {
+    report.chrome = await verifyWindowsChrome({
+      page,
+      runtime: report.launches.at(-1),
+      directory,
+      artifacts,
+    })
+  }
   assert.deepEqual(await page.evaluate(() => window.harness.listRuns()), [])
   const prompt = 'Verify the installed application, offline execution and conversation persistence.'
   const run = await page.evaluate(

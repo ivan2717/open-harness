@@ -381,6 +381,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "chrome-native-host"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "chrono"
 version = "0.4.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"

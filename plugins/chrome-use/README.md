@@ -32,8 +32,11 @@ For local development only:
    creates a background tab; an existing shared tab requires exact tab and origin
    approval. All later operations verify that scope.
 
-On macOS an approved `chrome_open` starts Chrome in the background with the
-system launcher if the extension is not connected, then waits for startup. It
+On macOS or Windows an approved `chrome_open` starts Chrome in the background
+if the extension is not connected, then waits for startup. Windows discovers
+installed Chrome via App Paths and standard installation locations, without a
+shell. If no normal browser window exists, the first task creates an unfocused
+window; its sole active tab is protected from automatic closure. The plugin
 never retries an already dispatched operation. Status checks do not launch apps.
 
 Only one Chrome profile may connect at a time. Disconnect the existing profile
@@ -66,6 +69,24 @@ from browser or tool content. The desktop app registers and updates this connect
 remove the Chrome extension to stop using it; the registered host manifest may
 remain until a later connection setup updates it.
 
+On Windows the desktop prepares a directory with an explicit current-user and
+SYSTEM-only ACL instead of POSIX permissions. `socketPath` names a local pipe
+(`\\\\.\\pipe\\openharness-chrome-<randomized hash>`) derived from the desktop
+profile and its secret token. The token is still verified on every connection;
+no TCP listener is opened. The pipe disappears when its host closes, and a
+second Chrome profile cannot replace a live host.
+
+The desktop registers both registry views of
+`HKCU\\Software\\Google\\Chrome\\NativeMessagingHosts\\dev.openharness.chrome`,
+pointing to the manifest in its user-data directory. A bundled Rust executable
+launches Electron in Node mode, preserving Chrome's binary stdin/stdout and
+origin arguments without batch files or PowerShell launchers. A Windows Job
+Object terminates its Node child when the launcher ends. The packaged MCP
+manifest similarly uses `launch.exe --mcp` instead of `launch.sh`. The Node
+runtime is included in the app; users do not install Node or elevate privileges.
+Repair updates the registration and preserves the connection token; versioned
+launcher filenames avoid overwriting a host that Chrome is still running.
+
 `node status.mjs` prints one JSON object (`connected`, optional settings/error),
 using the same config environment. It never enumerates tabs or reads contents.
 `node server.mjs` serves MCP over JSONL stdio. On cancellation or EOF it closes
@@ -73,8 +94,15 @@ its socket; the extension detaches the selected tab but leaves tabs open for
 review. Chrome owns the native host's lifetime; native-port loss closes all
 client sockets and detaches all selected tabs.
 
-Socket protocol: the first JSONL request is
-`{id,session_id,method:"authenticate",params:{token}}`. The session ID is a UUID.
+Local IPC uses a two-round-trip, mutually authenticated HMAC-SHA256 handshake.
+The initial `hello` sends only a random client nonce and random session UUID.
+The host returns a fresh server nonce and a role-specific server proof; the
+client verifies it before sending a client proof and optional opaque task key.
+The client proof and final host acknowledgement bind both nonces, the session
+UUID and the task key. The secret token never crosses the socket or named pipe,
+and old plaintext authentication is rejected rather than used as a fallback.
+After upgrading from the older local bridge, disconnect and reconnect from the
+extension popup (or reload the extension) so Chrome starts the updated host.
 Subsequent requests use the fixed `chrome_*` methods in `extension/schema.mjs`.
 The bridge maps client request IDs to fresh UUIDs before forwarding native frames
 and replies with `{id,result}` or `{id,error}`. It never passes authentication
@@ -142,6 +170,11 @@ installing the extension should keep a user tab active while another session
 creates a background test tab, reads it, fills/clicks in it and captures only that
 tab. Check that the active tab/window never changes, revoked/cross-origin tabs
 are rejected, and process exit detaches without closing the user's browser.
+
+Windows CI additionally installs the real app and runs
+`apps/desktop/tests/e2e/windows-chrome.mjs` against its registered executable,
+packaged MCP launcher and an unmodified extension in a separate Chrome for
+Testing profile. Store publication is separate and is not simulated by this test.
 
 Official API references:
 - https://developer.chrome.com/docs/extensions/develop/concepts/native-messaging

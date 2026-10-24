@@ -106,6 +106,10 @@ jobs:
           key: windows-x64-rust-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/desktop/scripts/backend.mjs') }}
           restore-keys: windows-x64-rust-
       - run: npm ci
+      - name: Prepare Chrome for Testing
+        run: npx playwright install chromium
+      - name: Check Windows Chrome transport
+        run: node --test ../../plugins/chrome-use/tests/bridge.test.mjs ../../plugins/chrome-use/tests/launch.test.mjs ../../plugins/chrome-use/tests/controller.test.mjs
       - name: Build Windows installer
         run: npm run package:win
       - name: Save compiled backend cache

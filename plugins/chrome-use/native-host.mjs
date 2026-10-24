@@ -1,15 +1,18 @@
 import net from 'node:net';
 import { chmod, lstat, unlink } from 'node:fs/promises';
-import { timingSafeEqual, randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { readConfig } from './config.mjs';
 import { nativeFrame, NativeDecoder, LineDecoder } from './framing.mjs';
 import { validate } from './schema.mjs';
+import { validateSocketPath } from './endpoint.mjs';
+import { AUTH_VERSION, authProof, isAuthValue, verifyAuthProof } from './auth.mjs';
 
 // Chrome owns this process. Only a fixed extension origin and an authenticated
 // local socket may reach it; websites have no external messaging entry point.
 export async function startNativeHost({ config, input = process.stdin, output = process.stdout, origin = process.argv[2] } = {}) {
   config ??= await readConfig();
+  validateSocketPath(config.socketPath);
   if (origin !== `chrome-extension://${config.extensionId}/`) throw new Error('Unexpected extension origin.');
   const clients = new Set(); const pending = new Map(); let closing = false; let ownsSocket = false;
   const writeNative = message => output.write(nativeFrame(message));
@@ -26,9 +29,20 @@ export async function startNativeHost({ config, input = process.stdin, output = 
       const { id, session_id, method, params = {} } = message ?? {};
       if (!Number.isSafeInteger(id) || typeof session_id !== 'string' || !/^[\da-f-]{36}$/.test(session_id) || !params || typeof params !== 'object' || Array.isArray(params)) { socket.destroy(); return; }
       if (!socket.sessionId) {
-        if (method !== 'authenticate' || typeof params.token !== 'string' || !/^[a-f0-9]{64}$/.test(params.token) || params.token.length !== config.token.length || !timingSafeEqual(Buffer.from(params.token), Buffer.from(config.token)) || (params.task_key !== undefined && (typeof params.task_key !== 'string' || !/^[a-f0-9]{64}$/.test(params.task_key)))) { socket.destroy(); return; }
+        if (!socket.challenge) {
+          if (method !== 'hello' || !isAuthValue(params.client_nonce) || Object.keys(params).some(key => key !== 'client_nonce')) { socket.destroy(); return; }
+          socket.challenge = { sessionId: session_id, clientNonce: params.client_nonce, serverNonce: randomBytes(32).toString('hex') };
+          writeClient(socket, { id, result: { protocol_version: AUTH_VERSION, server_nonce: socket.challenge.serverNonce, proof: authProof(config.token, 'server', socket.challenge) } });
+          return;
+        }
+        const challenge = socket.challenge;
+        const context = { ...challenge, taskKey: params.task_key };
+        if (method !== 'authenticate' || session_id !== challenge.sessionId || params.client_nonce !== challenge.clientNonce || params.server_nonce !== challenge.serverNonce || (params.task_key !== undefined && !isAuthValue(params.task_key)) || Object.keys(params).some(key => !['client_nonce', 'server_nonce', 'task_key', 'proof'].includes(key)) || !verifyAuthProof(params.proof, config.token, 'client', context)) { socket.destroy(); return; }
         if ([...clients].some(other => other !== socket && other.sessionId === session_id)) { socket.destroy(); return; }
-        socket.sessionId = session_id; socket.taskKey = params.task_key; clearTimeout(authTimer); writeClient(socket, { id, result: { connected: true } }); return;
+        socket.sessionId = session_id; socket.taskKey = params.task_key; socket.challenge = undefined;
+        clearTimeout(authTimer);
+        writeClient(socket, { id, result: { connected: true, proof: authProof(config.token, 'accepted', context) } });
+        return;
       }
       if (session_id !== socket.sessionId) { socket.destroy(); return; }
       try { validate(method, params); } catch (error) { writeClient(socket, { id, error: error.message }); return; }
@@ -55,12 +69,12 @@ export async function startNativeHost({ config, input = process.stdin, output = 
     for (const socket of clients) socket.destroy();
     for (const item of pending.values()) clearTimeout(item.timer); pending.clear();
     await new Promise(resolve => server.close(resolve));
-    if (ownsSocket) await unlink(config.socketPath).catch(() => {});
+    if (ownsSocket && process.platform !== 'win32') await unlink(config.socketPath).catch(() => {});
     input.destroy();
   }
   // Never remove a live connection from a second Chrome profile. A stale socket
   // may be removed only after ECONNREFUSED; every other error fails closed.
-  try {
+  if (process.platform !== 'win32') try {
     const stat = await lstat(config.socketPath);
     if (!stat.isSocket() || stat.uid !== process.getuid()) throw new Error('Unexpected socket path.');
     await new Promise((resolve, reject) => {
@@ -70,9 +84,16 @@ export async function startNativeHost({ config, input = process.stdin, output = 
     });
     await unlink(config.socketPath);
   } catch (error) { if (error.code !== 'ENOENT') throw error; }
-  await new Promise((resolve, reject) => { server.once('error', reject); server.listen(config.socketPath, resolve); });
+  // libuv creates the first Windows pipe instance exclusively: a second host
+  // receives EADDRINUSE and cannot replace a connected Chrome profile.
+  try {
+    await new Promise((resolve, reject) => { server.once('error', reject); server.listen(config.socketPath, resolve); });
+  } catch (error) {
+    if (error.code === 'EADDRINUSE') throw new Error('Another Chrome profile is already connected.');
+    throw error;
+  }
   ownsSocket = true;
-  await chmod(config.socketPath, 0o600);
+  if (process.platform !== 'win32') await chmod(config.socketPath, 0o600);
   writeNative({ event: 'connected', protocol_version: 1 });
   return { close, server };
 }

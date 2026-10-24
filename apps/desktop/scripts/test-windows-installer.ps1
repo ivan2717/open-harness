@@ -26,19 +26,22 @@ function Assert-BackendDependencies {
         Get-ChildItem (Join-Path ($_.Trim()) 'VC/Tools/MSVC/*/bin/Hostx64/x64/dumpbin.exe') -ErrorAction SilentlyContinue
     } | Sort-Object FullName -Descending | Select-Object -First 1
     if (-not $dumpbin) { throw "Could not locate dumpbin under: $($installations -join ', ')" }
-    $backend = Join-Path $installDirectory 'resources/bin/api.exe'
-    $dependencies = (& $dumpbin.FullName /DEPENDENTS $backend 2>&1 | Out-String)
-    $dependencyExitCode = $LASTEXITCODE
     $artifacts = if ($env:OPENHARNESS_E2E_ARTIFACTS) {
         [System.IO.Path]::GetFullPath($env:OPENHARNESS_E2E_ARTIFACTS)
     } else { Join-Path $desktop 'test-results/packaged' }
     New-Item -ItemType Directory -Path $artifacts -Force | Out-Null
-    Set-Content (Join-Path $artifacts 'backend-dependencies.txt') -Value $dependencies -Encoding utf8
-    if ($dependencyExitCode -ne 0 -or $dependencies -notmatch '(?im)^\s*\S+\.dll\s*$') {
-        throw 'Could not inspect the installed backend dependencies'
-    }
-    if ($dependencies -match '(?im)^\s*(?:vcruntime|msvcp|msvcr)\d[\w.-]*\.dll\s*$') {
-        throw 'The installed backend still requires a separate Visual C++ runtime'
+    foreach ($binary in @('api', 'openharness-chrome-host')) {
+        $executable = Join-Path $installDirectory "resources/bin/$binary.exe"
+        if (-not (Test-Path $executable)) { throw "Installed binary missing: $binary" }
+        $dependencies = (& $dumpbin.FullName /DEPENDENTS $executable 2>&1 | Out-String)
+        $dependencyExitCode = $LASTEXITCODE
+        Set-Content (Join-Path $artifacts "$binary-dependencies.txt") -Value $dependencies -Encoding utf8
+        if ($dependencyExitCode -ne 0 -or $dependencies -notmatch '(?im)^\s*\S+\.dll\s*$') {
+            throw "Could not inspect installed $binary dependencies"
+        }
+        if ($dependencies -match '(?im)^\s*(?:vcruntime|msvcp|msvcr)\d[\w.-]*\.dll\s*$') {
+            throw "Installed $binary still requires a separate Visual C++ runtime"
+        }
     }
 }
 
