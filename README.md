@@ -157,10 +157,18 @@ request or browser is involved.
 
 ### Browser and computer operation
 
-Open **插件** in the desktop rail to install the optional bundled **Browser Use**
-and **Computer Use** plugins. Each bundles a Skill and a local MCP executor;
+Open **插件** in the desktop rail to install the optional bundled **Chrome**,
+**Browser Use** and **Computer Use** plugins. Each bundles a Skill and a local MCP executor;
 the existing harness runs the model/tool loop, approvals, history and cancellation.
 Installation does not start a browser, operate an app, or call a model.
+
+**Chrome** connects to the user's existing Chrome on macOS and Windows through a
+browser extension and a bundled native host. Agent-owned tabs stay in a conversation
+group and can be operated in the background without switching the user's active tab.
+Windows setup registers the host for the current user; it does not require a separate
+Node.js installation. The extension is not yet published in the Chrome Web Store;
+local testing uses **开发者选项** to load the unpacked extension. See the
+[Chrome connection setup and verification](plugins/chrome-use/README.md).
 
 **Browser Use** drives an isolated Playwright Chromium session through bounded
 page text, accessibility observations, element references and screenshots. Click
