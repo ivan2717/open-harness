@@ -7,12 +7,14 @@ import {
   registerWindowsChromeHost,
   secureWindowsChromeDirectory,
   windowsChromeHostRegistered,
+  windowsNativeHostPath,
 } from './chrome-windows'
 
 vi.mock('./chrome-windows', () => ({
   registerWindowsChromeHost: vi.fn(async () => {}),
   secureWindowsChromeDirectory: vi.fn(async () => {}),
   windowsChromeHostRegistered: vi.fn(async () => true),
+  windowsNativeHostPath: vi.fn(async (path: string) => path),
 }))
 
 describe('Windows Chrome connection preparation', () => {
@@ -22,6 +24,7 @@ describe('Windows Chrome connection preparation', () => {
   beforeEach(async () => {
     vi.clearAllMocks()
     vi.mocked(windowsChromeHostRegistered).mockResolvedValue(true)
+    vi.mocked(windowsNativeHostPath).mockImplementation(async (path) => path)
     directory = await mkdtemp(join(tmpdir(), 'oh-chrome-windows-'))
     root = join(directory, 'resources', 'plugins')
     await mkdir(join(root, 'chrome-use'), { recursive: true })
@@ -57,6 +60,7 @@ describe('Windows Chrome connection preparation', () => {
     const manifestPath = join(directory, 'data', 'chrome-use', 'dev.openharness.chrome.json')
     const manifest = JSON.parse(await readFile(manifestPath, 'utf8'))
     expect(manifest.path).toMatch(/native-host-[a-f0-9]{16}\.exe$/)
+    expect(windowsNativeHostPath).toHaveBeenCalledWith(manifest.path)
     expect(manifest.allowed_origins).toEqual([
       'chrome-extension://keibjmjjimfgkikahpjgbfebiglbjkee/',
     ])
@@ -84,6 +88,21 @@ describe('Windows Chrome connection preparation', () => {
     expect(await connection.status()).toMatchObject({ configured: false, connected: false })
     expect(registerWindowsChromeHost).not.toHaveBeenCalled()
     expect(secureWindowsChromeDirectory).not.toHaveBeenCalled()
+  })
+
+  it('registers the verified alias while keeping the original private configuration path', async () => {
+    const alias = String.raw`C:\Users\USER~1\CHROME~1\NATIVE~1.EXE`
+    vi.mocked(windowsNativeHostPath).mockResolvedValue(alias)
+    await connection.prepare()
+    const manifest = JSON.parse(
+      await readFile(join(directory, 'data', 'chrome-use', 'dev.openharness.chrome.json'), 'utf8'),
+    )
+    expect(manifest.path).toBe(alias)
+    const launcher = JSON.parse(
+      await readFile(join(directory, 'data', 'chrome-use', 'native-launcher.json'), 'utf8'),
+    )
+    expect(launcher.config).toBe(connection.configPath)
+    expect(windowsNativeHostPath).toHaveBeenCalledOnce()
   })
 
   it('uses a new executable path during upgrades without replacing the previous host', async () => {
