@@ -41,15 +41,19 @@ fn native_command(directory: &Path, args: &[OsString]) -> io::Result<Command> {
         return Err(invalid());
     }
     let config: NativeLauncher = serde_json::from_slice(&bytes).map_err(|_| invalid())?;
-    if config.version != 1
-        || config.config != directory.join("config.json")
-        || config.script.file_name() != Some(OsStr::new("native-host.mjs"))
-    {
+    if config.version != 1 || config.script.file_name() != Some(OsStr::new("native-host.mjs")) {
         return Err(invalid());
     }
     regular_file(&config.executable)?;
     regular_file(&config.script)?;
     regular_file(&config.config)?;
+    let expected_config = directory.join("config.json");
+    regular_file(&expected_config)?;
+    // Chrome may start this executable through its Windows 8.3 alias. Compare
+    // the resolved files, while still rejecting symlinks at either config path.
+    if fs::canonicalize(&config.config)? != fs::canonicalize(expected_config)? {
+        return Err(invalid());
+    }
     let mut command = runtime_command(&config.executable, &config.script);
     command.env("OPENHARNESS_CHROME_CONFIG", config.config);
     command.args(args);
@@ -127,9 +131,12 @@ fn runtime_command(executable: &Path, script: &Path) -> Command {
 }
 
 pub fn run() -> io::Result<u8> {
+    let args: Vec<OsString> = env::args_os().skip(1).collect();
+    if args.first().is_some_and(|arg| arg == "--native-path") {
+        return crate::native_path::query(&args[1..]);
+    }
     let executable = env::current_exe()?;
     let directory = executable.parent().ok_or_else(invalid)?;
-    let args: Vec<OsString> = env::args_os().skip(1).collect();
     let mut command = if args.first().is_some_and(|arg| arg == "--mcp") {
         mcp_command(
             directory,
@@ -267,6 +274,30 @@ mod tests {
         }
         fs::write(fixture.0.join("native-launcher.json"), vec![b' '; 16_385]).unwrap();
         assert!(native_command(&fixture.0, &args()).is_err());
+    }
+
+    #[test]
+    fn configuration_accepts_an_alias_of_the_same_file_but_not_another_file() {
+        let fixture = Fixture::new();
+        let mut config = fixture.config();
+        config["config"] = serde_json::json!(fixture.0.join(".").join("config.json"));
+        fixture.write(config.clone());
+        assert!(native_command(&fixture.0, &args()).is_ok());
+
+        fs::write(fixture.0.join("another.json"), "fixture").unwrap();
+        config["config"] = serde_json::json!(fixture.0.join("another.json"));
+        fixture.write(config);
+        assert!(native_command(&fixture.0, &args()).is_err());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn executable_directory_alias_can_read_the_original_configuration() {
+        let fixture = Fixture::new();
+        fixture.write(fixture.config());
+        let alias = fixture.0.join("directory-alias");
+        std::os::unix::fs::symlink(&fixture.0, &alias).unwrap();
+        assert!(native_command(&alias, &args()).is_ok());
     }
 
     #[test]

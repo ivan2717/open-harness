@@ -27,6 +27,7 @@ const rendererErrors = []
 const logs = []
 const report = { passed: false, executable, artifacts, launches: [] }
 let application
+let applicationPid
 let page
 const execute = promisify(execFile)
 
@@ -68,6 +69,7 @@ function record(source, value) {
 }
 
 async function launch() {
+  applicationPid = undefined
   application = await _electron.launch({
     executablePath: executable,
     args: [],
@@ -86,7 +88,11 @@ async function launch() {
     executable: process.execPath,
     platform: process.platform,
     arch: process.arch,
+    pid: process.pid,
   }))
+  assert.ok(Number.isSafeInteger(runtime.pid) && runtime.pid > 0)
+  applicationPid = runtime.pid
+  record('process', `Electron PID ${runtime.pid}; Playwright wrapper PID ${child.pid}`)
   report.launches.push(runtime)
   assert.equal(runtime.packaged, true, 'the smoke test must run the installed application')
   assert.equal(await realpath(runtime.executable), await realpath(executable))
@@ -121,19 +127,58 @@ async function launch() {
 async function close() {
   if (!application) return
   const current = application
+  const pid = applicationPid
   application = undefined
+  applicationPid = undefined
   page = undefined
+  const child = current.process()
+  let closeSettled = false
+  const closing = current.close().finally(() => {
+    closeSettled = true
+  })
   try {
-    await within('Installed application shutdown', () => current.close(), 15_000)
+    await within('Installed application shutdown', () => closing, 15_000)
   } catch (error) {
-    const child = current.process()
-    if (child.exitCode === null && child.signalCode === null && child.pid) {
-      if (process.platform === 'win32') {
-        await execute('taskkill.exe', ['/PID', String(child.pid), '/T', '/F'], {
+    if (process.platform === 'win32' && Number.isSafeInteger(pid) && pid > 0) {
+      let alive
+      try {
+        process.kill(pid, 0)
+        alive = true
+      } catch (checkError) {
+        if (checkError.code === 'ESRCH') alive = false
+        else record('cleanup', `Unable to verify Electron PID ${pid}: ${checkError.message}`)
+      }
+      record(
+        'cleanup',
+        `Electron PID ${pid} alive=${alive}; wrapper PID ${child.pid}, exitCode=${child.exitCode}`,
+      )
+      if (alive === false && !closeSettled) {
+        // Playwright uses a cmd.exe wrapper on Windows. Inherited pipe handles
+        // can delay its close event even after the real Electron process exits.
+        for (const stream of child.stdio) stream?.destroy()
+        try {
+          await within('Playwright wrapper pipe shutdown', () => closing, 5_000)
+          record('cleanup', `Recovered wrapper pipe shutdown after Electron PID ${pid} exited`)
+          return
+        } catch (recoveryError) {
+          record('cleanup', recoveryError.message)
+        }
+      } else if (alive === true) {
+        await execute('taskkill.exe', ['/PID', String(pid), '/T', '/F'], {
           windowsHide: true,
           timeout: 10_000,
         }).catch((failure) => record('cleanup', failure.message))
-      } else child.kill('SIGKILL')
+        for (const stream of child.stdio) stream?.destroy()
+        await within('Playwright wrapper cleanup after termination', () => closing, 5_000).catch(
+          (failure) => record('cleanup', failure.message),
+        )
+      }
+    } else if (
+      process.platform !== 'win32' &&
+      child.exitCode === null &&
+      child.signalCode === null
+    ) {
+      child.kill('SIGKILL')
     }
     throw error
   }
