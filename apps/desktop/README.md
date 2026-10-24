@@ -268,8 +268,13 @@ provider replay payloads are excluded from the public UI projection.
 
 ### Windows CI installer
 
-The GitHub Actions **Checks** workflow runs on pushes, pull requests, and manual
-**Run workflow** requests. Rust, desktop, and plugin checks run on Linux first.
+The GitHub Actions **Checks** workflow runs only on pushes to `main`. Changes to
+the protected `main` branch must go through a pull request, including changes by
+administrators; a second reviewer's approval is not required. CI validates the
+merged commit. Other branch pushes, pull request updates, tags, and manual
+dispatch do not trigger the workflow.
+
+Rust, desktop, and plugin checks run on Linux first.
 The browser plugin tests install headless Chromium and use local fixtures; no
 provider API keys are required. When all checks pass, **Windows x64 installer**
 builds the Rust backend and Electron app on a Windows x64 runner.
