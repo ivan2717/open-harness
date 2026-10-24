@@ -1,6 +1,6 @@
 {
   "name": "computer-use",
-  "version": "0.2.0",
-  "description": "Operate one explicitly selected macOS application using accessibility and window screenshots.",
+  "version": "0.3.0",
+  "description": "Operate one explicitly selected macOS or Windows application using accessibility and window screenshots.",
   "interface": { "displayName": "电脑操作" }
 }

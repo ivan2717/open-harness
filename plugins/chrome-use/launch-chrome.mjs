@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
+import { fileURLToPath } from 'node:url';
 import { findChromeExecutable } from './windows-chrome.mjs';
 
 // Only an approved chrome_open may launch the user's browser. Status checks and
@@ -8,11 +9,13 @@ export async function launchChrome({ platform = process.platform, spawnProcess =
   if (platform === 'win32') {
     const executable = await findExecutable();
     await new Promise((resolve, reject) => {
-      // Starting the browser process must not open a foreground user tab. The
-      // extension creates the requested tab only after it has connected.
-      const child = spawnProcess(executable, ['--no-startup-window'], { detached: true, stdio: 'ignore', windowsHide: true });
-      child.once('error', () => reject(new Error('Google Chrome could not be started.')));
-      child.once('spawn', () => { child.unref(); resolve(); });
+      // The native launcher explicitly leaves this MCP session's Windows job.
+      // Node's detached flag alone would still kill the user's new Chrome when
+      // the session closes. Chrome receives only --no-startup-window.
+      const child = spawnProcess(fileURLToPath(new URL('./launch.exe', import.meta.url)), ['--launch-chrome', executable], { stdio: 'ignore', windowsHide: true });
+      const timer = setTimeout(() => { child.kill(); reject(new Error('Chrome launch timed out.')); }, 5000);
+      child.once('error', () => { clearTimeout(timer); reject(new Error('Google Chrome could not be started.')); });
+      child.once('close', code => { clearTimeout(timer); if (code === 0) resolve(); else reject(new Error('Google Chrome could not be started outside the task session.')); });
     });
     return;
   }

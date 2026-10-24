@@ -27,6 +27,7 @@ export class Backend {
           OPENHARNESS_BIND: '127.0.0.1:0',
           OPENHARNESS_DATA_DIR: this.dataDirectory,
           OPENHARNESS_API_TOKEN: this.token,
+          OPENHARNESS_EXIT_ON_STDIN_EOF: '1',
         },
         stdio: 'pipe',
         windowsHide: true,
@@ -60,6 +61,9 @@ export class Backend {
           ),
         ),
       )
+      child.stdin.on('error', () => {
+        if (!this.stopping) fail(new Error('The local runtime control channel closed'))
+      })
       child.on('exit', (code, signal) => {
         if (!this.stopping)
           fail(
@@ -223,7 +227,9 @@ export class Backend {
         resolve()
       }
       child.once('exit', finish)
-      child.kill('SIGTERM')
+      // Closing our pipe is also effective when the app crashes. Windows does
+      // not deliver SIGTERM as a graceful signal; keep hard kill as a deadline.
+      child.stdin.end()
     })
   }
 }

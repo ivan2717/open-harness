@@ -1,8 +1,9 @@
 // Budget the escaped MCP envelope, not just the inner AX JSON. Keep this below
 // the host's 32 KiB limit so snapshot IDs and element refs remain machine-readable.
 export const MAX_METADATA_BYTES = 28 * 1024;
-const labels = ['AXTitle', 'AXDescription', 'AXIdentifier', 'AXValue'];
-const interactive = /Button|TextField|TextArea|CheckBox|Radio|Slider|Link|ComboBox|MenuItem|PopUp/;
+const labels = ['AXTitle', 'AXDescription', 'AXIdentifier', 'AXValue', 'name', 'automation_id', 'value', 'help_text', 'class_name'];
+const interactive = /Button|TextField|TextArea|CheckBox|Radio|Slider|Link|Hyperlink|ComboBox|MenuItem|PopUp|Edit|ListItem|TreeItem|DataItem/;
+const focused = element => element.AXFocused || element.focused;
 const shorten = (text, limit) => Array.from(text.toWellFormed()).slice(0, limit).join('');
 function encode(value) {
   const text = JSON.stringify(value);
@@ -31,8 +32,8 @@ export function metadataText(metadata) {
   // Preserve focused and actionable controls before spending space on containers
   // and static text. Retained refs are unchanged and still index the native state.
   while (result.elements?.length && encoded.bytes > MAX_METADATA_BYTES) {
-    let index = result.elements.findLastIndex(element => !element.AXFocused && !interactive.test(element.role));
-    if (index === -1) index = result.elements.findLastIndex(element => !element.AXFocused);
+    let index = result.elements.findLastIndex(element => !focused(element) && !interactive.test(element.role));
+    if (index === -1) index = result.elements.findLastIndex(element => !focused(element));
     if (index === -1) index = result.elements.length - 1;
     result.elements.splice(index, 1);
     encoded = encode(result);

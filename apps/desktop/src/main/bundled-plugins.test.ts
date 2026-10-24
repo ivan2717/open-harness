@@ -40,6 +40,32 @@ describe('host-owned browser and computer plugin setup', () => {
   const computerPermissions = async () =>
     (await plugins.list()).find((item) => item.id === 'computer-use')?.permissions
 
+  async function windowsHelper(result: Record<string, unknown>) {
+    await mkdir(join(root, 'computer-use', 'windows', 'bin'), { recursive: true })
+    await writeFile(
+      join(root, 'computer-use', 'windows', 'bin', 'OpenHarnessComputerUse.exe'),
+      'native helper fixture; the status proxy below verifies its environment',
+    )
+    for (const name of ['computer-use', 'browser-use'])
+      await writeFile(join(root, name, 'launch.exe'), 'MCP launcher fixture')
+    await writeFile(join(root, 'computer-use', 'server.mjs'), '// MCP server fixture')
+    await writeFile(
+      join(root, 'computer-use', 'host.mjs'),
+      `import { existsSync } from 'node:fs';
+      if (process.env.OPENHARNESS_COMPUTER_APP) process.exit(2);
+      if (!existsSync(process.env.OPENHARNESS_COMPUTER_HELPER)) process.exit(3);
+      if (process.argv.slice(2).join(' ') !== '--request status') process.exit(4);
+      console.log(JSON.stringify({id:1,result:${JSON.stringify(result)}}));`,
+    )
+    plugins = new BundledPlugins({
+      root,
+      runtime,
+      executable: process.execPath,
+      browsers: join(directory, 'browsers'),
+      platform: 'win32',
+    })
+  }
+
   beforeEach(async () => {
     directory = await mkdtemp(join(tmpdir(), 'openharness-bundled-plugins-'))
     root = join(directory, 'plugins')
@@ -91,7 +117,7 @@ describe('host-owned browser and computer plugin setup', () => {
     })
     expect(items.find((item) => item.id === 'computer-use')).toMatchObject({
       available: false,
-      reason: '目前支持 macOS。',
+      reason: '目前支持 macOS 和 Windows。',
     })
     await expect(readFile(setupMarker)).rejects.toMatchObject({ code: 'ENOENT' })
   })
@@ -182,7 +208,9 @@ describe('host-owned browser and computer plugin setup', () => {
   it('requires an available packaged runtime and rejects unsupported platform installs', async () => {
     const request = vi.fn()
     const backend = { request } as unknown as Backend
-    await expect(plugins.install('computer-use', backend)).rejects.toThrow('目前支持 macOS')
+    await expect(plugins.install('computer-use', backend)).rejects.toThrow(
+      '目前支持 macOS 和 Windows',
+    )
     await rm(runtime)
     expect((await plugins.list()).find((item) => item.id === 'browser-use')?.available).toBe(false)
     await expect(plugins.install('browser-use', backend)).rejects.toThrow('尚未包含')
@@ -195,6 +223,66 @@ describe('host-owned browser and computer plugin setup', () => {
     expect(first).toBe(second)
     await Promise.all([first, second])
     expect(await readFile(setupMarker, 'utf8')).toBe('prepared\n')
+  })
+
+  it('prepares the bundled browser on Windows and requires its native MCP launcher', async () => {
+    await windowsHelper({ platform: 'windows', desktop_available: true })
+    await rm(browser)
+    const state = () =>
+      plugins.list().then((items) => items.find((item) => item.id === 'browser-use'))
+    expect(await state()).toMatchObject({ available: true, browserReady: false })
+    await plugins.prepareBrowser()
+    expect(await readFile(setupMarker, 'utf8')).toBe('prepared\n')
+    await writeFile(browser, 'download completed fixture')
+    expect(await state()).toMatchObject({ available: true, browserReady: true })
+    await rm(join(root, 'browser-use', 'launch.exe'))
+    expect(await state()).toMatchObject({ available: false, browserReady: false })
+  })
+
+  it.each([true, false])(
+    'reports Windows desktop availability %s independently of macOS permissions',
+    async (available) => {
+      await windowsHelper({ platform: 'windows', desktop_available: available })
+      const computer = (await plugins.list()).find((item) => item.id === 'computer-use')
+      expect(computer).toMatchObject({
+        available: true,
+        desktop: {
+          available,
+          helperPath: join(root, 'computer-use', 'windows', 'bin', 'OpenHarnessComputerUse.exe'),
+        },
+      })
+      expect(computer?.permissions).toBeUndefined()
+      await expect(plugins.requestComputerPermission('accessibility')).rejects.toThrow(
+        '无效的系统权限入口',
+      )
+    },
+  )
+
+  it.each([
+    { platform: 'windows', desktop_available: 'true' },
+    { platform: 'windows', accessibility: true, screen_recording: true },
+    { platform: 'darwin', desktop_available: true },
+  ])('does not report an invalid Windows status as unavailable: %#', async (result) => {
+    await windowsHelper(result)
+    expect((await plugins.list()).find((item) => item.id === 'computer-use')).toMatchObject({
+      available: true,
+      desktop: { available: null, error: expect.stringContaining('无效的桌面状态') },
+    })
+  })
+
+  it('does not offer Windows computer use without both the helper and native MCP launcher', async () => {
+    await windowsHelper({ platform: 'windows', desktop_available: true })
+    await rm(join(root, 'computer-use', 'windows', 'bin', 'OpenHarnessComputerUse.exe'))
+    expect((await plugins.list()).find((item) => item.id === 'computer-use')).toMatchObject({
+      available: false,
+      reason: '请重新构建桌面控制组件。',
+    })
+    const backend = { request: vi.fn() } as unknown as Backend
+    await expect(plugins.install('computer-use', backend)).rejects.toThrow('请重新构建')
+    expect(backend.request).not.toHaveBeenCalled()
+    await windowsHelper({ platform: 'windows', desktop_available: true })
+    await rm(join(root, 'computer-use', 'launch.exe'))
+    expect((await plugins.list()).find((item) => item.id === 'computer-use')?.available).toBe(false)
   })
 
   it('rejects invalid or unsupported permission requests before invoking a native helper', async () => {

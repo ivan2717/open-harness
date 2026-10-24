@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createInterface } from 'node:readline';
+import { once } from 'node:events';
 import { ComputerBridge } from '../bridge.mjs';
 import { tools, validate } from '../tools.mjs';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -88,6 +89,15 @@ test('release rejects work and clears selection', async t => {
   await bridge.request('select_app', {});
   bridge.stop();
   assert.equal((await bridge.request('observe', {})).selected, false);
+});
+
+test('Windows shutdown first delivers EOF so the native helper can release input', async t => {
+  const { bridge, calls } = fixture(t, { platform: 'win32' });
+  await bridge.request('mark_eof', {});
+  const exited = once(bridge.child, 'exit');
+  bridge.stop();
+  assert.deepEqual(await exited, [0, null]);
+  assert.deepEqual(calls(), ['mark_eof', 'graceful_eof']);
 });
 
 for (const method of ['bad_json', 'wrong_id', 'crash']) test(`${method} invalidates helper and is never replayed`, async t => {

@@ -11,6 +11,7 @@
 /apps/desktop/resources/bin/
 /apps/desktop/resources/plugins/
 /plugins/computer-use/bin/
+/plugins/computer-use/windows/bin/
 /apps/desktop/test-results/
 /apps/desktop/playwright-report/
 /data/

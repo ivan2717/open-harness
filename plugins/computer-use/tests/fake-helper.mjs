@@ -5,6 +5,7 @@ const log = process.argv[2];
 for await (const line of createInterface({ input: process.stdin })) {
   const { id, method, params } = JSON.parse(line);
   appendFileSync(log, `${method}\n`);
+  if (method === 'mark_eof') process.stdin.once('end', () => appendFileSync(log, 'graceful_eof\n'));
   if (method === 'hang') await new Promise(() => {});
   if (method === 'slow') await new Promise(resolve => setTimeout(resolve, params.delay));
   if (method === 'select_app') selected = true;

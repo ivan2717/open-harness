@@ -132,6 +132,9 @@ fn runtime_command(executable: &Path, script: &Path) -> Command {
 
 pub fn run() -> io::Result<u8> {
     let args: Vec<OsString> = env::args_os().skip(1).collect();
+    if args.first().is_some_and(|arg| arg == "--launch-chrome") {
+        return launch_user_chrome(&args[1..]);
+    }
     if args.first().is_some_and(|arg| arg == "--native-path") {
         return crate::native_path::query(&args[1..]);
     }
@@ -162,10 +165,78 @@ pub fn run() -> io::Result<u8> {
         .unwrap_or(1))
 }
 
+/// A user's browser outlives the MCP session. `detached` in Node only changes
+/// console/process-group flags and cannot escape the session's Windows job.
+#[cfg(windows)]
+fn launch_user_chrome(args: &[OsString]) -> io::Result<u8> {
+    use std::os::windows::process::CommandExt;
+    use windows_sys::Win32::System::Threading::{CREATE_BREAKAWAY_FROM_JOB, CREATE_NO_WINDOW};
+
+    let path = chrome_executable(args)?;
+    Command::new(path)
+        .arg("--no-startup-window")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .creation_flags(CREATE_BREAKAWAY_FROM_JOB | CREATE_NO_WINDOW)
+        .spawn()?;
+    Ok(0)
+}
+
+#[cfg(windows)]
+fn chrome_executable(args: &[OsString]) -> io::Result<PathBuf> {
+    use std::path::{Component, Prefix};
+    if args.len() != 1 {
+        return Err(invalid());
+    }
+    let path = PathBuf::from(&args[0]);
+    if !matches!(
+        path.components().next(),
+        Some(Component::Prefix(prefix))
+            if matches!(prefix.kind(), Prefix::Disk(_) | Prefix::VerbatimDisk(_))
+    ) || !path
+        .file_name()
+        .and_then(OsStr::to_str)
+        .is_some_and(|name| name.eq_ignore_ascii_case("chrome.exe"))
+    {
+        return Err(invalid());
+    }
+    regular_file(&path)?;
+    fs::canonicalize(path)
+}
+
+#[cfg(not(windows))]
+fn launch_user_chrome(_args: &[OsString]) -> io::Result<u8> {
+    Err(invalid())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
+
+    #[cfg(windows)]
+    #[test]
+    fn chrome_launch_accepts_only_one_existing_local_chrome_executable() {
+        let fixture = Fixture::new();
+        let path = fixture.0.join("chrome.exe");
+        fs::write(&path, "validation fixture; not launched").unwrap();
+        assert_eq!(
+            chrome_executable(&[path.clone().into_os_string()]).unwrap(),
+            fs::canonicalize(&path).unwrap()
+        );
+        for args in [
+            Vec::new(),
+            vec![path.into_os_string(), "--user-data-dir=other".into()],
+            vec!["chrome.exe".into()],
+            vec!["C:chrome.exe".into()],
+            vec![r"\\server\share\chrome.exe".into()],
+            vec![fixture.0.join("runtime.exe").into_os_string()],
+            vec![fixture.0.join("missing/chrome.exe").into_os_string()],
+        ] {
+            assert!(chrome_executable(&args).is_err(), "{args:?}");
+        }
+    }
 
     struct Fixture(PathBuf);
 

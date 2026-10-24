@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process'
-import { access, realpath } from 'node:fs/promises'
+import { access, realpath, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { BundledPlugin, ExtensionSettings } from '../shared/extensions'
 import type { Backend } from './backend'
@@ -33,12 +33,14 @@ export class BundledPlugins {
       WAYLAND_DISPLAY: process.env.WAYLAND_DISPLAY ?? '',
       XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR ?? '',
       XAUTHORITY: process.env.XAUTHORITY ?? '',
-      OPENHARNESS_COMPUTER_APP: join(
-        options.root,
-        'computer-use',
-        'bin',
-        'Open Harness Computer Use.app',
-      ),
+      OPENHARNESS_COMPUTER_APP:
+        options.platform === 'win32'
+          ? ''
+          : join(options.root, 'computer-use', 'bin', 'Open Harness Computer Use.app'),
+      OPENHARNESS_COMPUTER_HELPER:
+        options.platform === 'win32'
+          ? join(options.root, 'computer-use', 'windows', 'bin', 'OpenHarnessComputerUse.exe')
+          : '',
       ...(options.chrome ? { OPENHARNESS_CHROME_CONFIG: options.chrome.configPath } : {}),
     }
   }
@@ -49,14 +51,24 @@ export class BundledPlugins {
         () => true,
         () => false,
       )
+    const fileExists = async (path: string) =>
+      stat(path).then(
+        (info) => info.isFile(),
+        () => false,
+      )
     const browser =
       (await exists(join(this.options.root, 'browser-use', 'server.mjs'))) &&
       (await exists(this.options.runtime)) &&
-      this.options.platform !== 'win32'
+      (this.options.platform !== 'win32' ||
+        (await fileExists(join(this.options.root, 'browser-use', 'launch.exe'))))
     const computer =
-      this.options.platform === 'darwin' &&
-      (await exists(this.environment.OPENHARNESS_COMPUTER_APP!)) &&
-      (await exists(join(this.options.root, 'computer-use', 'host.mjs')))
+      (await exists(join(this.options.root, 'computer-use', 'host.mjs'))) &&
+      (this.options.platform === 'darwin'
+        ? await exists(this.environment.OPENHARNESS_COMPUTER_APP!)
+        : this.options.platform === 'win32' &&
+          (await fileExists(this.environment.OPENHARNESS_COMPUTER_HELPER!)) &&
+          (await exists(join(this.options.root, 'computer-use', 'server.mjs'))) &&
+          (await fileExists(join(this.options.root, 'computer-use', 'launch.exe'))))
     const chrome =
       ['darwin', 'linux', 'win32'].includes(this.options.platform) &&
       (await exists(join(this.options.root, 'chrome-use', 'extension', 'manifest.json'))) &&
@@ -84,15 +96,16 @@ export class BundledPlugins {
       {
         id: 'computer-use',
         name: '电脑操作',
-        description: '在授权的 macOS 应用中读取界面、点击、输入和截图。',
+        description: '在你允许的桌面应用中读取界面、点击、输入和截图。',
         available: computer,
         ...(computer
-          ? { permissions: await this.computerPermissions() }
+          ? this.options.platform === 'win32'
+            ? { desktop: await this.computerDesktop() }
+            : { permissions: await this.computerPermissions() }
           : {
-              reason:
-                this.options.platform === 'darwin'
-                  ? '请重新构建桌面控制组件。'
-                  : '目前支持 macOS。',
+              reason: ['darwin', 'win32'].includes(this.options.platform)
+                ? '请重新构建桌面控制组件。'
+                : '目前支持 macOS 和 Windows。',
             }),
       },
     ]
@@ -200,6 +213,22 @@ export class BundledPlugins {
     }
   }
 
+  private async computerDesktop(): Promise<BundledPlugin['desktop']> {
+    const helperPath = this.environment.OPENHARNESS_COMPUTER_HELPER!
+    try {
+      const result = await this.helperRequest('status', this.options.statusTimeoutMs ?? 20_000)
+      if (result.platform !== 'windows' || typeof result.desktop_available !== 'boolean')
+        throw new Error('桌面状态检查组件返回了无效的桌面状态。')
+      return { available: result.desktop_available, helperPath }
+    } catch (error) {
+      return {
+        available: null,
+        helperPath,
+        error: error instanceof Error ? error.message : '桌面状态检查失败，请重新检查。',
+      }
+    }
+  }
+
   async requestComputerPermission(kind: unknown): Promise<void> {
     if (
       this.options.platform !== 'darwin' ||
@@ -225,13 +254,19 @@ export class BundledPlugins {
     timeout: number,
   ): Promise<Record<string, unknown>> {
     return new Promise((resolve, reject) => {
-      const operation = method === 'status' ? '电脑权限检测' : '系统权限请求'
+      const operation =
+        method === 'status'
+          ? this.options.platform === 'win32'
+            ? '桌面状态检查'
+            : '电脑权限检测'
+          : '系统权限请求'
       const child = spawn(
         this.options.executable,
         [join(this.options.root, 'computer-use', 'host.mjs'), '--request', method],
         {
           env: { ...process.env, ...this.environment },
           stdio: ['pipe', 'pipe', 'ignore'],
+          windowsHide: true,
         },
       )
       let settled = false

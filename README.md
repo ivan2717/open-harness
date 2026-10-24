@@ -173,16 +173,18 @@ local testing uses **开发者选项** to load the unpacked extension. See the
 **Browser Use** drives an isolated Playwright Chromium session through bounded
 page text, accessibility observations, element references and screenshots. Click
 **准备浏览器** once to download the matching Chromium, then install the plugin.
-This version supports macOS and Linux; Windows has no supported launcher yet.
+It supports Windows, macOS and Linux; Windows uses the bundled executable launcher.
 It does not attach to the user's existing browser profile. See the
 [Browser Use contract and limitations](plugins/browser-use/README.md).
 
-**Computer Use** operates one explicitly selected running macOS application.
-It requires macOS 14 or later, Accessibility permission, and Screen Recording
-permission for window screenshots. The plugin card offers **辅助功能**,
-**屏幕录制** and **检查权限**; permission prompts only follow those user actions.
-Building from source also requires Xcode Command Line Tools. There is no native
-Windows/Linux desktop executor in this version. See the
+**Computer Use** operates one explicitly selected running application on Windows
+and macOS. Windows uses UI Automation, window-only capture and foreground input;
+it requires an unlocked interactive desktop and does not control elevated apps
+or the UAC secure desktop. macOS requires macOS 14+, Accessibility and Screen
+Recording permissions; the plugin card offers the corresponding permission
+buttons. Windows shows desktop readiness instead of macOS permission controls.
+Building the macOS helper requires Xcode Command Line Tools. Linux native
+desktop control is not implemented. See the
 [Computer Use setup and GUI checks](plugins/computer-use/README.md).
 
 Before a first action, the conversation offers **允许本次** or a scoped
@@ -208,7 +210,9 @@ After preparing Chromium, validate from the repository root with
 `npm --prefix apps/desktop run test:computer`, and
 `npm --prefix apps/desktop run test:e2e:computer`. The native macOS fixture uses
 `node plugins/computer-use/tests/gui-smoke.mjs`; missing OS permissions report
-`blocked`, not a successful GUI run. Rust protocol and retention tests run with
+`blocked`, not a successful GUI run. Windows installed-app CI also exercises the
+packaged independent browser and native helper against a temporary WinForms app,
+including Unicode input, scrolling, screenshots and process cleanup. Rust protocol and retention tests run with
 `cargo test -p agent-core -p agent-runtime -p agent-memory -p agent-providers --offline`.
 
 ### Plugins, MCP and Skills

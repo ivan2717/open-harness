@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
+import { fileURLToPath } from 'node:url';
 import { launchChrome, requestWithLaunch } from '../launch-chrome.mjs';
 import { findChromeExecutable } from '../windows-chrome.mjs';
 import { openSetupUrl, validateSetupUrl } from '../open-url.mjs';
@@ -10,13 +11,19 @@ test('approved open starts Chrome in background with fixed arguments', async () 
   await launchChrome({ platform: 'darwin', spawnProcess(command, args, options) { actual = { command, args, options }; const child = new EventEmitter(); queueMicrotask(() => child.emit('close', 0)); return child; } });
   assert.deepEqual(actual, { command: '/usr/bin/open', args: ['-g', '-b', 'com.google.Chrome'], options: { stdio: 'ignore' } });
 });
-test('Windows approved open starts installed Chrome without opening a user window', async () => {
-  let actual; let unref = false;
-  await launchChrome({ platform: 'win32', findExecutable: async () => 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe', spawnProcess(command, args, options) { actual = { command, args, options }; const child = new EventEmitter(); child.unref = () => { unref = true; }; queueMicrotask(() => child.emit('spawn')); return child; } });
-  assert.equal(actual.command, 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe');
-  assert.deepEqual(actual.args, ['--no-startup-window']);
-  assert.deepEqual(actual.options, { detached: true, stdio: 'ignore', windowsHide: true });
-  assert.equal(unref, true);
+test('Windows approved open delegates browser lifetime to the fixed native launcher', async () => {
+  let actual;
+  await launchChrome({ platform: 'win32', findExecutable: async () => 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe', spawnProcess(command, args, options) { actual = { command, args, options }; const child = new EventEmitter(); queueMicrotask(() => child.emit('close', 0)); return child; } });
+  assert.equal(actual.command, fileURLToPath(new URL('../launch.exe', import.meta.url)));
+  assert.deepEqual(actual.args, ['--launch-chrome', 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe']);
+  assert.deepEqual(actual.options, { stdio: 'ignore', windowsHide: true });
+});
+test('Windows Chrome launch reports a refused breakaway instead of pretending startup succeeded', async () => {
+  for (const outcome of ['error', 'close']) {
+    let count = 0;
+    await assert.rejects(launchChrome({ platform: 'win32', findExecutable: async () => 'C:\\Chrome\\chrome.exe', spawnProcess() { count++; const child = new EventEmitter(); queueMicrotask(() => outcome === 'error' ? child.emit('error', new Error('spawn failed')) : child.emit('close', 1)); return child; } }), /could not be started/);
+    assert.equal(count, 1);
+  }
 });
 test('Windows resolves custom Chrome App Paths as an executable, not a shell command', async () => {
   const calls = [];

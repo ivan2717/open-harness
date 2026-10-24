@@ -1,7 +1,7 @@
 import { ComputerBridge } from './bridge.mjs';
 import { tools, validate } from './tools.mjs';
 import { metadataText } from './output.mjs';
-import { computerEndpoint, requireComputerEndpoint } from './endpoint.mjs';
+import { computerEndpoint, requireComputerEndpoint, requireComputerPlatform } from './endpoint.mjs';
 
 const helperPath = computerEndpoint();
 const bridge = new ComputerBridge(helperPath);
@@ -44,7 +44,7 @@ async function handle(request) {
   if (method === 'initialize') {
     initialized = true;
     const supported = ['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05'];
-    send({ id, result: { protocolVersion: supported.includes(params.protocolVersion) ? params.protocolVersion : '2025-11-25', capabilities: { tools: {} }, serverInfo: { name: 'openharness-computer-use', version: '0.2.0' } } }); return;
+    send({ id, result: { protocolVersion: supported.includes(params.protocolVersion) ? params.protocolVersion : '2025-11-25', capabilities: { tools: {} }, serverInfo: { name: 'openharness-computer-use', version: '0.3.0' } } }); return;
   }
   if (method === 'ping') { send({ id, result: {} }); return; }
   if (!initialized) { send({ id, error: { code: -32000, message: 'Initialize first.' } }); return; }
@@ -59,7 +59,7 @@ async function handle(request) {
       bridge.stop();
       send({ id, result: { content: [text({ released: true })] } }); return;
     }
-    if (process.platform !== 'darwin') throw new Error('Computer Use currently requires macOS 14 or later.');
+    requireComputerPlatform();
     requireComputerEndpoint(helperPath);
     const result = await bridge.request(params.name.replace('computer_', ''), args, controller.signal);
     const content = [];

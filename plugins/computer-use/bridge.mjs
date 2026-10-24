@@ -3,10 +3,11 @@ import { AppTransport } from './app-transport.mjs';
 
 // One helper belongs to one MCP session. No commands are replayed after failures.
 export class ComputerBridge {
-  constructor(command, args = [], { timeoutMs = 15_000 } = {}) {
+  constructor(command, args = [], { timeoutMs = 15_000, platform = process.platform } = {}) {
     this.command = command;
     this.args = args;
     this.timeoutMs = timeoutMs;
+    this.platform = platform;
     this.child = null;
     this.pending = null;
     this.sequence = 0;
@@ -40,8 +41,11 @@ export class ComputerBridge {
   start() {
     const child = this.command.endsWith('.app')
       ? new AppTransport(this.command)
-      : spawn(this.command, this.args, { stdio: ['pipe', 'pipe', 'pipe'] });
+      : spawn(this.command, this.args, { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
     this.child = child;
+    child.stdin.on('error', () => {
+      if (this.child === child) this.stop('Computer helper input channel closed; select the app again.');
+    });
     // Helper diagnostics never contain model-visible application text.
     child.stderr.resume();
     child.stdout.setEncoding('utf8');
@@ -63,7 +67,7 @@ export class ComputerBridge {
       }
     });
     child.once('error', () => {
-      if (this.child === child) this.stop('Computer helper could not start. Build the macOS plugin with node build.mjs before installation.');
+      if (this.child === child) this.stop('Computer helper could not start. Prepare the bundled Computer Use component for this operating system.');
     });
     child.once('exit', () => {
       if (this.child === child) this.stop('Computer helper exited. State is unknown; select the app again.');
@@ -77,8 +81,14 @@ export class ComputerBridge {
     this.pending = null;
     pending?.reject(new Error(reason));
     if (child) {
-      child.stdin.destroy();
-      child.kill('SIGTERM');
+      if (this.platform === 'win32') {
+        // SIGTERM maps to TerminateProcess on Windows. EOF lets the native
+        // reader release held input and terminate even if UI Automation stalls.
+        child.stdin.end();
+      } else {
+        child.stdin.destroy();
+        child.kill('SIGTERM');
+      }
       const force = setTimeout(() => { if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL'); }, 500);
       force.unref();
     }

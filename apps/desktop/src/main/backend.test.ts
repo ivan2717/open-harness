@@ -194,3 +194,40 @@ describe('local runtime initialization', () => {
     )
   })
 })
+
+describe('local runtime shutdown', () => {
+  it('closes the managed input pipe and lets the runtime finish cleanup', async () => {
+    vi.useFakeTimers()
+    const child = runtimeProcess()
+    const backend = new Backend('fixture-api', 'fixture-directory')
+    const started = backend.start()
+    child.stdout.write(JSON.stringify({ event: 'ready', address: '127.0.0.1:1234' }) + '\n')
+    await started
+    expect(vi.mocked(spawn).mock.calls[0][2]?.env).toMatchObject({
+      OPENHARNESS_EXIT_ON_STDIN_EOF: '1',
+    })
+    const stopped = backend.stop()
+    expect(child.stdin.writableEnded).toBe(true)
+    expect(child.kill).not.toHaveBeenCalled()
+    child.emit('exit', 0, null)
+    await stopped
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('uses a bounded hard stop only when graceful cleanup does not finish', async () => {
+    vi.useFakeTimers()
+    const child = runtimeProcess()
+    const backend = new Backend('fixture-api', 'fixture-directory')
+    const started = backend.start()
+    child.stdout.write(JSON.stringify({ event: 'ready', address: '127.0.0.1:1234' }) + '\n')
+    await started
+    const stopped = backend.stop()
+    await vi.advanceTimersByTimeAsync(9_999)
+    expect(child.kill).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(1)
+    expect(child.kill).toHaveBeenCalledWith('SIGKILL')
+    await vi.advanceTimersByTimeAsync(2_000)
+    await stopped
+    expect(vi.getTimerCount()).toBe(0)
+  })
+})

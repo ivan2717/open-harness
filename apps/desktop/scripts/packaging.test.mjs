@@ -1,8 +1,11 @@
 import assert from 'node:assert/strict'
-import { readFile } from 'node:fs/promises'
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { test } from 'vitest'
 import { directoryBuildArguments } from './package-dir.mjs'
 import { verifyMacSignature } from './verify-signature.mjs'
+import { stagePluginResources } from './plugin-resources.mjs'
 
 const context = {
   electronPlatformName: 'darwin',
@@ -88,4 +91,93 @@ test('verification errors propagate and non-macOS builds do not invoke codesign'
   verifyMacSignature({ electronPlatformName: 'linux' }, () =>
     assert.fail('must not invoke codesign'),
   )
+})
+
+async function withPluginSources(test) {
+  const directory = await mkdtemp(join(tmpdir(), 'openharness-plugin-package-'))
+  const source = join(directory, 'source')
+  const destination = join(directory, 'resources')
+  const windowsLauncher = join(directory, 'native-launcher.exe')
+  const manifests = {}
+  try {
+    await writeFile(windowsLauncher, 'native launcher fixture')
+    for (const [name, server] of [
+      ['browser-use', 'browser'],
+      ['chrome-use', 'chrome'],
+      ['computer-use', 'computer'],
+    ]) {
+      await mkdir(join(source, name, 'tests'), { recursive: true })
+      await writeFile(join(source, name, 'tests', 'test.mjs'), 'excluded')
+      await writeFile(join(source, name, 'server.mjs'), 'server fixture')
+      const manifest = {
+        mcpServers: { [server]: { command: './launch.sh', env_vars: ['OPENHARNESS_NODE_BINARY'] } },
+      }
+      manifests[name] = manifest
+      await writeFile(join(source, name, 'mcp.json'), JSON.stringify(manifest))
+    }
+    await mkdir(join(source, 'computer-use', 'windows', 'bin'), { recursive: true })
+    for (const file of [
+      'OpenHarnessComputerUse.exe',
+      'ComputerUseFixture.exe',
+      'ComputerUseFixture.pdb',
+    ])
+      await writeFile(join(source, 'computer-use', 'windows', 'bin', file), file)
+    await mkdir(join(source, 'computer-use', 'bin', 'Open Harness Computer Use.app'), {
+      recursive: true,
+    })
+    await test({ source, destination, windowsLauncher, manifests })
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+}
+
+test('Windows packages all control plugins with native MCP launchers and only the production desktop helper', async () => {
+  await withPluginSources(async (options) => {
+    await stagePluginResources({ ...options, platform: 'win32' })
+    for (const [name, manifest] of Object.entries(options.manifests)) {
+      const target = join(options.destination, name)
+      assert.equal(await readFile(join(target, 'launch.exe'), 'utf8'), 'native launcher fixture')
+      const output = JSON.parse(await readFile(join(target, 'mcp.json'), 'utf8'))
+      assert.deepEqual(Object.values(output.mcpServers), [
+        {
+          command: './launch.exe',
+          args: ['--mcp'],
+          env_vars: ['OPENHARNESS_NODE_BINARY'],
+        },
+      ])
+      assert.deepEqual(
+        JSON.parse(await readFile(join(options.source, name, 'mcp.json'), 'utf8')),
+        manifest,
+      )
+      await assert.rejects(access(join(target, 'tests')))
+    }
+    const computer = join(options.destination, 'computer-use')
+    await access(join(computer, 'windows', 'bin', 'OpenHarnessComputerUse.exe'))
+    await assert.rejects(access(join(computer, 'windows', 'bin', 'ComputerUseFixture.exe')))
+    await assert.rejects(access(join(computer, 'windows', 'bin', 'ComputerUseFixture.pdb')))
+    await assert.rejects(access(join(computer, 'bin')))
+  })
+})
+
+test('Windows packaging fails before staging when its native desktop helper was not built', async () => {
+  await withPluginSources(async (options) => {
+    await rm(join(options.source, 'computer-use', 'windows', 'bin', 'OpenHarnessComputerUse.exe'))
+    await assert.rejects(stagePluginResources({ ...options, platform: 'win32' }), {
+      code: 'ENOENT',
+    })
+    await assert.rejects(access(options.destination))
+  })
+})
+
+test('macOS retains its app and shell launchers without shipping a Windows helper', async () => {
+  await withPluginSources(async (options) => {
+    await stagePluginResources({ ...options, platform: 'darwin' })
+    for (const [name, manifest] of Object.entries(options.manifests)) {
+      const target = join(options.destination, name)
+      assert.deepEqual(JSON.parse(await readFile(join(target, 'mcp.json'), 'utf8')), manifest)
+      await assert.rejects(access(join(target, 'launch.exe')))
+    }
+    await access(join(options.destination, 'computer-use', 'bin', 'Open Harness Computer Use.app'))
+    await assert.rejects(access(join(options.destination, 'computer-use', 'windows')))
+  })
 })

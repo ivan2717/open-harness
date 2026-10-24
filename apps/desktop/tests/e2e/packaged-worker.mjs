@@ -6,6 +6,7 @@ import { isAbsolute, join, resolve } from 'node:path'
 import { promisify } from 'node:util'
 import { _electron, expect } from '@playwright/test'
 import { verifyWindowsChrome } from './windows-chrome.mjs'
+import { verifyWindowsControls } from './windows-controls.mjs'
 
 const executable = process.env.OPENHARNESS_E2E_EXECUTABLE
 if (!executable || !isAbsolute(executable)) {
@@ -208,6 +209,13 @@ try {
   if (process.platform === 'win32') {
     await checkpoint('verify Windows Chrome connection')
     report.chrome = await verifyWindowsChrome({
+      page,
+      runtime: report.launches.at(-1),
+      directory,
+      artifacts,
+    })
+    await checkpoint('verify Windows browser and desktop controls')
+    report.controls = await verifyWindowsControls({
       page,
       runtime: report.launches.at(-1),
       directory,

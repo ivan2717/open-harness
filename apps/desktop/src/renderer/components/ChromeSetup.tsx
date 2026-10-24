@@ -70,6 +70,7 @@ export function ChromeSetup({
   })
   const current = status.data
   const busy = disabled || connect.isPending
+  const platform = typeof window === 'undefined' ? undefined : window.harness.platform
   return (
     <div className="plugin-description">
       <div className="approval-actions">
@@ -162,7 +163,13 @@ export function ChromeSetup({
         >
           {copy.isSuccess ? '已复制目录' : '复制扩展目录'}
         </button>
-        <p>如果选择窗口没有进入该目录，macOS 可按 ⌘⇧G，粘贴下面的路径后按回车，再点击「选择」。</p>
+        <p>
+          {platform === 'win32'
+            ? '如果选择窗口没有进入该目录，按 Ctrl+L，在地址栏粘贴下面的路径后按回车，再点击「选择文件夹」。'
+            : platform === 'darwin'
+              ? '如果选择窗口没有进入该目录，按 ⌘⇧G，粘贴下面的路径后按回车，再点击「选择」。'
+              : '如果选择窗口没有进入该目录，在位置栏粘贴下面的路径，再选择这个文件夹。'}
+        </p>
         <code>{current.extensionPath}</code>
       </details>
       {current.installationError && <InlineError message={current.installationError} />}

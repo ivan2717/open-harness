@@ -4,10 +4,14 @@ import path from 'node:path';
 import { COMPUTER_APP_NAME } from './app-transport.mjs';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
-export function computerEndpoint(environment = process.env) {
-  // Direct helper execution exists solely for isolated fixture/protocol tests.
-  // Production desktop hosts always pass the independently launched app path.
-  return environment.OPENHARNESS_COMPUTER_APP || environment.OPENHARNESS_COMPUTER_HELPER || path.join(root, 'bin', `${COMPUTER_APP_NAME}.app`);
+export function computerEndpoint(environment = process.env, platform = process.platform) {
+  // macOS uses its independently authorized app; Windows uses a native stdio
+  // helper. Host configuration is trusted, never supplied in model arguments.
+  return environment.OPENHARNESS_COMPUTER_APP || environment.OPENHARNESS_COMPUTER_HELPER || (platform === 'win32' ? path.join(root, 'windows', 'bin', 'OpenHarnessComputerUse.exe') : path.join(root, 'bin', `${COMPUTER_APP_NAME}.app`));
+}
+
+export function requireComputerPlatform(platform = process.platform) {
+  if (!['darwin', 'win32'].includes(platform)) throw new Error('Computer Use requires macOS 14+ or Windows 10/11 with an interactive desktop.');
 }
 
 export function requireComputerEndpoint(endpoint) {

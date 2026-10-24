@@ -89,6 +89,12 @@ export interface BundledPlugin {
   available: boolean
   reason?: string
   browserReady?: boolean
+  desktop?: {
+    /** Windows has no macOS-style permission prompt; null means the check failed. */
+    available: boolean | null
+    helperPath: string
+    error?: string
+  }
   chrome?: {
     configured: boolean
     connected: boolean
