@@ -61,6 +61,8 @@ describe('Windows Chrome system integration', () => {
     const script = Buffer.from(args.at(-1)!, 'base64').toString('utf16le')
     expect(script).not.toContain(path)
     expect(script).toContain('SetAccessRuleProtection($true, $false)')
+    expect(script).toContain('$item.SetAccessControl($acl)')
+    expect(script).not.toMatch(/\b(?:Get-Item|Set-Acl)\b/)
     expect(script).toContain("SecurityIdentifier]::new('S-1-5-18')")
     expect(call[2]).toMatchObject({
       env: { OPENHARNESS_CHROME_PRIVATE_DIRECTORY: path },
