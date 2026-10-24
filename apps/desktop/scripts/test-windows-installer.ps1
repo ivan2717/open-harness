@@ -55,8 +55,25 @@ try {
         throw 'Installed uninstaller missing'
     }
     Assert-BackendDependencies
-    & node (Join-Path $desktop 'tests/e2e/packaged.mjs')
-    if ($LASTEXITCODE -ne 0) { throw 'Installed app smoke test failed' }
+    $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = (Get-Command node).Source
+    $startInfo.UseShellExecute = $false
+    $startInfo.ArgumentList.Add((Join-Path $desktop 'tests/e2e/packaged.mjs'))
+    $smoke = [System.Diagnostics.Process]::Start($startInfo)
+    try {
+        if (-not $smoke.WaitForExit(300000)) {
+            throw 'Installed app smoke test timed out after 5 minutes; see stage diagnostics'
+        }
+        if ($smoke.ExitCode -ne 0) { throw 'Installed app smoke test failed' }
+    } finally {
+        if (-not $smoke.HasExited) {
+            # Terminate only this test's process tree, including its isolated
+            # Chromium and Electron children, before trying to uninstall.
+            & "$env:SystemRoot\System32\taskkill.exe" /PID $smoke.Id /T /F
+            $null = $smoke.WaitForExit(10000)
+        }
+        $smoke.Dispose()
+    }
 } finally {
     $env:OPENHARNESS_E2E_EXECUTABLE = $previousExecutable
     $uninstaller = Join-Path $installDirectory 'Uninstall Open Harness.exe'

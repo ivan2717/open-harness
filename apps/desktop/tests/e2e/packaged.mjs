@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict'
+import { execFile } from 'node:child_process'
 import { access, mkdir, mkdtemp, realpath, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { isAbsolute, join, resolve } from 'node:path'
+import { promisify } from 'node:util'
 import { _electron, expect } from '@playwright/test'
 import { verifyWindowsChrome } from './windows-chrome.mjs'
 
@@ -26,6 +28,38 @@ const logs = []
 const report = { passed: false, executable, artifacts, launches: [] }
 let application
 let page
+const execute = promisify(execFile)
+
+async function within(label, operation, timeout) {
+  let timer
+  try {
+    return await Promise.race([
+      operation(),
+      new Promise((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`${label} timed out after ${timeout} ms`)),
+          timeout,
+        )
+      }),
+    ])
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+async function saveDiagnostics() {
+  await writeFile(
+    join(artifacts, 'report.json'),
+    JSON.stringify({ ...report, rendererErrors }, null, 2),
+  )
+  await writeFile(join(artifacts, 'application.log'), logs.join('\n'))
+}
+
+async function checkpoint(stage) {
+  report.stage = stage
+  console.log(`[packaged] ${stage}`)
+  await saveDiagnostics()
+}
 
 function record(source, value) {
   // Bound diagnostic output even if a broken process repeatedly logs errors.
@@ -86,14 +120,30 @@ async function launch() {
 
 async function close() {
   if (!application) return
-  await application.close()
+  const current = application
   application = undefined
   page = undefined
+  try {
+    await within('Installed application shutdown', () => current.close(), 15_000)
+  } catch (error) {
+    const child = current.process()
+    if (child.exitCode === null && child.signalCode === null && child.pid) {
+      if (process.platform === 'win32') {
+        await execute('taskkill.exe', ['/PID', String(child.pid), '/T', '/F'], {
+          windowsHide: true,
+          timeout: 10_000,
+        }).catch((failure) => record('cleanup', failure.message))
+      } else child.kill('SIGKILL')
+    }
+    throw error
+  }
 }
 
 try {
-  await launch()
+  await checkpoint('launch installed application')
+  await within('Installed application startup', launch, 60_000)
   if (process.platform === 'win32') {
+    await checkpoint('verify Windows Chrome connection')
     report.chrome = await verifyWindowsChrome({
       page,
       runtime: report.launches.at(-1),
@@ -101,6 +151,7 @@ try {
       artifacts,
     })
   }
+  await checkpoint('run offline task')
   assert.deepEqual(await page.evaluate(() => window.harness.listRuns()), [])
   const prompt = 'Verify the installed application, offline execution and conversation persistence.'
   const run = await page.evaluate(
@@ -130,9 +181,11 @@ try {
   await page.screenshot({ path: join(artifacts, 'completed.png'), fullPage: true })
   report.events = completed.events.length
   report.compactions = completed.context.compaction_count
+  await checkpoint('close before restart')
   await close()
 
-  await launch()
+  await checkpoint('restart installed application')
+  await within('Installed application restart', launch, 60_000)
   const restored = await page.evaluate((id) => window.harness.getRun(id), run.id)
   assert.equal(restored.status, 'completed')
   assert.equal(restored.prompt, prompt)
@@ -152,24 +205,41 @@ try {
   await expect(page.getByText(prompt, { exact: true }).first()).toBeVisible()
   await page.screenshot({ path: join(artifacts, 'restored.png'), fullPage: true })
   assert.deepEqual(rendererErrors, [], 'the packaged renderer must have no uncaught exceptions')
+  await checkpoint('close after restart')
   await close()
   report.passed = true
   console.log(JSON.stringify(report, null, 2))
 } catch (error) {
   report.error = error instanceof Error ? error.stack : String(error)
+  process.exitCode = 1
+  console.error(report.error)
+  // Persist the original failure before screenshots or process cleanup can hang.
+  await saveDiagnostics()
   if (page && !page.isClosed()) {
-    await page.screenshot({ path: join(artifacts, 'failure.png'), fullPage: true }).catch(() => {})
+    await within(
+      'Failure screenshot',
+      () => page.screenshot({ path: join(artifacts, 'failure.png'), fullPage: true }),
+      5_000,
+    ).catch(() => {})
   }
-  throw error
 } finally {
   try {
     await close()
+  } catch (error) {
+    report.passed = false
+    report.cleanupError = error instanceof Error ? error.stack : String(error)
+    process.exitCode = 1
+    console.error(report.cleanupError)
   } finally {
-    await writeFile(
-      join(artifacts, 'report.json'),
-      JSON.stringify({ ...report, rendererErrors }, null, 2),
-    )
-    await writeFile(join(artifacts, 'application.log'), logs.join('\n'))
-    await rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
+    await saveDiagnostics()
+    try {
+      await rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
+    } catch (error) {
+      report.passed = false
+      report.directoryCleanupError = error instanceof Error ? error.message : String(error)
+      process.exitCode = 1
+      console.error(report.directoryCleanupError)
+      await saveDiagnostics()
+    }
   }
 }
