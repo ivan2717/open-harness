@@ -573,71 +573,85 @@ impl AppState {
         Ok(snapshot)
     }
     pub async fn compact(&self, id: &str) -> Result<RunDetail, ServiceError> {
-        let gate = self.inner.model_gate.lock().await;
-        self.ensure_accepting_work()?;
-        let entry = self.entry(id)?;
-        let operation = entry.operations.lock().await;
-        let detail = entry.snapshot.get();
-        if detail.summary.compacting
-            || entry.background.load(Ordering::Acquire)
-            || entry.runtime.is_executing(id)
-            || detail.summary.status == RunStatus::Running
-        {
-            return Err(ServiceError::Conflict("运行忙碌时无法压缩上下文".into()));
-        }
-        if !matches!(
-            detail.summary.status,
-            RunStatus::WaitingForInput | RunStatus::Completed
-        ) {
-            return Err(ServiceError::Conflict(
-                "仅可压缩等待输入或已完成的会话".into(),
-            ));
-        }
-        if !entry.runtime.model().available() {
-            return Err(ServiceError::BadRequest(
-                "请重新配置此会话原来的模型".into(),
-            ));
-        }
-        let mut run = entry
-            .runtime
-            .restore_run(id)
-            .await
-            .map_err(ServiceError::internal)?
-            .ok_or(ServiceError::NotFound)?;
-        entry.snapshot.update(|detail| {
-            detail.summary.compacting = true;
-            detail.error = None;
-        })?;
-        let worker = entry.clone();
-        let agent = entry.agent.clone();
-        let (started, ready) = tokio::sync::oneshot::channel();
-        tokio::spawn(async move {
-            let future = worker.runtime.compact_now(&agent, &mut run);
-            tokio::pin!(future);
-            // Poll once before announcing admission, so cancellation cannot miss
-            // a newly scheduled maintenance task.
-            let mut started = Some(started);
-            let result = std::future::poll_fn(|cx| {
-                let result = std::future::Future::poll(future.as_mut(), cx);
-                if let Some(started) = started.take() {
-                    let _ = started.send(());
-                }
-                result
-            })
-            .await;
-            let _ = worker.snapshot.update(|detail| {
-                detail.summary.compacting = false;
-                if let Err(error) = result
-                    && !matches!(error, agent_runtime::AgentRuntimeError::CompactionCancelled)
-                {
-                    detail.error = Some(error.to_string());
-                }
+        let mut changed = self.inner.mailboxes.subscribe();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let gate = self.inner.model_gate.lock().await;
+            self.ensure_accepting_work()?;
+            let entry = self.entry(id)?;
+            let operation = entry.operations.lock().await;
+            let detail = entry.snapshot.get();
+            if detail.summary.compacting || detail.summary.status == RunStatus::Running {
+                return Err(ServiceError::Conflict("运行忙碌时无法压缩上下文".into()));
+            }
+            if !matches!(
+                detail.summary.status,
+                RunStatus::WaitingForInput | RunStatus::Completed
+            ) {
+                return Err(ServiceError::Conflict(
+                    "仅可压缩等待输入或已完成的会话".into(),
+                ));
+            }
+            if entry.background.load(Ordering::Acquire) || entry.runtime.is_executing(id) {
+                // The idle outcome is visible before the execution worker finishes
+                // bookkeeping. Let that tail settle without blocking other operations,
+                // then revalidate admission, including shutdown, under both locks.
+                drop(operation);
+                drop(gate);
+                tokio::time::timeout_at(deadline, changed.changed())
+                    .await
+                    .map_err(|_| {
+                        ServiceError::Conflict("任务收尾尚未完成，请稍后再压缩上下文".into())
+                    })?
+                    .map_err(ServiceError::internal)?;
+                continue;
+            }
+            if !entry.runtime.model().available() {
+                return Err(ServiceError::BadRequest(
+                    "请重新配置此会话原来的模型".into(),
+                ));
+            }
+            let mut run = entry
+                .runtime
+                .restore_run(id)
+                .await
+                .map_err(ServiceError::internal)?
+                .ok_or(ServiceError::NotFound)?;
+            entry.snapshot.update(|detail| {
+                detail.summary.compacting = true;
+                detail.error = None;
+            })?;
+            let worker = entry.clone();
+            let agent = entry.agent.clone();
+            let (started, ready) = tokio::sync::oneshot::channel();
+            tokio::spawn(async move {
+                let future = worker.runtime.compact_now(&agent, &mut run);
+                tokio::pin!(future);
+                // Poll once before announcing admission, so cancellation cannot miss
+                // a newly scheduled maintenance task.
+                let mut started = Some(started);
+                let result = std::future::poll_fn(|cx| {
+                    let result = std::future::Future::poll(future.as_mut(), cx);
+                    if let Some(started) = started.take() {
+                        let _ = started.send(());
+                    }
+                    result
+                })
+                .await;
+                let _ = worker.snapshot.update(|detail| {
+                    detail.summary.compacting = false;
+                    if let Err(error) = result
+                        && !matches!(error, agent_runtime::AgentRuntimeError::CompactionCancelled)
+                    {
+                        detail.error = Some(error.to_string());
+                    }
+                });
             });
-        });
-        let _ = ready.await;
-        drop(operation);
-        drop(gate);
-        Ok(entry.snapshot.get())
+            let _ = ready.await;
+            drop(operation);
+            drop(gate);
+            return Ok(entry.snapshot.get());
+        }
     }
     pub async fn cancel_compaction(&self, id: &str) -> Result<RunDetail, ServiceError> {
         let _gate = self.inner.model_gate.lock().await;
