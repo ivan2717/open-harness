@@ -20,6 +20,13 @@ mac:
   target: dmg
 win:
   target: nsis
+nsis:
+  artifactName: Open-Harness-${version}-windows-${arch}-setup.${ext}
+  oneClick: false
+  perMachine: false
+  allowElevation: false
+  allowToChangeInstallationDirectory: true
+  runAfterFinish: false
 linux:
   target: AppImage
   category: Development

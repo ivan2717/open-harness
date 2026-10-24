@@ -266,6 +266,57 @@ provider replay payloads are excluded from the public UI projection.
 
 ## Checks and packaging
 
+### Windows CI installer
+
+The GitHub Actions **Checks** workflow runs on pushes, pull requests, and manual
+**Run workflow** requests. Rust, desktop, and plugin checks run on Linux first.
+The browser plugin tests install headless Chromium and use local fixtures; no
+provider API keys are required. When all checks pass, **Windows x64 installer**
+builds the Rust backend and Electron app on a Windows x64 runner.
+
+The Windows job creates an NSIS installer, installs it into a temporary directory
+with spaces in its name, and launches the installed executable with a fresh data
+profile. It checks the IPC/backend connection, an offline task with tool calls and
+context compaction, renderer isolation, and persisted history after restarting.
+It then uninstalls the app before uploading the installer. This is a smoke test,
+not full coverage of every Windows feature or an upgrade test.
+
+Download **Open-Harness-windows-x64-<run number>** from the run's **Artifacts**
+section (or the link in its summary), unzip it, and run
+`Open-Harness-<version>-windows-x64-setup.exe`. The artifact also includes
+`SHA256SUMS.txt` and `build-info.json` with the source commit and workflow URL.
+Installers are retained for 14 days; smoke screenshots and logs for 7 days.
+Only a fully successful build and installed-app smoke test uploads an installer.
+
+These are **unsigned test builds**. No Apple account, Windows certificate, model
+API key, or publishing secret is needed. Windows can show an unknown-publisher or
+SmartScreen prompt. The installer is per-user and does not request administrator
+elevation. Builds are not automatically published to GitHub Releases and do not
+add an application auto-updater.
+
+To build the same installer locally on **Windows x64**, install Node.js 24, Rust
+stable, and Visual Studio C++ Build Tools, then run:
+
+```powershell
+cd apps/desktop
+npm ci
+npm run package:win
+# Optional: silently install, smoke-test, and uninstall using a temporary profile.
+pwsh -File scripts/test-windows-installer.ps1
+```
+
+`package:win` refuses other host platforms/architectures so a macOS/Linux Rust
+binary cannot accidentally be bundled with Windows Electron. It disables
+automatic publishing explicitly. The existing macOS local packaging command
+remains available without an Apple developer account.
+
+Windows currently supports the desktop conversation interface, model connections,
+context management, history, and local file tools. Chrome connection, the isolated
+browser launcher, native Computer Use, and sandboxed shell commands still require
+platform work and remain unavailable on Windows; packaging does not enable them.
+
+### Local checks and macOS packaging
+
 ```sh
 npm run typecheck
 npm run format:check
@@ -327,7 +378,8 @@ application shutdown while a command has child processes. Command
 execution coverage currently requires macOS with the system sandbox available.
 
 For a packaged-app check, set `OPENHARNESS_E2E_EXECUTABLE` to the packaged
-executable and run `node tests/e2e/desktop.mjs`.
+executable and run `npm run test:e2e:packaged` for the CI smoke test, or
+`node tests/e2e/desktop.mjs` for the broader desktop flow.
 
 `test:e2e:rich` verifies streamed Markdown, code copying, image enlargement,
 actual audio/video playback, ranged resource reads, opt-in remote images, native

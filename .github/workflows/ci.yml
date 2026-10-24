@@ -3,13 +3,19 @@ name: Checks
 on:
   push:
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: checks-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   check:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - name: Set up Rust
@@ -25,6 +31,7 @@ jobs:
 
   desktop:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: apps/desktop
@@ -40,3 +47,96 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
+
+  plugins:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: apps/desktop
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:browser
+      - run: npm run test:chrome
+      - run: npm run test:computer
+
+  windows:
+    name: Windows x64 installer
+    needs: [check, desktop, plugins]
+    runs-on: windows-2022
+    timeout-minutes: 45
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+    defaults:
+      run:
+        working-directory: apps/desktop
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+      - name: Set up Rust
+        run: rustup toolchain install stable --profile minimal
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: windows-x64-rust-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: windows-x64-rust-
+      - run: npm ci
+      - name: Build Windows installer
+        run: npm run package:win
+      - name: Install, launch, and uninstall the packaged app
+        run: ./scripts/test-windows-installer.ps1
+      - name: Record checksums and build provenance
+        run: |
+          $installers = @(Get-ChildItem release/Open-Harness-*-windows-x64-setup.exe)
+          if ($installers.Count -ne 1) { throw 'Expected exactly one Windows installer' }
+          Get-FileHash $installers[0].FullName -Algorithm SHA256 |
+            ForEach-Object { "$($_.Hash.ToLowerInvariant())  $([System.IO.Path]::GetFileName($_.Path))" } |
+            Set-Content release/SHA256SUMS.txt -Encoding utf8
+          @{
+            commit = $env:GITHUB_SHA
+            run = "$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+            version = (Get-Content package.json | ConvertFrom-Json).version
+            platform = 'windows-x64'
+            signed = $false
+          } | ConvertTo-Json | Set-Content release/build-info.json -Encoding utf8
+      - name: Upload Windows installer
+        id: installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: Open-Harness-windows-x64-${{ github.run_number }}
+          path: |
+            apps/desktop/release/Open-Harness-*-windows-x64-setup.exe
+            apps/desktop/release/SHA256SUMS.txt
+            apps/desktop/release/build-info.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+      - name: Link installer in run summary
+        env:
+          ARTIFACT_URL: ${{ steps.installer.outputs.artifact-url }}
+        run: |
+          "Windows x64 installer: [$env:ARTIFACT_URL]($env:ARTIFACT_URL)" >> $env:GITHUB_STEP_SUMMARY
+          'Unsigned test build. Installed-app offline task and restart checks passed. Artifact expires after 14 days.' >> $env:GITHUB_STEP_SUMMARY
+      - name: Upload smoke diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Windows-smoke-diagnostics-${{ github.run_number }}
+          path: apps/desktop/test-results/packaged/
+          if-no-files-found: ignore
+          retention-days: 7

@@ -24,6 +24,13 @@ turns and cancellable manual context compaction. The offline demo makes no model
 API requests. See [desktop setup and architecture](apps/desktop/README.md)
 for state ownership, persistence, checks, and packaging.
 
+Windows x64 test installers are built by the **Checks** GitHub Actions workflow
+after Rust, desktop, and plugin checks pass. Each installer is installed, launched,
+tested with an offline task and restart, and uninstalled on the Windows runner.
+Download it from the successful run's **Artifacts** section (14-day retention).
+These builds are unsigned and need no Apple developer account. See
+[Windows packaging and current feature limits](apps/desktop/README.md#windows-ci-installer).
+
 ### Local project tasks
 
 Choose a project directory and a configured model to work on actual local files.

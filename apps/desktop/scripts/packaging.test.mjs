@@ -31,7 +31,11 @@ test('the post-sign hook verifies nested code and the actual bundle identity', (
   const calls = []
   verifyMacSignature(context, (command, args, options) => {
     calls.push({ command, args, options })
-    return { status: 0, stdout: '', stderr: `Identifier=${args.at(-1).endsWith('Open Harness Computer Use.app') ? 'dev.openharness.computeruse' : 'dev.openharness.desktop'}\n` }
+    return {
+      status: 0,
+      stdout: '',
+      stderr: `Identifier=${args.at(-1).endsWith('Open Harness Computer Use.app') ? 'dev.openharness.computeruse' : 'dev.openharness.desktop'}\n`,
+    }
   })
   assert.equal(calls.length, 4)
   assert.equal(calls[0].command, '/usr/bin/codesign')
@@ -44,13 +48,22 @@ test('the post-sign hook verifies nested code and the actual bundle identity', (
   ])
   assert.deepEqual(calls[1].args, ['--display', '--verbose=2', '/build/mac-arm64/Open Harness.app'])
   assert.equal(calls[0].options.timeout, 120_000)
-  assert.deepEqual(calls[2].args, ['--verify', '--strict', '--verbose=2', '/build/mac-arm64/Open Harness.app/Contents/Resources/plugins/computer-use/bin/Open Harness Computer Use.app'])
+  assert.deepEqual(calls[2].args, [
+    '--verify',
+    '--strict',
+    '--verbose=2',
+    '/build/mac-arm64/Open Harness.app/Contents/Resources/plugins/computer-use/bin/Open Harness Computer Use.app',
+  ])
   assert.equal(calls[3].args[0], '--display')
 })
 
 test('the independent Computer Use app must have its own signing identity', () => {
   assert.throws(
-    () => verifyMacSignature(context, () => ({ status: 0, stderr: 'Identifier=dev.openharness.desktop\n' })),
+    () =>
+      verifyMacSignature(context, () => ({
+        status: 0,
+        stderr: 'Identifier=dev.openharness.desktop\n',
+      })),
     /Computer Use signature identity mismatch/,
   )
 })
