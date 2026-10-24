@@ -1,10 +1,13 @@
 import net from 'node:net';
-import { randomUUID } from 'node:crypto';
+import { createHmac, randomUUID } from 'node:crypto';
 import { readConfig } from './config.mjs';
 import { LineDecoder } from './framing.mjs';
 import { MAX_RESPONSE } from './constants.mjs';
 export class ChromeBridge {
-  constructor({ configPath, timeoutMs = 25000 } = {}) { this.configPath = configPath; this.timeoutMs = timeoutMs; this.pending = new Map(); this.sessionId = randomUUID(); this.nextId = 0; }
+  constructor({ configPath, timeoutMs = 25000, taskId } = {}) {
+    if (taskId !== undefined && (typeof taskId !== 'string' || !taskId.length || taskId.length > 256 || taskId.includes('\0'))) throw new Error('Invalid Chrome task identity.');
+    this.configPath = configPath; this.timeoutMs = timeoutMs; this.taskId = taskId; this.pending = new Map(); this.sessionId = randomUUID(); this.nextId = 0;
+  }
   async connect() {
     if (this.connecting) return this.connecting;
     if (this.socket && !this.socket.destroyed) return;
@@ -29,7 +32,10 @@ export class ChromeBridge {
       socket.once('connect', () => { clearTimeout(timer); resolve(); });
       socket.once('error', () => { clearTimeout(timer); reject(new Error('Chrome extension is not connected. Open Chrome and connect from the extension popup.')); });
     });
-    await this.dispatch('authenticate', { token: config.token });
+    // Reconnecting a task reuses its visual group, not its old transport grants.
+    // Bind the key to this desktop profile without revealing run IDs or secrets.
+    const taskKey = this.taskId === undefined ? undefined : createHmac('sha256', config.token).update(`openharness.chrome.task\0${this.taskId}`).digest('hex');
+    await this.dispatch('authenticate', { token: config.token, ...(taskKey ? { task_key: taskKey } : {}) });
   }
   dispatch(method, params) {
     return new Promise((resolve, reject) => {

@@ -2,7 +2,9 @@ import { ChromeBridge } from './bridge.mjs';
 import { requestWithLaunch } from './launch-chrome.mjs';
 import { tools, validate } from './schema.mjs';
 import { LineDecoder } from './framing.mjs';
-const bridge = new ChromeBridge();
+const args = process.argv.slice(2);
+if (args.length && (args.length !== 2 || args[0] !== '--task-id')) throw new Error('Invalid Chrome server arguments.');
+const bridge = new ChromeBridge({ taskId: args[1] });
 const versions = ['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05'];
 let initialized = false; let closed = false; const active = new Set(); let generation = 0; let queue = Promise.resolve();
 const send = message => { if (!closed) process.stdout.write(`${JSON.stringify({ jsonrpc: '2.0', ...message })}\n`); };
@@ -17,7 +19,7 @@ async function handle(request) {
   active.add(id);
   try {
     let result;
-    if (method === 'initialize') { initialized = true; result = { protocolVersion: versions.includes(params.protocolVersion) ? params.protocolVersion : versions[0], capabilities: { tools: {} }, serverInfo: { name: 'openharness-chrome', version: '0.1.0' } }; }
+    if (method === 'initialize') { initialized = true; result = { protocolVersion: versions.includes(params.protocolVersion) ? params.protocolVersion : versions[0], capabilities: { tools: {} }, serverInfo: { name: 'openharness-chrome', version: '0.2.0' } }; }
     else if (!initialized) { send({ id, error: { code: -32002, message: 'Initialize first.' } }); return; }
     else if (method === 'ping') result = {};
     else if (method === 'tools/list') result = { tools };

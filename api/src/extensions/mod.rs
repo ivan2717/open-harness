@@ -357,6 +357,7 @@ impl ExtensionHost {
                 "MCP configuration changed; request approval again",
             ));
         }
+        let connection = self.connection_config(run, server);
         let controls = self.controls.lock().unwrap();
         if let Some(epoch) = epoch {
             controls.check_epoch(run, epoch)?;
@@ -390,7 +391,7 @@ impl ExtensionHost {
                 ));
             }
         }
-        let client = McpClient::new(server.clone()).map_err(io::Error::other)?;
+        let client = McpClient::new(connection).map_err(io::Error::other)?;
         clients.insert(
             key,
             CachedClient {
@@ -399,6 +400,19 @@ impl ExtensionHost {
             },
         );
         Ok(client)
+    }
+
+    fn connection_config(&self, run: &str, server: &McpServerConfig) -> McpServerConfig {
+        let mut connection = server.clone();
+        // Layout identity belongs to the host conversation, never to model tool
+        // arguments or persisted MCP configuration. The bundled bridge hashes
+        // it with the local connection secret; transport grants remain ephemeral.
+        if self.control_plugin(&server.id).as_deref() == Some("chrome-use")
+            && let agent_mcp::McpTransport::Stdio { args, .. } = &mut connection.transport
+        {
+            args.extend(["--task-id".into(), run.into()]);
+        }
+        connection
     }
 
     pub async fn shutdown(&self) {

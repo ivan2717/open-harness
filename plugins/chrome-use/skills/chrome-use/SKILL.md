@@ -16,7 +16,11 @@ explain the specific extension connection step. Do not fall back to foreground c
 connection does not require Screen Recording or Accessibility permissions.
 
 For a URL established by the user's task, use `chrome_open`. It creates and
-selects a background tab with `active: false`; read it with `chrome_snapshot`.
+selects a background tab with `active: false` inside this conversation's
+`Open Harness` tab group; subsequent opens reuse that group. Read it with
+`chrome_snapshot`. Use `chrome_open` when a task needs another page rather than
+asking the user to create one. Groups organize pages, not grant access: a user
+tab dragged into the group stays private, and shared user tabs stay in place.
 For an existing tab, use `chrome_tabs`, which exposes only explicitly shared tabs
 and this session's tabs. Use `chrome_select_tab` with its exact `tab_id` and
 `origin`. Do not guess IDs, read other tabs, or broaden a grant. An origin change
@@ -44,4 +48,7 @@ The user and agent may work in different tabs concurrently, but accounts and
 cookies are shared. Do not promise isolation of account changes. The user can
 revoke tab sharing or disconnect at any time. `chrome_release` detaches control
 without closing a tab; `close_owned: true` may close only a tab created by this
-session when its task is done. Never close a user-owned tab.
+session when its task is done, if it is inactive, still in its task group and
+on the authorized origin. Check `closed` in the result; never close a whole
+group. Moving an agent tab out of its group revokes control. Disconnect leaves
+pages available for review; it does not restore grants on reconnect.

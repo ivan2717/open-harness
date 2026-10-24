@@ -45,6 +45,56 @@ test('bad token and wrong extension origin cannot reach Chrome', async t => {
   assert.equal(messages.some(message => message.method === 'authenticate'), false);
   await assert.rejects(startNativeHost({ config, input: new PassThrough(), output: new PassThrough(), origin: 'chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/' }), /Unexpected extension/);
 });
+test('task layout keys survive bridge replacement while transport sessions remain distinct', async t => {
+  const { configPath, config, messages } = await fixture(t);
+  const first = new ChromeBridge({ configPath, taskId: 'run-a' });
+  const replacement = new ChromeBridge({ configPath, taskId: 'run-a' });
+  const other = new ChromeBridge({ configPath, taskId: 'run-b' });
+  t.after(() => { first.close(); replacement.close(); other.close(); });
+  await first.request('chrome_status');
+  await replacement.request('chrome_status');
+  await other.request('chrome_status');
+  const routed = messages.filter(message => message.method === 'chrome_status');
+  assert.equal(routed.length, 3);
+  assert.match(routed[0].task_key, /^[a-f0-9]{64}$/);
+  assert.equal(routed[0].task_key, routed[1].task_key);
+  assert.notEqual(routed[0].task_key, routed[2].task_key);
+  assert.notEqual(routed[0].session_id, routed[1].session_id);
+  assert.equal(JSON.stringify(messages).includes(config.token), false);
+  assert.equal(JSON.stringify(messages).includes('run-a'), false);
+  first.close();
+  await new Promise(resolve => setTimeout(resolve, 30));
+  assert.ok(messages.some(message => message.method === 'disconnect' && message.session_id === first.sessionId && message.task_key === routed[0].task_key));
+});
+test('task metadata is bound at authentication and cannot be supplied by a model tool', async t => {
+  const { config, messages } = await fixture(t);
+  const socket = net.createConnection(config.socketPath); socket.setEncoding('utf8');
+  t.after(() => socket.destroy());
+  await new Promise(resolve => socket.once('connect', resolve));
+  const session = '33333333-3333-4333-8333-333333333333';
+  const send = message => socket.write(`${JSON.stringify({ session_id: session, ...message })}\n`);
+  const response = () => new Promise(resolve => socket.once('data', data => resolve(JSON.parse(data))));
+  let reply = response();
+  send({ id: 1, method: 'authenticate', params: { token: config.token, task_key: 'a'.repeat(64) } });
+  assert.equal((await reply).result.connected, true);
+  reply = response();
+  send({ id: 2, method: 'chrome_status', task_key: 'b'.repeat(64), params: {} });
+  assert.equal((await reply).result.connected, true);
+  assert.equal(messages.find(message => message.method === 'chrome_status').task_key, 'a'.repeat(64));
+  reply = response();
+  send({ id: 3, method: 'chrome_status', params: { task_key: 'b'.repeat(64) } });
+  assert.match((await reply).error, /Unknown argument/);
+  assert.equal(messages.filter(message => message.method === 'chrome_status').length, 1);
+});
+test('malformed task identity fails before forwarding any Chrome request', async t => {
+  const { config, messages } = await fixture(t);
+  const socket = net.createConnection(config.socketPath);
+  await new Promise(resolve => socket.once('connect', resolve));
+  socket.write(`${JSON.stringify({ id: 1, session_id: '44444444-4444-4444-8444-444444444444', method: 'authenticate', params: { token: config.token, task_key: '../private' } })}\n`);
+  await new Promise(resolve => socket.once('close', resolve));
+  assert.equal(messages.some(message => message.method), false);
+  for (const taskId of ['', 'x'.repeat(257), 'bad\0id', 42]) assert.throws(() => new ChromeBridge({ taskId }), /Invalid Chrome task identity/);
+});
 test('a second profile cannot steal or unlink the active socket', async t => {
   const { config, bridge } = await fixture(t);
   await assert.rejects(startNativeHost({ config, input: new PassThrough(), output: new PassThrough(), origin: `chrome-extension://${EXTENSION_ID}/` }), /already connected/);

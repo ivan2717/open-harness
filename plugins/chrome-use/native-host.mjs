@@ -16,7 +16,7 @@ export async function startNativeHost({ config, input = process.stdin, output = 
   const writeClient = (socket, message) => { if (!socket.destroyed) socket.write(`${JSON.stringify(message)}\n`); };
   const disconnect = (socket) => {
     if (!clients.delete(socket)) return;
-    if (socket.sessionId) writeNative({ id: randomUUID(), session_id: socket.sessionId, method: 'disconnect', params: {} });
+    if (socket.sessionId) writeNative({ id: randomUUID(), session_id: socket.sessionId, ...(socket.taskKey ? { task_key: socket.taskKey } : {}), method: 'disconnect', params: {} });
     for (const [id, item] of pending) if (item.socket === socket) { clearTimeout(item.timer); pending.delete(id); }
   };
   const server = net.createServer(socket => {
@@ -24,11 +24,11 @@ export async function startNativeHost({ config, input = process.stdin, output = 
     const authTimer = setTimeout(() => socket.destroy(), 3000);
     const decoder = new LineDecoder(message => {
       const { id, session_id, method, params = {} } = message ?? {};
-      if (!Number.isSafeInteger(id) || typeof session_id !== 'string' || !/^[\da-f-]{36}$/.test(session_id)) { socket.destroy(); return; }
+      if (!Number.isSafeInteger(id) || typeof session_id !== 'string' || !/^[\da-f-]{36}$/.test(session_id) || !params || typeof params !== 'object' || Array.isArray(params)) { socket.destroy(); return; }
       if (!socket.sessionId) {
-        if (method !== 'authenticate' || typeof params.token !== 'string' || params.token.length !== config.token.length || !timingSafeEqual(Buffer.from(params.token), Buffer.from(config.token))) { socket.destroy(); return; }
+        if (method !== 'authenticate' || typeof params.token !== 'string' || !/^[a-f0-9]{64}$/.test(params.token) || params.token.length !== config.token.length || !timingSafeEqual(Buffer.from(params.token), Buffer.from(config.token)) || (params.task_key !== undefined && (typeof params.task_key !== 'string' || !/^[a-f0-9]{64}$/.test(params.task_key)))) { socket.destroy(); return; }
         if ([...clients].some(other => other !== socket && other.sessionId === session_id)) { socket.destroy(); return; }
-        socket.sessionId = session_id; clearTimeout(authTimer); writeClient(socket, { id, result: { connected: true } }); return;
+        socket.sessionId = session_id; socket.taskKey = params.task_key; clearTimeout(authTimer); writeClient(socket, { id, result: { connected: true } }); return;
       }
       if (session_id !== socket.sessionId) { socket.destroy(); return; }
       try { validate(method, params); } catch (error) { writeClient(socket, { id, error: error.message }); return; }
@@ -36,7 +36,7 @@ export async function startNativeHost({ config, input = process.stdin, output = 
       const routedId = randomUUID();
       const timer = setTimeout(() => { pending.delete(routedId); writeClient(socket, { id, error: 'Chrome response timed out; action effect may be uncertain.' }); socket.destroy(); }, 22000);
       pending.set(routedId, { socket, id, timer });
-      writeNative({ id: routedId, session_id, method, params });
+      writeNative({ id: routedId, session_id, ...(socket.taskKey ? { task_key: socket.taskKey } : {}), method, params });
     });
     socket.on('data', chunk => { try { decoder.push(chunk); } catch { socket.destroy(); } });
     socket.on('error', () => {});

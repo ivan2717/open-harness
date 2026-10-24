@@ -232,7 +232,7 @@ fn control_package(root: &Path, id: &str, mode: &str, marker: &Path) -> PathBuf 
         json!({"command":"control-test-must-never-be-started","args":[]})
     } else {
         fs::write(source.join("fixture.py"), r#"import json,sys,time,pathlib
-mode,marker=sys.argv[1:]
+mode,marker=sys.argv[1:3]
 for line in sys.stdin:
     req=json.loads(line)
     if 'id' not in req: continue
@@ -352,6 +352,52 @@ async fn trusted_metadata_skips_approval_but_external_names_do_not() {
         assert!(complete_control(task).await.is_err());
         external.shutdown().await;
     }
+}
+
+#[test]
+fn chrome_layout_identity_is_host_bound_and_never_saved_to_server_configuration() {
+    let fixture = Fixture::new();
+    let bundled = fixture.0.join("bundled");
+    let source = control_package(&bundled, "chrome-use", "missing", &fixture.0.join("called"));
+    let host = ExtensionHost::open_with_bundled(&fixture.0.join("state"), Some(bundled)).unwrap();
+    let installed = host.install_plugin(&source, None).unwrap();
+    let original = &installed.plugins[0].mcp_servers[0];
+    let first = host.connection_config("run-a", original);
+    let second = host.connection_config("run-b", original);
+    let McpTransport::Stdio { args, .. } = &first.transport else {
+        panic!("stdio expected")
+    };
+    assert_eq!(args, &["--task-id", "run-a"]);
+    let McpTransport::Stdio { args, .. } = &second.transport else {
+        panic!("stdio expected")
+    };
+    assert_eq!(args, &["--task-id", "run-b"]);
+    assert_eq!(
+        serde_json::to_value(host.server(&original.id).unwrap()).unwrap(),
+        serde_json::to_value(original).unwrap(),
+        "connection-only metadata must not change approval bindings or saved configuration"
+    );
+    host.revoke_run("run-a");
+    assert_eq!(
+        serde_json::to_value(host.connection_config("run-a", original)).unwrap(),
+        serde_json::to_value(first).unwrap(),
+        "visual identity survives client revocation without restoring grants"
+    );
+    assert!(host.controls.lock().unwrap().list("run-a").is_empty());
+
+    let external = ExtensionHost::open_with_bundled(&fixture.0.join("external"), None).unwrap();
+    let installed = external.install_plugin(&source, None).unwrap();
+    let untrusted = &installed.plugins[0].mcp_servers[0];
+    assert_eq!(
+        serde_json::to_value(external.connection_config("run-a", untrusted)).unwrap(),
+        serde_json::to_value(untrusted).unwrap(),
+        "a matching third-party plugin name must not receive host identity arguments"
+    );
+    let manual = server("chrome");
+    assert_eq!(
+        serde_json::to_value(host.connection_config("run-a", &manual)).unwrap(),
+        serde_json::to_value(manual).unwrap()
+    );
 }
 
 #[tokio::test]

@@ -67,7 +67,7 @@ export class BundledPlugins {
         id: 'chrome-use',
         name: 'Chrome',
         description:
-          '连接你正在使用的 Chrome，在独立标签页中操作，沿用登录状态，无需保持浏览器在前台。',
+          '连接你正在使用的 Chrome，按会话创建专用标签页分组，沿用登录状态，在后台操作。',
         available: chrome,
         ...(chrome
           ? { chrome: await this.options.chrome!.status() }

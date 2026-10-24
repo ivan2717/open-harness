@@ -4,14 +4,36 @@ import { ChromeController } from '../extension/controller.mjs';
 const A = '11111111-1111-4111-8111-111111111111';
 const B = '22222222-2222-4222-8222-222222222222';
 function fixture() {
-  const pages = new Map([[1, { id: 1, url: 'https://private.example/inbox', title: 'Private inbox', active: true }], [2, { id: 2, url: 'https://shared.example/start', title: 'Shared', active: false }]]);
-  const commands = []; const created = []; const detached = []; const removed = []; let nextId = 3; let revision = 0;
+  const pages = new Map([[1, { id: 1, windowId: 1, groupId: -1, url: 'https://private.example/inbox', title: 'Private inbox', active: true }], [2, { id: 2, windowId: 1, groupId: -1, url: 'https://shared.example/start', title: 'Shared', active: false }]]);
+  const groups = new Map(); const stored = {};
+  const commands = []; const created = []; const detached = []; const removed = []; let nextId = 3; let nextGroupId = 20; let revision = 0;
+  const pruneGroups = () => { for (const id of groups.keys()) if (![...pages.values()].some(tab => tab.groupId === id)) groups.delete(id); };
   const api = {
     tabs: {
-      async query() { return [...pages.values()]; },
+      async query(filter = {}) { return [...pages.values()].filter(tab => Object.entries(filter).every(([key, value]) => key === 'currentWindow' || tab[key] === value)); },
       async get(id) { if (!pages.has(id)) throw new Error('Missing tab'); return pages.get(id); },
-      async create(args) { created.push(args); const page = { id: nextId++, ...args, title: 'Agent page' }; pages.set(page.id, page); return page; },
-      async remove(id) { removed.push(id); pages.delete(id); },
+      async create(args) { created.push(args); const page = { id: nextId++, windowId: 1, groupId: -1, ...args, title: 'Agent page' }; pages.set(page.id, page); return page; },
+      async remove(id) { removed.push(id); pages.delete(id); pruneGroups(); },
+      async group({ groupId, tabIds, createProperties }) {
+        const ids = Array.isArray(tabIds) ? tabIds : [tabIds];
+        if (groupId === undefined) {
+          groupId = nextGroupId++;
+          groups.set(groupId, { id: groupId, windowId: createProperties?.windowId ?? pages.get(ids[0]).windowId, title: '', color: 'grey', collapsed: false });
+        }
+        const group = groups.get(groupId); if (!group) throw new Error('Missing group');
+        for (const id of ids) { const tab = pages.get(id); if (!tab) throw new Error('Missing tab'); tab.groupId = groupId; tab.windowId = group.windowId; }
+        pruneGroups(); return groupId;
+      },
+    },
+    tabGroups: {
+      async get(id) { if (!groups.has(id)) throw new Error('Missing group'); return { ...groups.get(id) }; },
+      async update(id, change) { if (!groups.has(id)) throw new Error('Missing group'); Object.assign(groups.get(id), change); return { ...groups.get(id) }; },
+    },
+    storage: {
+      session: {
+        async get(key) { return structuredClone(key === null ? stored : { [key]: stored[key] }); },
+        async set(value) { Object.assign(stored, structuredClone(value)); },
+      },
     },
     debugger: {
       async attach(target) { commands.push({ target, method: 'attach' }); },
@@ -31,7 +53,7 @@ function fixture() {
     },
   };
   const controller = new ChromeController(api, { id: () => `revision-${++revision}` });
-  return { controller, pages, commands, created, detached, removed };
+  return { controller, api, pages, groups, stored, commands, created, detached, removed };
 }
 test('private tabs are never enumerated; sharing exposes only the current exact origin', async () => {
   const { controller, pages } = fixture();
@@ -47,7 +69,7 @@ test('new tabs require explicit extension opt-in and are created in background w
   controller.allowNewTabs = true;
   const result = await controller.call(A, 'chrome_open', { url: 'https://example.com' });
   assert.equal(result.selected, true); assert.equal(result.origin, 'https://example.com');
-  assert.deepEqual(created, [{ url: 'https://example.com/', active: false }]);
+  assert.equal(created[0].url, 'https://example.com/'); assert.equal(created[0].active, false);
   assert.equal(pages.get(1).active, true);
   assert.deepEqual(commands.map(item => item.method), ['attach']); // Opening does not read page contents.
   const snapshot = await controller.call(A, 'chrome_snapshot'); assert.equal(snapshot.tab_id, result.tab_id);
@@ -109,4 +131,148 @@ test('owned cross-origin tabs expose only the new origin until separately select
   assert.equal(rebound.origin, 'https://other.example'); assert.ok(detached.includes(opened.tab_id));
   pages.get(opened.tab_id).url = 'https://third.example/';
   assert.equal((await controller.call(A, 'chrome_release')).released, true); // Detaching cannot be blocked by navigation.
+});
+
+test('one task reuses its named background group while different tasks stay separate', async () => {
+  const { controller, pages, groups, created } = fixture(); controller.allowNewTabs = true;
+  const first = await controller.call(A, 'chrome_open', { url: 'https://example.com/one' });
+  const second = await controller.call(A, 'chrome_open', { url: 'https://example.com/two' });
+  const other = await controller.call(B, 'chrome_open', { url: 'https://example.com/other' });
+  assert.ok(Number.isInteger(first.group_id)); assert.equal(first.group_id, second.group_id);
+  assert.notEqual(first.group_id, other.group_id);
+  assert.match(groups.get(first.group_id).title, /Open Harness/);
+  assert.equal(pages.get(first.tab_id).groupId, first.group_id);
+  assert.equal(pages.get(second.tab_id).groupId, first.group_id);
+  assert.equal(created.every(tab => tab.active === false), true);
+  assert.equal(pages.get(1).active, true); assert.equal(pages.get(1).groupId, -1);
+});
+
+test('task layout survives native reconnect without restoring page grants or ownership', async () => {
+  const { controller, pages, removed } = fixture(); controller.allowNewTabs = true;
+  const task = 'a'.repeat(64);
+  const first = await controller.call(A, 'chrome_open', { url: 'https://example.com/old' }, task);
+  await controller.disconnect();
+  assert.deepEqual(await controller.call(B, 'chrome_tabs', {}, task), { tabs: [] });
+  await assert.rejects(controller.call(B, 'chrome_select_tab', { tab_id: first.tab_id, origin: 'https://example.com' }, task), /Share this exact tab/);
+  const second = await controller.call(B, 'chrome_open', { url: 'https://example.com/new' }, task);
+  assert.equal(second.group_id, first.group_id);
+  await controller.call(B, 'chrome_release', { close_owned: true }, task);
+  assert.deepEqual(removed, [second.tab_id]); assert.equal(pages.has(first.tab_id), true);
+});
+
+test('worker recreation restores task group layout from session storage only', async () => {
+  const { controller, api, pages } = fixture(); controller.allowNewTabs = true;
+  const task = 'b'.repeat(64);
+  const first = await controller.call(A, 'chrome_open', { url: 'https://example.com/old' }, task);
+  await controller.disconnect();
+  const restarted = new ChromeController(api); restarted.allowNewTabs = true;
+  const second = await restarted.call(B, 'chrome_open', { url: 'https://example.com/new' }, task);
+  assert.equal(second.group_id, first.group_id);
+  assert.deepEqual((await restarted.call(B, 'chrome_tabs', {}, task)).tabs.map(tab => tab.tab_id), [second.tab_id]);
+  assert.equal(pages.has(first.tab_id), true);
+});
+
+test('selecting a shared user tab leaves its position and group unchanged and cannot close it', async () => {
+  const { controller, api, pages, removed } = fixture(); controller.allowNewTabs = true;
+  const userGroup = await api.tabs.group({ tabIds: [1, 2] });
+  await controller.call(A, 'chrome_open', { url: 'https://example.com' });
+  await controller.share(2);
+  await controller.call(A, 'chrome_select_tab', { tab_id: 2, origin: 'https://shared.example' });
+  assert.equal(pages.get(2).groupId, userGroup);
+  const result = await controller.call(A, 'chrome_release', { close_owned: true });
+  assert.equal(result.closed, false); assert.deepEqual(removed, []);
+  assert.equal(pages.get(2).groupId, userGroup);
+});
+
+test('user moving an unrelated tab into the agent group grants no read or close access', async () => {
+  const { controller, api, pages, removed } = fixture(); controller.allowNewTabs = true;
+  const first = await controller.call(A, 'chrome_open', { url: 'https://example.com' });
+  await api.tabs.group({ groupId: first.group_id, tabIds: [1] });
+  assert.deepEqual((await controller.call(A, 'chrome_tabs')).tabs.map(tab => tab.tab_id), [first.tab_id]);
+  await assert.rejects(controller.call(A, 'chrome_select_tab', { tab_id: 1, origin: 'https://private.example' }), /Share this exact tab/);
+  await controller.call(A, 'chrome_release', { close_owned: true });
+  assert.deepEqual(removed, [first.tab_id]); assert.equal(pages.has(1), true);
+});
+
+test('removed groups are recreated without changing unrelated tabs', async () => {
+  const { controller, api, groups, pages } = fixture(); controller.allowNewTabs = true;
+  const first = await controller.call(A, 'chrome_open', { url: 'https://example.com/one' });
+  await api.tabs.remove(first.tab_id); await controller.removed(first.tab_id);
+  assert.equal(groups.has(first.group_id), false);
+  const second = await controller.call(A, 'chrome_open', { url: 'https://example.com/two' });
+  assert.notEqual(second.group_id, first.group_id); assert.equal(pages.get(1).groupId, -1);
+});
+
+test('a stale saved group with no known anchor is not reused for newly opened tabs', async () => {
+  const { controller, pages, groups } = fixture(); controller.allowNewTabs = true;
+  const first = await controller.call(A, 'chrome_open', { url: 'https://example.com/one' });
+  // Simulate the user taking every known agent tab out and putting their own tab
+  // in the group before the queued tab event is handled.
+  pages.get(first.tab_id).groupId = -1; pages.get(1).groupId = first.group_id;
+  groups.get(first.group_id).title = 'My tabs';
+  const second = await controller.call(A, 'chrome_open', { url: 'https://example.com/two' });
+  assert.notEqual(second.group_id, first.group_id);
+  assert.equal(groups.get(first.group_id).title, 'My tabs'); assert.equal(pages.get(1).groupId, first.group_id);
+});
+
+test('moving a controlled agent tab out of its group revokes control and close ownership', async () => {
+  const { controller, pages, removed, detached } = fixture(); controller.allowNewTabs = true;
+  const first = await controller.call(A, 'chrome_open', { url: 'https://example.com' });
+  pages.get(first.tab_id).groupId = -1;
+  await controller.tabUpdated(first.tab_id, { groupId: -1 });
+  assert.ok(detached.includes(first.tab_id)); assert.equal(controller.owned.has(first.tab_id), false);
+  await assert.rejects(controller.call(A, 'chrome_snapshot'), /Select and authorize|sharing|group/i);
+  await assert.rejects(controller.call(A, 'chrome_release', { close_owned: true }), /Select and authorize|sharing|group/i);
+  assert.deepEqual(removed, []); assert.equal(pages.has(first.tab_id), true);
+});
+
+test('close protection checks current group even before the move event is processed', async () => {
+  const { controller, pages, removed } = fixture(); controller.allowNewTabs = true;
+  const first = await controller.call(A, 'chrome_open', { url: 'https://example.com' });
+  pages.get(first.tab_id).groupId = -1;
+  const result = await controller.call(A, 'chrome_release', { close_owned: true });
+  assert.equal(result.closed, false); assert.deepEqual(removed, []); assert.equal(pages.has(first.tab_id), true);
+});
+
+test('an agent tab the user is currently viewing is released without being closed', async () => {
+  const { controller, pages, removed } = fixture(); controller.allowNewTabs = true;
+  const first = await controller.call(A, 'chrome_open', { url: 'https://example.com' });
+  pages.get(1).active = false; pages.get(first.tab_id).active = true;
+  const result = await controller.call(A, 'chrome_release', { close_owned: true });
+  assert.equal(result.closed, false); assert.deepEqual(removed, []); assert.equal(pages.has(first.tab_id), true);
+});
+
+test('future task tabs follow their group across windows without activating it', async () => {
+  const { controller, pages, groups, created } = fixture(); controller.allowNewTabs = true;
+  const first = await controller.call(A, 'chrome_open', { url: 'https://example.com/one' });
+  groups.get(first.group_id).windowId = 5; pages.get(first.tab_id).windowId = 5;
+  const second = await controller.call(A, 'chrome_open', { url: 'https://example.com/two' });
+  assert.equal(second.group_id, first.group_id); assert.equal(created[1].windowId, 5);
+  assert.equal(created[1].active, false); assert.equal(pages.get(1).windowId, 1); assert.equal(pages.get(1).active, true);
+});
+
+test('navigating an agent tab to an unapproved site protects it from closing', async () => {
+  const { controller, pages, removed } = fixture(); controller.allowNewTabs = true;
+  const first = await controller.call(A, 'chrome_open', { url: 'https://example.com' });
+  pages.get(first.tab_id).url = 'https://private.example/inbox';
+  const result = await controller.call(A, 'chrome_release', { close_owned: true });
+  assert.equal(result.closed, false); assert.deepEqual(removed, []); assert.equal(pages.has(first.tab_id), true);
+});
+
+test('grouping failure rolls back only the new tab and never attaches a debugger', async () => {
+  const { controller, api, pages, removed, commands } = fixture(); controller.allowNewTabs = true;
+  api.tabs.group = async () => { throw new Error('Grouping unavailable'); };
+  await assert.rejects(controller.call(A, 'chrome_open', { url: 'https://example.com' }), /Grouping|group/i);
+  assert.deepEqual(removed, [3]); assert.deepEqual([...pages.keys()], [1, 2]);
+  assert.equal(controller.owned.size, 0); assert.equal(controller.sessions.size, 0);
+  assert.equal(commands.some(command => command.method === 'attach'), false);
+});
+
+test('attachment failure identifies the existing grouped tab so it need not be created twice', async () => {
+  const { controller, api, pages } = fixture(); controller.allowNewTabs = true;
+  api.debugger.attach = async () => { throw new Error('DevTools busy'); };
+  await assert.rejects(controller.call(A, 'chrome_open', { url: 'https://example.com' }), /Created tab 3 in group .*do not repeat chrome_open/);
+  assert.equal(controller.sessions.size, 0);
+  assert.deepEqual((await controller.call(A, 'chrome_tabs')).tabs.map(tab => tab.tab_id), [3]);
+  assert.notEqual(pages.get(3).groupId, -1);
 });

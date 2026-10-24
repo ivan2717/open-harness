@@ -1,12 +1,13 @@
 {
   "manifest_version": 3,
   "name": "Open Harness Chrome",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Let Open Harness work in approved background Chrome tabs.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA7EBdZzL7+bSG4lztXYOAyeyqAV1RP8zmcjyMVSZkxDMtxIVJh8DOn3oOzQrUu5goDEV8ECAvtlxUHkaA+3SivhN74mdJwnSEytKzyn87sZxlczgeqt8AC/d5uZmlkPtv8DrfkA5Jp6JS2Fk1rHlgWzRkDdNJZWXsRvtywgzI/4ilshaLIgxxC+7PI+zILT/C9q0F94q3+hsMPeDwPLPS4LhKSuBk0vebNbE9WYj2zQ22l/DI3WeMBuR7Towdgf+ffsaMbkfJsVfx1SsyFdw5ybzp1xqnf5AUdoOGSoNzCpp3f+dBWkPntUjgfP5s8kCMDfpMQFZdgiZWRnEQmJ9e7QIDAQAB",
   "permissions": [
     "debugger",
     "tabs",
+    "tabGroups",
     "storage",
     "nativeMessaging"
   ],

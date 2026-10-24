@@ -13,7 +13,7 @@ function connect() {
       const current = port;
       try {
         await ready;
-        const result = await controller.call(message.session_id, message.method, message.params ?? {});
+        const result = await controller.call(message.session_id, message.method, message.params ?? {}, message.task_key);
         current?.postMessage({ id: message.id, result });
       } catch (error) { current?.postMessage({ id: message.id, error: String(error.message ?? 'Chrome operation failed.').slice(0, 4000) }); }
     });
@@ -46,7 +46,8 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
   })().then(result => respond({ result }), error => respond({ error: error.message }));
   return true;
 });
-chrome.tabs.onRemoved.addListener(tabId => { controller.shared.delete(tabId); controller.owned.delete(tabId); controller.detached(tabId); });
+chrome.tabs.onRemoved.addListener(tabId => { void controller.event(() => controller.removed(tabId)); });
+chrome.tabs.onUpdated.addListener((tabId, change) => { if (change.groupId !== undefined) void controller.event(() => controller.tabUpdated(tabId)); });
 chrome.debugger.onDetach.addListener(source => controller.detached(source.tabId));
 chrome.runtime.onStartup.addListener(connect);
 chrome.runtime.onInstalled.addListener(connect);

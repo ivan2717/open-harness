@@ -1,20 +1,22 @@
 import { validate, allowedUrl } from './schema.mjs';
 import { pageOperation } from './page.mjs';
+import { TaskTabGroups } from './groups.mjs';
 export class ChromeController {
-  constructor(api, { id = () => crypto.randomUUID() } = {}) { this.api = api; this.id = id; this.sessions = new Map(); this.owned = new Map(); this.shared = new Map(); this.attached = new Map(); this.contexts = new Map(); this.allowNewTabs = false; this.queue = Promise.resolve(); this.generation = 0; }
-  call(sessionId, method, args = {}) {
+  constructor(api, { id = () => crypto.randomUUID() } = {}) { this.api = api; this.id = id; this.sessions = new Map(); this.owned = new Map(); this.shared = new Map(); this.attached = new Map(); this.groups = new TaskTabGroups(api); this.allowNewTabs = false; this.queue = Promise.resolve(); this.generation = 0; }
+  call(sessionId, method, args = {}, taskKey = sessionId) {
     const generation = this.generation;
-    const operation = this.queue.then(() => { if (generation !== this.generation) throw new Error('Chrome connection was cancelled.'); return this.perform(sessionId, method, args); });
+    const operation = this.queue.then(() => { if (generation !== this.generation) throw new Error('Chrome connection was cancelled.'); return this.perform(sessionId, method, args, taskKey); });
     this.queue = operation.catch(() => {}); return operation;
   }
-  async perform(sessionId, method, args) {
+  async perform(sessionId, method, args, taskKey) {
     if (!/^[\da-f-]{36}$/.test(sessionId)) throw new Error('Invalid browser session.');
     if (method === 'disconnect') { await this.releaseSession(sessionId); return { released: true }; }
     validate(method, args);
-    if (method === 'chrome_status') return { connected: true, allow_new_tabs: this.allowNewTabs, shared_tabs: this.shared.size, background_tabs: true };
+    if (method === 'chrome_status') return { connected: true, allow_new_tabs: this.allowNewTabs, shared_tabs: this.shared.size, background_tabs: true, task_tab_groups: true };
     if (method === 'chrome_tabs') {
       const tabs = [];
       for (const tab of await this.api.tabs.query({})) {
+        await this.checkOwnership(tab);
         const owned = this.owned.get(tab.id);
         const sharedOrigin = this.shared.get(tab.id);
         if ((!owned || owned.sessionId !== sessionId) && !sharedOrigin) continue;
@@ -31,15 +33,17 @@ export class ChromeController {
     if (method === 'chrome_open') {
       if (!this.allowNewTabs) throw new Error('Enable background tabs in the Open Harness Chrome extension popup first.');
       const url = allowedUrl(args.url);
-      const tab = await this.api.tabs.create({ url: url.href, active: false });
-      this.owned.set(tab.id, { sessionId, origin: url.origin });
+      const tab = await this.groups.open(taskKey, url.href);
+      this.owned.set(tab.id, { sessionId, origin: url.origin, groupId: tab.groupId });
       await this.releaseSession(sessionId);
-      await this.api.debugger.attach({ tabId: tab.id }, '1.3');
+      try { await this.api.debugger.attach({ tabId: tab.id }, '1.3'); }
+      catch { throw new Error(`Created tab ${tab.id} in group ${tab.groupId}, but Chrome could not attach. Use chrome_tabs and select that existing tab after checking DevTools/browser policy; do not repeat chrome_open.`); }
       this.attached.set(tab.id, sessionId); this.sessions.set(sessionId, { tabId: tab.id, origin: url.origin, revision: null });
-      return { tab_id: tab.id, origin: url.origin, url: url.href, created: true, selected: true };
+      return { tab_id: tab.id, group_id: tab.groupId, origin: url.origin, url: url.href, created: true, selected: true };
     }
     if (method === 'chrome_select_tab') {
       const tab = await this.api.tabs.get(args.tab_id); const origin = allowedUrl(tab.url).origin;
+      await this.checkOwnership(tab);
       const owned = this.owned.get(tab.id);
       if (origin !== args.origin) throw new Error('origin_changed: use the actual current origin and request a new grant.');
       if (owned?.sessionId !== sessionId && this.shared.get(tab.id) !== origin) throw new Error('Share this exact tab and origin from the Open Harness Chrome extension popup first.');
@@ -54,10 +58,19 @@ export class ChromeController {
     if (method === 'chrome_release') {
       const session = this.sessions.get(sessionId);
       if (!session || (args.tab_id !== undefined && args.tab_id !== session.tabId)) throw new Error('Select and authorize this exact tab first.');
-      const owned = this.owned.get(session.tabId);
       await this.releaseSession(sessionId);
-      if (args.close_owned && owned?.sessionId === sessionId) { await this.api.tabs.remove(session.tabId); this.owned.delete(session.tabId); }
-      return { released: true, closed: !!args.close_owned && owned?.sessionId === sessionId };
+      if (args.close_owned) {
+        const tab = await this.api.tabs.get(session.tabId).catch(() => null);
+        if (tab) await this.checkOwnership(tab);
+        const owned = this.owned.get(session.tabId);
+        let origin; try { origin = allowedUrl(tab?.pendingUrl ?? tab?.url).origin; } catch { /* Never close browser-internal pages. */ }
+        if (tab && owned?.sessionId === sessionId && !tab.active && origin === owned.origin) {
+          await this.api.tabs.remove(tab.id); await this.removed(tab.id);
+          return { released: true, closed: true };
+        }
+        return { released: true, closed: false, reason: 'Only this session’s inactive, unchanged tabs still in their task group can be closed.' };
+      }
+      return { released: true, closed: false };
     }
     const session = await this.selected(sessionId, args.tab_id);
     if (method === 'chrome_snapshot') return this.snapshot(sessionId, args.text_offset);
@@ -89,6 +102,7 @@ export class ChromeController {
     const session = this.sessions.get(sessionId);
     if (!session || (requestedTab !== undefined && requestedTab !== session.tabId)) throw new Error('Select and authorize this exact tab first.');
     const tab = await this.api.tabs.get(session.tabId);
+    await this.checkOwnership(tab);
     const origin = allowedUrl(tab.url).origin;
     if (origin !== session.origin) throw new Error(`origin_changed: current origin is ${origin}; request authorization and select again. Existing shared tabs also require a new popup share.`);
     const owned = this.owned.get(session.tabId);
@@ -122,6 +136,18 @@ export class ChromeController {
   }
   async share(tabId) { const tab = await this.api.tabs.get(tabId); const origin = allowedUrl(tab.url).origin; this.shared.set(tabId, origin); return { tab_id: tabId, origin }; }
   async revoke(tabId) { this.shared.delete(tabId); const owner = this.attached.get(tabId); if (owner) await this.releaseSession(owner); }
-  async disconnect() { this.generation++; for (const session of [...this.sessions.keys()]) await this.releaseSession(session); this.owned.clear(); this.shared.clear(); }
+  async checkOwnership(tab) {
+    const owned = this.owned.get(tab.id);
+    if (owned && tab.groupId !== owned.groupId) {
+      // Dragging a page out is a user takeover, not permission to pull it back.
+      this.owned.delete(tab.id);
+      await this.revoke(tab.id);
+      await this.groups.forget(tab.id);
+    }
+  }
+  async tabUpdated(tabId) { const tab = await this.api.tabs.get(tabId).catch(() => null); if (tab) await this.checkOwnership(tab); }
+  async removed(tabId) { this.shared.delete(tabId); this.owned.delete(tabId); this.detached(tabId); await this.groups.forget(tabId); }
+  event(operation) { const pending = this.queue.then(operation); this.queue = pending.catch(() => {}); return this.queue; }
+  async disconnect() { this.generation++; await this.queue; for (const session of [...this.sessions.keys()]) await this.releaseSession(session); this.owned.clear(); this.shared.clear(); }
   detached(tabId) { const owner = this.attached.get(tabId); if (owner) this.sessions.delete(owner); this.attached.delete(tabId); }
 }

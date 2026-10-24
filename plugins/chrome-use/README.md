@@ -85,6 +85,32 @@ operation.
 
 ## Authorization and limitations
 
+### Conversation tab groups
+
+`chrome_open` creates inactive tabs in a green `Open Harness · <short ID>` group.
+One conversation reuses its group; different conversations have separate groups.
+The desktop passes a trusted conversation identifier to the bundled server, which
+derives an opaque layout key scoped to the local connection. This is separate
+from the random transport session ID and grants. Reconnecting a task may reuse
+its group layout but does not restore access to earlier pages.
+
+Only group IDs and known member tab IDs are kept in `chrome.storage.session`.
+They survive worker suspension and native-host reconnection, not an extension
+reload/update or browser restart. A live known member is required before reuse;
+the extension never discovers groups by title or takes over user-created groups.
+Closing a group/window causes the next open to create a new group. Moving the
+whole group to another window is respected without activating that window;
+renaming/collapsing it is also preserved. Explicitly shared user tabs stay in
+their existing locations. Tabs manually added to a group remain private.
+
+Dragging an agent tab out of its group relinquishes its control and close right.
+`close_owned` checks the individual creator, group, origin and inactive state;
+it never closes a group or its other members. Disconnect leaves pages open.
+This grouping applies to pages created through `chrome_open`; arbitrary website
+popups do not automatically gain ownership or permissions.
+
+### Page access
+
 - Existing tabs remain private unless shared from the extension's own popup.
   Websites and content scripts cannot call popup grants or native host methods.
 - Agent-created tabs belong to one MCP session. Shared tabs can have only one
@@ -121,3 +147,4 @@ Official API references:
 - https://developer.chrome.com/docs/extensions/develop/concepts/native-messaging
 - https://developer.chrome.com/docs/extensions/reference/api/debugger
 - https://developer.chrome.com/docs/extensions/reference/api/tabs
+- https://developer.chrome.com/docs/extensions/reference/api/tabGroups
