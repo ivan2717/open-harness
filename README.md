@@ -25,7 +25,8 @@ API requests. See [desktop setup and architecture](apps/desktop/README.md)
 for state ownership, persistence, checks, and packaging.
 
 Windows x64 test installers are built by the **Checks** GitHub Actions workflow
-after Rust, desktop, and plugin checks pass. Each installer is installed, launched,
+when `main` is updated through a merged pull request, after Rust, desktop, and
+plugin checks pass. Each installer is installed, launched,
 tested with an offline task and restart, and uninstalled on the Windows runner.
 Download it from the successful run's **Artifacts** section (14-day retention).
 These builds are unsigned and need no Apple developer account. See
