@@ -216,6 +216,7 @@ async fn real_provider_transport_edits_reviews_restores_and_conditionally_revert
         "Different guidance for NEW conversations.",
     )
     .unwrap();
+    state.shutdown().await;
     drop(state);
     let reopened = fixture.state().await;
     fixture.configure(&reopened).await;
@@ -285,6 +286,7 @@ async fn readonly_binding_rejects_model_writes_and_missing_projects_do_not_break
         fs::read_to_string(fixture.project.join("answer.txt")).unwrap(),
         "user's existing edit\nanswer = 41\n"
     );
+    state.shutdown().await;
     drop(state);
     fs::rename(&fixture.project, fixture.directory.join("moved-project")).unwrap();
     let reopened = fixture.state().await;
@@ -374,6 +376,7 @@ async fn snapshot_failure_does_not_lose_the_authoritative_resume_event() {
         .unwrap();
     assert_eq!(settled(&state, &id).await.summary.status, RunStatus::Failed);
     fs::remove_dir(&blocked_snapshot).unwrap();
+    state.shutdown().await;
     drop(state);
     let restored = fixture.state().await;
     fixture.configure(&restored).await;

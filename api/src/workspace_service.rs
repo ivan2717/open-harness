@@ -184,46 +184,64 @@ impl AppState {
         id: &str,
         path: &str,
     ) -> Result<WorkspaceReview, ServiceError> {
-        let _gate = self.inner.model_gate.lock().await;
-        let entry = self.entry(id)?;
-        let _operation = entry.operations.lock().await;
-        Self::require_workspace_available(&entry)?;
-        let detail = entry.snapshot.get();
-        self.ensure_family_idle_for_revert(id)?;
-        let tools = entry
-            .workspace
-            .as_ref()
-            .ok_or_else(|| ServiceError::BadRequest("此会话没有绑定本地项目".into()))?;
-        if let Some(root) = &detail.summary.workspace_path {
-            self.ensure_workspace_idle(root, Some(id))?;
-        }
-        // A completed delegate no longer holds its write lease. Only this
-        // user-controlled endpoint may reacquire the exact file for conditional
-        // undo; the tool's original allowlist and journal remain authoritative.
-        let access = if detail.summary.delegation.is_some() {
-            let root = detail
-                .summary
-                .workspace_path
-                .as_deref()
+        let mut changed = self.inner.mailboxes.subscribe();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let _gate = self.inner.model_gate.lock().await;
+            let entry = self.entry(id)?;
+            let _operation = entry.operations.lock().await;
+            Self::require_workspace_available(&entry)?;
+            let detail = entry.snapshot.get();
+            if self.family_revert_pending(id)? {
+                // A final outcome is published before worker bookkeeping finishes.
+                // Release both locks so cancellation can finish its child cleanup,
+                // then recheck the entire family under the admission gate.
+                drop(_operation);
+                drop(_gate);
+                tokio::time::timeout_at(deadline, changed.changed())
+                    .await
+                    .map_err(|_| {
+                        ServiceError::Conflict("任务收尾尚未完成，请稍后再撤销文件改动".into())
+                    })?
+                    .map_err(ServiceError::internal)?;
+                continue;
+            }
+            let tools = entry
+                .workspace
+                .as_ref()
                 .ok_or_else(|| ServiceError::BadRequest("此会话没有绑定本地项目".into()))?;
-            let access = self.workspace_access(root).map_err(workspace_error)?;
-            access
-                .try_acquire(id, &[path.to_owned()])
-                .map_err(workspace_error)?;
-            Some(access)
-        } else {
-            None
-        };
-        let result = tools.revert(path);
-        if let Some(access) = access {
-            access.release(id).await;
+            if let Some(root) = &detail.summary.workspace_path {
+                self.ensure_workspace_idle(root, Some(id))?;
+            }
+            // A completed delegate no longer holds its write lease. Only this
+            // user-controlled endpoint may reacquire the exact file for conditional
+            // undo; the tool's original allowlist and journal remain authoritative.
+            let access = if detail.summary.delegation.is_some() {
+                let root = detail
+                    .summary
+                    .workspace_path
+                    .as_deref()
+                    .ok_or_else(|| ServiceError::BadRequest("此会话没有绑定本地项目".into()))?;
+                let access = self.workspace_access(root).map_err(workspace_error)?;
+                access
+                    .try_acquire(id, &[path.to_owned()])
+                    .map_err(workspace_error)?;
+                Some(access)
+            } else {
+                None
+            };
+            let result = tools.revert(path);
+            if let Some(access) = access {
+                access.release(id).await;
+            }
+            result.map_err(workspace_error)?;
+            return self.workspace_review(id).await;
         }
-        result.map_err(workspace_error)?;
-        self.workspace_review(id).await
     }
 
-    fn ensure_family_idle_for_revert(&self, id: &str) -> Result<(), ServiceError> {
+    fn family_revert_pending(&self, id: &str) -> Result<bool, ServiceError> {
         let root = self.root_id(id)?;
+        let mut pending = false;
         for (other_id, entry) in self.inner.runs.read().expect("runs lock poisoned").iter() {
             let detail = entry.snapshot.get();
             let other_root = detail
@@ -233,18 +251,18 @@ impl AppState {
                 .map_or(other_id.as_str(), |delegation| {
                     delegation.root_run_id.as_str()
                 });
-            if root == other_root
-                && (entry.background.load(Ordering::Acquire)
-                    || entry.runtime.is_executing(other_id)
-                    || detail.summary.status == RunStatus::Running
-                    || detail.summary.compacting)
-            {
+            if root != other_root {
+                continue;
+            }
+            if detail.summary.status == RunStatus::Running || detail.summary.compacting {
                 return Err(ServiceError::Conflict(
                     "请先停止此任务及其子任务，等待当前操作结束后再撤销文件改动".into(),
                 ));
             }
+            pending |=
+                entry.background.load(Ordering::Acquire) || entry.runtime.is_executing(other_id);
         }
-        Ok(())
+        Ok(pending)
     }
 
     pub async fn resume(
