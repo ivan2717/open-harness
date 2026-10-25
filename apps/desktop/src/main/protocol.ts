@@ -61,6 +61,7 @@ export type BridgeRequest =
   | { operation: 'revertFile'; id: string; path: string }
   | { operation: 'resumeRun'; id: string; message?: string; files?: TextFileReference[] }
   | { operation: 'configureModel'; input: ConfigureModelInput }
+  | { operation: 'refreshModelContext'; id: string }
   | { operation: 'createRun'; input: CreateRunInput }
   | { operation: 'submitInput'; id: string; message: string; files?: TextFileReference[] }
 
@@ -78,6 +79,7 @@ export interface ApiRequest {
     | { allow: boolean }
     | { enabled: boolean }
     | { source_path: string; expected_id?: string }
+    | { replacement_model_id: string }
 }
 
 function object(value: unknown): Record<string, unknown> {
@@ -316,6 +318,8 @@ export function apiRequest(value: unknown): ApiRequest {
       return { path: `/api/runs/${identifier(request.id)}/compact/cancel`, method: 'POST' }
     case 'configureModel':
       return { path: '/api/models', method: 'POST', body: modelConfiguration(request.input) }
+    case 'refreshModelContext':
+      return { path: `/api/models/${identifier(request.id)}/context/refresh`, method: 'POST' }
     case 'createRun': {
       const input = object(request.input)
       const files = fileReferences(input.files)

@@ -83,6 +83,8 @@ const bridge: DesktopBridge = {
   compactRun: (id) => invoke<RunDetail>({ operation: 'compactRun', id }),
   cancelCompaction: (id) => invoke<RunDetail>({ operation: 'cancelCompaction', id }),
   configureModel: (input) => invoke<ConfigureModelResult>({ operation: 'configureModel', input }),
+  refreshModelContext: (id) =>
+    invoke<ConfigureModelResult>({ operation: 'refreshModelContext', id }),
   submitInput: (id, message, files) =>
     invoke<RunDetail>({ operation: 'submitInput', id, message, files }),
   watchRun: (id, listener, onError) => {

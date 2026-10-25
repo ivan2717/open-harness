@@ -19,6 +19,8 @@ export class BundledPlugins {
       executable: string
       browsers: string
       platform: NodeJS.Platform
+      computerAppPath?: string
+      computerSetupError?: string
       statusTimeoutMs?: number
       chrome?: ChromeConnection
     },
@@ -36,7 +38,8 @@ export class BundledPlugins {
       OPENHARNESS_COMPUTER_APP:
         options.platform === 'win32'
           ? ''
-          : join(options.root, 'computer-use', 'bin', 'Open Harness Computer Use.app'),
+          : (options.computerAppPath ??
+            join(options.root, 'computer-use', 'bin', 'Open Harness Computer Use.app')),
       OPENHARNESS_COMPUTER_HELPER:
         options.platform === 'win32'
           ? join(options.root, 'computer-use', 'windows', 'bin', 'OpenHarnessComputerUse.exe')
@@ -62,6 +65,7 @@ export class BundledPlugins {
       (this.options.platform !== 'win32' ||
         (await fileExists(join(this.options.root, 'browser-use', 'launch.exe'))))
     const computer =
+      !this.options.computerSetupError &&
       (await exists(join(this.options.root, 'computer-use', 'host.mjs'))) &&
       (this.options.platform === 'darwin'
         ? await exists(this.environment.OPENHARNESS_COMPUTER_APP!)
@@ -104,7 +108,7 @@ export class BundledPlugins {
             : { permissions: await this.computerPermissions() }
           : {
               reason: ['darwin', 'win32'].includes(this.options.platform)
-                ? '请重新构建桌面控制组件。'
+                ? (this.options.computerSetupError ?? '请重新构建桌面控制组件。')
                 : '目前支持 macOS 和 Windows。',
             }),
       },
@@ -235,6 +239,7 @@ export class BundledPlugins {
       (kind !== 'accessibility' && kind !== 'screen-recording')
     )
       throw new Error('无效的系统权限入口')
+    if (this.options.computerSetupError) throw new Error(this.options.computerSetupError)
     await access(this.environment.OPENHARNESS_COMPUTER_APP!).catch(() => {
       throw new Error('请重新构建桌面控制组件。')
     })
@@ -390,6 +395,9 @@ export class BundledPlugins {
         if (code === 0) resolve()
         else reject(new Error('浏览器未准备完成，请检查网络后重试。'))
       })
+    }).then(async () => {
+      if (!(await this.checkBrowser()))
+        throw new Error('安装程序已结束，但所需浏览器仍不可用，请重新准备浏览器。')
     })
     this.preparing = task.finally(() => {
       this.preparing = undefined

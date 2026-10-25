@@ -35,10 +35,11 @@ impl Snapshot {
         self.sender.subscribe()
     }
     pub fn update(&self, update: impl FnOnce(&mut RunDetail)) -> io::Result<()> {
-        let mut detail = self
+        let mut current = self
             .inner
             .lock()
             .map_err(|_| io::Error::other("snapshot lock poisoned"))?;
+        let mut detail = current.clone();
         update(&mut detail);
         detail.summary.revision = detail.summary.revision.saturating_add(1);
         detail.summary.updated_at = time::now();
@@ -48,7 +49,8 @@ impl Snapshot {
             .messages
             .retain(|message| message.status != "streaming");
         write_json(&self.path, &durable)?;
-        self.sender.send_replace(detail.clone());
+        *current = detail.clone();
+        self.sender.send_replace(detail);
         Ok(())
     }
     pub fn event(&self, event: &RunEventEnvelope) -> io::Result<()> {

@@ -1,8 +1,8 @@
 use crate::{
     AppState,
     contracts::{
-        AppConfig, ApprovalInput, ConfigureModel, CreateRunInput, ModelInfo, ResumeRunInput,
-        RevertInput, RunDetail, RunSummary, SubmitInput,
+        AppConfig, ApprovalInput, ConfigureModel, CreateRunInput, ModelInfo, ReplaceModelInput,
+        ResumeRunInput, RevertInput, RunDetail, RunSummary, SubmitInput,
     },
     service::ServiceError,
 };
@@ -26,6 +26,7 @@ pub(crate) fn router(state: AppState) -> Router {
         .merge(health_router::health_router())
         .route("/config", get(config))
         .route("/models", post(configure_model))
+        .route("/models/{id}/replace", post(replace_model))
         .route("/extensions", get(extension_settings).post(save_extensions))
         .route("/extensions/skills", get(skill_catalog))
         .route("/extensions/mcp/{id}/test", post(test_mcp))
@@ -175,6 +176,16 @@ async fn configure_model(
     Json(input): Json<ConfigureModel>,
 ) -> Result<Json<ModelInfo>, ServiceError> {
     state.configure_model(input).await.map(Json)
+}
+async fn replace_model(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(input): Json<ReplaceModelInput>,
+) -> Result<Json<ModelInfo>, ServiceError> {
+    state
+        .replace_model(&id, &input.replacement_model_id)
+        .await
+        .map(Json)
 }
 async fn compact(
     State(state): State<AppState>,

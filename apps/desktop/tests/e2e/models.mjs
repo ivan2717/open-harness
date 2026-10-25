@@ -219,11 +219,12 @@ try {
   await expect(context).toHaveValue('')
   await expect(output).toHaveValue('')
   await page.getByLabel('接口协议').selectOption('chat_completions')
-  await expect(context).toHaveAttribute('placeholder', /(?:^|（)8192(?:）|$)/)
-  await expect(output).toHaveAttribute('placeholder', /(?:^|（)2048(?:）|$)/)
+  await expect(context).toHaveAttribute('placeholder', /(?:^|（)1000000(?:）|$)/)
+  await expect(output).toHaveAttribute('placeholder', /(?:^|（)8192(?:）|$)/)
+  await expect(page.locator('.model-advanced')).toContainText('默认使用 1M（1,000,000 tokens）')
   await page.locator('.model-advanced > summary').click()
   await page.getByLabel('API key', { exact: true }).fill('fixture-secret-do-not-persist-plain')
-  const initialModel = await saveUiModel(page, 8192)
+  const initialModel = await saveUiModel(page, 1_000_000)
   await expect(page.getByLabel('API key', { exact: true })).toHaveValue('')
   assert.equal(calls.length, 0, 'saving a model must not make a generation request')
   assert(metadataCalls.includes('/v1/models'))
@@ -232,7 +233,7 @@ try {
   await page.screenshot({ path: join(artifacts, 'desktop-model-settings.png') })
   const config = await page.evaluate(() => window.harness.config())
   assert(!JSON.stringify(config).includes('fixture-secret'))
-  await checkCapacity(page, initialModel, { ...basicInput, model: 'fixture-chat' }, 8192, 2048)
+  await checkCapacity(page, initialModel, { ...basicInput, model: 'fixture-chat' }, 1_000_000, 8192)
   await page.getByRole('link', { name: '会话', exact: true }).click()
   await expect(page.getByRole('button', { name: '选择模型', exact: true })).toContainText(
     initialModel.name,
@@ -290,8 +291,8 @@ try {
   await expect(page.locator('.model-advanced')).toContainText('已采用服务商提供的容量。')
   await page.screenshot({ path: join(artifacts, 'desktop-model-auto.png') })
   await page.getByLabel('模型名称', { exact: true }).fill('fixture-preview-reset')
-  await expect(context).toHaveAttribute('placeholder', /(?:^|（)8192(?:）|$)/)
-  await expect(output).toHaveAttribute('placeholder', /(?:^|（)2048(?:）|$)/)
+  await expect(context).toHaveAttribute('placeholder', /(?:^|（)1000000(?:）|$)/)
+  await expect(output).toHaveAttribute('placeholder', /(?:^|（)8192(?:）|$)/)
   await checkCapacity(page, automatic, { ...basicInput, model: 'fixture-metadata' }, 262144, 4096)
   const metadata = await page.evaluate((input) => window.harness.configureModel(input), {
     ...basicInput,
@@ -324,8 +325,8 @@ try {
     page,
     unavailable.model,
     { ...basicInput, model: 'fixture-unavailable' },
+    1_000_000,
     8192,
-    2048,
   )
   const messagesInput = {
     ...basicInput,
@@ -341,6 +342,52 @@ try {
   assert.deepEqual(messagesModel.capacity, { context_window: 98304, max_output_tokens: 3072 })
   assert(metadataCalls.includes('/v1/models/fixture-messages-metadata'))
   await checkCapacity(page, messagesModel.model, messagesInput, 98304, 3072)
+
+  // An existing 8K connection can be updated without re-entering a secret or
+  // generating a reply; its existing conversation must immediately show 1M.
+  const legacyInput = {
+    ...basicInput,
+    model: 'fixture-legacy-window',
+    context_window: 8192,
+    max_output_tokens: 2048,
+  }
+  const legacy = await page.evaluate((input) => window.harness.configureModel(input), legacyInput)
+  assert(legacy.persisted, 'migration must verify durable model storage')
+  await checkCapacity(page, legacy.model, legacyInput, 8192, 2048)
+  const legacyCase = capacityRuns.at(-1)
+  const beforeMigration = await page.evaluate((id) => window.harness.getRun(id), legacyCase.id)
+  const generationCount = calls.length
+  await page.reload()
+  await page.locator('.settings-model').filter({ hasText: 'fixture-legacy-window' }).click()
+  await expect(page.getByLabel('API key', { exact: true })).toHaveValue('')
+  await page
+    .getByRole('button', { name: '更新 fixture-legacy-window 的上下文容量', exact: true })
+    .click()
+  await expect(page.locator('.configured-models [role=status]')).toContainText('1M')
+  const afterMigration = await page.evaluate((id) => window.harness.getRun(id), legacyCase.id)
+  assert.equal(afterMigration.context.window_tokens, 1_000_000)
+  assert.equal(afterMigration.context.input_budget, 950_000)
+  assert.equal(
+    afterMigration.context.reserved_output_tokens,
+    2048,
+    'window updates preserve output settings',
+  )
+  assert.notEqual(afterMigration.model_id, legacy.model.id)
+  assert.deepEqual(afterMigration.messages, beforeMigration.messages)
+  assert.deepEqual(afterMigration.events, beforeMigration.events)
+  assert.equal(calls.length, generationCount, 'updating context must not generate a model response')
+  const updatedConfig = await page.evaluate(() => window.harness.config())
+  assert(!updatedConfig.models.some((model) => model.id === legacy.model.id))
+  assert.equal(
+    await page.evaluate(
+      () => JSON.parse(localStorage.getItem('open-harness-workspace')).state.selectedModel,
+    ),
+    afterMigration.model_id,
+  )
+  legacyCase.model_id = afterMigration.model_id
+  legacyCase.input.context_window = 1_000_000
+  await page.screenshot({ path: join(artifacts, 'desktop-model-context-updated.png') })
+
   await page.getByRole('link', { name: '会话', exact: true }).click()
   for (const protocol of ['chat_completions', 'responses', 'anthropic_messages']) {
     const input = {

@@ -1402,6 +1402,48 @@ details[open] > summary .details-chevron {
   display: grid;
   gap: 10px;
 }
+.settings-model-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.settings-model-row > .settings-model {
+  flex: 1;
+  min-width: 0;
+}
+.settings-model-refresh {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px 4px;
+  color: #677267;
+  font-size: 11px;
+  white-space: nowrap;
+  border-radius: 6px;
+}
+.settings-model-refresh:hover:not(:disabled) {
+  color: #344335;
+  background: #edf4e2;
+}
+.settings-model-refresh:disabled {
+  opacity: 0.6;
+}
+.configured-models > .settings-footnote {
+  margin-top: 12px;
+}
+@media (max-width: 640px) {
+  .settings-model-row {
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+  .settings-model-row > .settings-model {
+    flex-basis: 100%;
+  }
+  .settings-model-refresh {
+    margin-left: auto;
+  }
+}
 .settings-model {
   display: flex;
   align-items: center;

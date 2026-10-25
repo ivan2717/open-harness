@@ -29,8 +29,8 @@ describe('automatic model limits', () => {
       { protocol: 'anthropic_messages' as const },
     ])
       expect(resolveModelLimits({ ...input, ...change })).toMatchObject({
-        context_window: 8192,
-        max_output_tokens: 2048,
+        context_window: 1_000_000,
+        max_output_tokens: 8192,
         context_source: 'fallback',
       })
     expect(
@@ -49,6 +49,47 @@ describe('automatic model limits', () => {
         protocol: 'anthropic_messages',
       }).context_window,
     ).toBe(1_000_000)
+  })
+
+  it('defaults unknown models to 1M across protocols without inventing provider metadata', () => {
+    for (const protocol of ['chat_completions', 'responses', 'anthropic_messages'] as const) {
+      const unknown = {
+        ...input,
+        protocol,
+        model: 'unknown',
+        base_url: 'https://gateway.example/v1',
+      }
+      expect(resolveModelLimits(unknown)).toEqual({
+        context_window: 1_000_000,
+        max_output_tokens: 8192,
+        context_source: 'fallback',
+        output_source: 'fallback',
+      })
+      expect(resolveModelLimits(unknown, { max_output_tokens: 4096 })).toMatchObject({
+        context_window: 1_000_000,
+        max_output_tokens: 4096,
+        context_source: 'fallback',
+        output_source: 'metadata',
+      })
+      expect(resolveModelLimits(unknown, { context_window: 8192 })).toMatchObject({
+        context_window: 8192,
+        max_output_tokens: 2048,
+        context_source: 'metadata',
+      })
+      expect(resolveModelLimits({ ...unknown, context_window: 8192 })).toMatchObject({
+        context_window: 8192,
+        max_output_tokens: 2048,
+        context_source: 'override',
+      })
+    }
+    expect(
+      resolveModelLimits({
+        ...input,
+        protocol: 'anthropic_messages',
+        base_url: 'https://api.anthropic.com/v1',
+        model: 'claude-haiku-4-5',
+      }),
+    ).toMatchObject({ context_window: 200_000, context_source: 'catalog' })
   })
 
   it('prefers validated metadata and keeps output below both its limit and the input reserve', () => {

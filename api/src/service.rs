@@ -57,6 +57,9 @@ mod extensions;
 #[path = "plugin_service.rs"]
 mod plugins;
 
+#[path = "model_service.rs"]
+mod models;
+
 #[path = "collaboration/mod.rs"]
 pub(crate) mod collaboration;
 
@@ -325,15 +328,8 @@ impl AppState {
         };
         let context_policy = if demo {
             policy()
-        } else if let Some(metadata) = model.context_metadata() {
-            ContextPolicy::builder()
-                .model_context_window(metadata.context_window)
-                .output_token_reserve(metadata.max_output_tokens.unwrap_or(8192))
-                .safety_margin((metadata.context_window / 100).clamp(64, 2048))
-                .build()
-                .map_err(io::Error::other)?
         } else {
-            ContextPolicy::default()
+            models::context_policy(&model)?
         };
         if !demo && model.available() && existing.is_none() {
             let resolved = context_policy

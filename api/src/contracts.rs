@@ -235,6 +235,12 @@ pub struct ConfigureModel {
     pub supports_images: bool,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReplaceModelInput {
+    pub replacement_model_id: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::RunDetail;
