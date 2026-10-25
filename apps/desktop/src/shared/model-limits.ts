@@ -20,6 +20,8 @@ type ModelLimitInput = Pick<
 >
 
 export const MODEL_TOKEN_LIMIT = 8_000_000
+// Assumed capacity only when neither the caller nor the provider supplies a limit.
+export const DEFAULT_MODEL_CONTEXT_WINDOW = 1_000_000
 
 function tokenLimit(value: unknown, minimum: number): number | undefined {
   return typeof value === 'number' &&
@@ -95,7 +97,11 @@ export function resolveModelLimits(
     tokenLimit(input.max_output_tokens, 64) === undefined
   )
     throw new Error('单次输出上限须为 64 至 8,000,000 的整数。')
-  const context_window = input.context_window ?? metadataContext ?? catalog?.context_window ?? 8192
+  const context_window =
+    input.context_window ??
+    metadataContext ??
+    catalog?.context_window ??
+    DEFAULT_MODEL_CONTEXT_WINDOW
   const max_output_tokens =
     input.max_output_tokens ??
     Math.min(

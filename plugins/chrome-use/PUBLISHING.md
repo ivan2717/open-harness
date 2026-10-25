@@ -81,7 +81,7 @@ PNG 图标。它不包含 Native Messaging host、MCP server、skills、测试�
 
 - 商店名称、简短说明、详细说明，以及明确的单一用途。
 - 隐私政策的真实公开 URL、开发者联系方式和支持入口。
-- 每个权限的用途解释，包含 `debugger`、`tabs`、`tabGroups`、`storage`、`nativeMessaging`。
+- 每个权限的用途解释，包含 `debugger`、`tabs`、`tabGroups`、`storage`、`alarms`、`nativeMessaging`。
 - 数据使用声明。不能勾选「完全不处理用户数据」：被授权页面的文字、网址、用户输入结果、
   截图会交给本机 Open Harness；桌面应用还可能把它们发送给用户选择的模型提供方并写入会话。
 - 至少一张展示真实用户体验的商店截图。官方要求 1280×800 或 640×400；128×128 的扩展
@@ -102,7 +102,8 @@ PNG 图标。它不包含 Native Messaging host、MCP server、skills、测试�
 | `debugger` | 按指定标签页调用 Chrome DevTools Protocol，读取 DOM、执行固定动作、抓取该标签页截图；不开放任意模型 JavaScript 或任意 CDP 方法。 |
 | `tabs` | 查询标签页 ID、网址和标题，核验共享目标与 origin；未共享且非本会话创建的标签页不发送给 Agent。 |
 | `tabGroups` | 为会话新建的后台页面创建和复用专用分组；不移动用户原有页面，不按整组关闭。 |
-| `storage` | 本机保存「允许 Agent 新建后台标签页」的明确选择；浏览器会话内缓存分组布局。既有标签页共享/会话控制权不跨重启恢复。 |
+| `storage` | 本机保存后台标签页开关、主动断开连接的选择和重连退避状态；浏览器会话内缓存分组布局。既有标签页共享/会话控制权不跨重启恢复。 |
+| `alarms` | 在扩展后台休眠后继续恢复意外断开的本地连接；用户主动断开时取消。不会重放浏览器操作或恢复旧授权。 |
 | `nativeMessaging` | 与固定名称 `dev.openharness.chrome` 的本地 host 通信，连接本机桌面应用；不启动公网调试端口。 |
 
 **数据处理说明**：扩展不直接调用模型服务或加入遥测，但会将任务所需、已授权的网页内容和

@@ -74,6 +74,95 @@ describe('Chrome Native Messaging registration', () => {
     await expect(stat(join(directory, 'data'))).rejects.toMatchObject({ code: 'ENOENT' })
   })
 
+  it('does not create configuration or register an installation during startup refresh', async () => {
+    await connection.refreshExisting()
+    await expect(readFile(manifestPath())).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(stat(join(directory, 'data'))).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
+  it.each(['config', 'registration'])(
+    'does not restore a removed %s during startup',
+    async (removed) => {
+      await connection.prepare()
+      const path = removed === 'config' ? connection.configPath : manifestPath()
+      await rm(path)
+      await writeFile(join(root, 'chrome-use', 'extension', 'background.mjs'), '// newer')
+
+      await connection.refreshExisting()
+
+      await expect(stat(path)).rejects.toMatchObject({ code: 'ENOENT' })
+      expect(await readFile(join(connection.extensionPath, 'background.mjs'), 'utf8')).toBe(
+        '// background',
+      )
+    },
+  )
+
+  it('refreshes an existing installation after an app update without replacing credentials', async () => {
+    await connection.prepare()
+    const previousConfig = await readFile(connection.configPath, 'utf8')
+    const exportedPath = connection.extensionPath
+    const updatedRoot = join(directory, 'updated-package')
+    await rename(root, updatedRoot)
+    await writeFile(join(updatedRoot, 'chrome-use', 'extension', 'background.mjs'), '// newer')
+    await writeFile(
+      join(updatedRoot, 'chrome-use', 'status.mjs'),
+      'console.log(JSON.stringify({connected:false}))',
+    )
+    const updatedConnection = new ChromeConnection({
+      root: updatedRoot,
+      home,
+      userData: join(directory, 'data'),
+      executable: process.execPath,
+      platform: 'darwin',
+      socketRoot: join(directory, 'sockets'),
+    })
+
+    await updatedConnection.refreshExisting()
+
+    expect(updatedConnection.extensionPath).toBe(exportedPath)
+    expect(await readFile(join(exportedPath, 'background.mjs'), 'utf8')).toBe('// newer')
+    expect(await readFile(connection.configPath, 'utf8')).toBe(previousConfig)
+    const manifest = JSON.parse(await readFile(manifestPath(), 'utf8'))
+    expect(await readFile(manifest.path, 'utf8')).toContain(
+      join(updatedRoot, 'chrome-use', 'native-host.mjs'),
+    )
+    expect(manifest.allowed_origins).toEqual([
+      'chrome-extension://keibjmjjimfgkikahpjgbfebiglbjkee/',
+    ])
+    expect(await updatedConnection.status()).toMatchObject({ configured: true, connected: false })
+  })
+
+  it('keeps unchanged exported files in place on subsequent startups', async () => {
+    await connection.prepare()
+    const file = join(connection.extensionPath, 'background.mjs')
+    const previous = await stat(file)
+
+    await connection.refreshExisting()
+
+    const current = await stat(file)
+    expect(current.ino).toBe(previous.ino)
+    expect(current.mtimeMs).toBe(previous.mtimeMs)
+  })
+
+  it('does not replace invalid existing credentials during automatic refresh', async () => {
+    await connection.prepare()
+    const invalid = JSON.stringify({ extensionId: 'another-extension', token: 'invalid' })
+    await writeFile(connection.configPath, invalid)
+    await writeFile(join(root, 'chrome-use', 'extension', 'background.mjs'), '// newer')
+
+    await expect(connection.refreshExisting()).rejects.toThrow('连接配置无效')
+
+    expect(await readFile(connection.configPath, 'utf8')).toBe(invalid)
+    expect(await readFile(join(connection.extensionPath, 'background.mjs'), 'utf8')).toBe(
+      '// background',
+    )
+  })
+
+  it('does not suppress explicit setup while an unconfigured startup refresh is pending', async () => {
+    await Promise.all([connection.refreshExisting(), connection.prepare()])
+    expect(await connection.status()).toMatchObject({ configured: true, connected: true })
+  })
+
   it('exports only the extension to an ordinary private directory outside the app bundle', async () => {
     await connection.prepare()
     expect(connection.extensionPath).toBe(join(directory, 'data', 'chrome-use', 'extension'))

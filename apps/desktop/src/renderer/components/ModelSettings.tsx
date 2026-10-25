@@ -185,7 +185,7 @@ export function ModelSettings() {
                   ? '已根据模型资料自动设置，无需填写。'
                   : limits.context_source === 'override'
                     ? '使用你填写的容量，输出预算仍可自动设置。'
-                    : '保存时自动读取模型信息；未识别的模型先使用保守容量。'}
+                    : '保存时自动读取模型信息；未识别时默认使用 1M（1,000,000 tokens），不代表已确认模型容量。'}
               留空即可使用自动设置。
             </p>
             <div className="model-form-row">

@@ -95,7 +95,7 @@ impl ModelContextBudget {
 impl Default for ModelContextBudget {
     fn default() -> Self {
         Self {
-            context_window: 128_000,
+            context_window: 1_000_000,
             output_token_reserve: 8_192,
             safety_margin: 2_048,
             effective_context_window_percent: 100,

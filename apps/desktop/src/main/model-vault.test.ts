@@ -49,6 +49,21 @@ describe('model credential storage', () => {
     expect(await vault.save('model', input)).toBe(false)
     await expect(readFile(file)).rejects.toMatchObject({ code: 'ENOENT' })
   })
+  it('keeps credentials internal and removes superseded profiles durably', async () => {
+    const file = await location()
+    const vault = new ModelVault(file, cipher)
+    await vault.save('old-model', { ...input, context_window: 8192, max_output_tokens: 2048 })
+    const copy = vault.get('old-model')!
+    copy.context_window = 1_000_000
+    expect(vault.get('old-model')?.context_window).toBe(8192)
+    await vault.save('new-model', copy)
+    expect(await vault.remove('old-model')).toBe(true)
+    expect(vault.get('old-model')).toBeUndefined()
+    const reopened = new ModelVault(file, cipher)
+    expect(await reopened.load()).toEqual([copy])
+    expect(reopened.get('new-model')).toEqual(copy)
+    expect(reopened.get('old-model')).toBeUndefined()
+  })
   it('preserves an unreadable existing vault', async () => {
     const file = await location()
     await writeFile(file, 'unreadable')

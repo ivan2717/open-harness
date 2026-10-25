@@ -5,6 +5,7 @@ import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import { ComputerBridge } from '../bridge.mjs';
 import { computerEndpoint, requireComputerEndpoint } from '../endpoint.mjs';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -89,15 +90,16 @@ try {
       checks.push('coordinate click');
       // Changing the fixture out-of-band demonstrates stale tree rejection.
       state = await request('observe');
-      const secondary = new ComputerBridge(helperPath);
-      try {
-        await secondary.request('select_app', selection);
-        const fresh = await secondary.request('observe', {});
-        const resize = fresh.elements.find(item => item.AXIdentifier === 'fixture-resize');
-        await secondary.request('click', { snapshot_id: fresh.snapshot_id, ref: resize.ref });
-        await wait(150);
-      } finally { secondary.stop(); }
+      const beforeResize = loadState();
+      const resizeCommand = randomUUID();
+      writeFileSync(path.join(temporary, 'state.json.command.json'), JSON.stringify({ command: 'resize', id: resizeCommand }));
+      await until(() => loadState().last_test_command === resizeCommand, 'fixture applied out-of-band resize');
       await assert.rejects(request('key', { snapshot_id: state.snapshot_id, key: 'tab' }), /STATE_CHANGED/);
+      await wait(100);
+      const afterRejectedKey = loadState();
+      assert.equal(afterRejectedKey.key_events, beforeResize.key_events, 'stale input must not reach the fixture');
+      assert.equal(afterRejectedKey.text, beforeResize.text);
+      assert.equal(afterRejectedKey.clicks, beforeResize.clicks);
       checks.push('changed window rejection');
       state = await request('observe', { screenshot: true });
       const scroll = state.elements.find(item => item.AXIdentifier === 'fixture-scroll').bounds;

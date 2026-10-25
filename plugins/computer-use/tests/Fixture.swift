@@ -9,6 +9,8 @@ final class Fixture: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
     var clicks = 0
     var ready = false
     var pointerEvents: [[String: Any]] = []
+    var keyEvents = 0
+    var lastTestCommand = ""
     let output: URL
     init(_ output: URL) { self.output = output }
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -43,8 +45,9 @@ final class Fixture: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
         window.makeKeyAndOrderFront(nil)
         window.makeFirstResponder(field)
         NSApp.activate(ignoringOtherApps: true)
-        NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .leftMouseUp, .scrollWheel]) { [weak self] event in
-            self?.pointerEvents.append(["type": event.type.rawValue, "window": event.windowNumber, "x": event.locationInWindow.x, "y": event.locationInWindow.y])
+        NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .leftMouseUp, .scrollWheel, .keyDown, .keyUp]) { [weak self] event in
+            if event.type == .keyDown || event.type == .keyUp { self?.keyEvents += 1 }
+            else { self?.pointerEvents.append(["type": event.type.rawValue, "window": event.windowNumber, "x": event.locationInWindow.x, "y": event.locationInWindow.y]) }
             self?.save()
             return event
         }
@@ -53,14 +56,30 @@ final class Fixture: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
             self?.ready = true
             self?.save()
         }
+        // Only this disposable fixture reads this test-owned file. Resizing it
+        // out of band must not launch another automation helper or send input.
+        let timer = Timer(timeInterval: 0.05, repeats: true) { [weak self] _ in self?.readTestCommand() }
+        RunLoop.main.add(timer, forMode: .common)
     }
     @objc func increment() { clicks += 1; counter.stringValue = "Clicks: \(clicks)"; save() }
     @objc func resizeWindow() { window.setContentSize(NSSize(width: 560, height: 440)); save() }
     func controlTextDidChange(_ notification: Notification) { save() }
     func applicationDidBecomeActive(_ notification: Notification) { save() }
     func applicationDidResignActive(_ notification: Notification) { save() }
+    func readTestCommand() {
+        guard ready,
+              let data = try? Data(contentsOf: output.appendingPathExtension("command.json")),
+              let value = try? JSONSerialization.jsonObject(with: data) as? [String: String],
+              value["command"] == "resize", let id = value["id"], !id.isEmpty, id.count <= 64,
+              id != lastTestCommand else { return }
+        lastTestCommand = id
+        // A blinking text caret is intentional pixel drift, unrelated to the
+        // stale-window check or the subsequent screenshot/scroll assertions.
+        window.makeFirstResponder(nil)
+        resizeWindow()
+    }
     @objc func save() {
-        let object: [String: Any] = ["pid": ProcessInfo.processInfo.processIdentifier, "clicks": clicks, "text": field.stringValue, "scroll_y": scroll.contentView.bounds.origin.y, "pointer_events": pointerEvents, "ready": ready, "active": NSApp.isActive, "finished": NSRunningApplication.current.isFinishedLaunching, "window_visible": window?.isVisible ?? false, "window_key": window?.isKeyWindow ?? false, "foreground_bundle": NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "none"]
+        let object: [String: Any] = ["pid": ProcessInfo.processInfo.processIdentifier, "clicks": clicks, "text": field.stringValue, "scroll_y": scroll.contentView.bounds.origin.y, "pointer_events": pointerEvents, "key_events": keyEvents, "last_test_command": lastTestCommand, "ready": ready, "active": NSApp.isActive, "finished": NSRunningApplication.current.isFinishedLaunching, "window_visible": window?.isVisible ?? false, "window_key": window?.isKeyWindow ?? false, "foreground_bundle": NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "none"]
         if let data = try? JSONSerialization.data(withJSONObject: object) { try? data.write(to: output, options: .atomic) }
     }
 }

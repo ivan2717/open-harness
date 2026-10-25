@@ -40,7 +40,7 @@ export async function packageExtension({ root = pluginRoot, outputPath } = {}) {
   if (manifest.manifest_version !== 3 || !/^\d+(?:\.\d+){0,3}$/.test(manifest.version) || manifest.version.split('.').some(part => Number(part) > 65535 || (part.length > 1 && part.startsWith('0'))) || !manifest.version.split('.').some(part => Number(part) > 0)) throw new Error('A valid MV3 manifest and extension version are required.');
   if (extensionIdFromKey(manifest.key) !== EXTENSION_ID) throw new Error('Manifest public key does not match EXTENSION_ID. Synchronize the official store ID/public key and desktop host before packaging.');
   const storeUrl = validateDistribution(JSON.parse(await readFile(path.join(root, 'distribution.json'), 'utf8')));
-  const expectedPermissions = ['debugger', 'tabs', 'tabGroups', 'storage', 'nativeMessaging'];
+  const expectedPermissions = ['debugger', 'tabs', 'tabGroups', 'storage', 'alarms', 'nativeMessaging'];
   if (!Array.isArray(manifest.permissions) || [...manifest.permissions].sort().join(',') !== expectedPermissions.sort().join(',')) throw new Error('Permission changes require updating the store disclosures and package allowlist.');
   if (manifest.background?.service_worker !== 'background.mjs' || manifest.action?.default_popup !== 'popup.html' || manifest.externally_connectable || manifest.host_permissions || manifest.web_accessible_resources) throw new Error('Unexpected extension entry points or host access. Review before publishing.');
   for (const size of [16, 32, 48, 128]) if (manifest.icons?.[size] !== `icons/icon-${size}.png`) throw new Error('Store icons are missing from the manifest.');

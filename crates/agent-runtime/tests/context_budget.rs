@@ -124,6 +124,29 @@ impl Model for RecordingModel {
 }
 
 #[tokio::test]
+async fn summary_model_without_metadata_uses_the_shared_million_token_fallback() {
+    let compactor = ModelContextCompactor::new(RecordingModel::new(ContextSummary {
+        objective: "Continue inspecting".to_owned(),
+        ..ContextSummary::default()
+    }));
+    assert_eq!(compactor.budget().context_window(), 1_000_000);
+    assert_eq!(
+        compactor.resolved_budget().unwrap().context_window(),
+        1_000_000
+    );
+    assert_eq!(compactor.input_token_limit(), Some(950_000));
+    let run = AgentRun::new("summary-unknown-model", "agent", "Summarize");
+    compactor
+        .compact(None, run.events().to_vec())
+        .await
+        .unwrap();
+    assert_eq!(
+        compactor.model().requests.lock().unwrap()[0].max_output_tokens,
+        Some(8_192)
+    );
+}
+
+#[tokio::test]
 async fn summary_model_resolves_its_own_metadata_and_caps_explicit_overrides() {
     let mut model = RecordingModel::new(ContextSummary {
         objective: "Continue inspecting".to_owned(),

@@ -600,13 +600,15 @@ and tool schemas, retaining complete steps. Configure another ratio with
 
 | Configuration | Input limit | Trigger | Desired size | Tail before fixed-cost adjustment |
 | --- | ---: | ---: | ---: | ---: |
-| No metadata: 128,000 fallback window | 117,760 | 115,200 | 86,400 | 18,841 |
+| No metadata: 1,000,000 fallback window | 950,000 | 900,000 | 675,000 | 152,000 |
 | Model default window 1,000,000, effective 95% | 950,000 | 900,000 | 675,000 | 152,000 |
 
 Both rows use the default 8,192 output reservation and 2,048 safety margin.
 Actual tail budgets subtract the current instructions and schemas first.
-Unknown adapters retain the fallback; adapters must advertise their real limits
-to use a larger window automatically. `policy.resolve(model.context_metadata())`
+Unknown adapters use the 1,000,000-token fallback. This is a default assumption;
+explicit configuration and advertised model limits still take precedence.
+The model-backed compactor uses the same fallback, while Wiki compilation keeps
+its separate 32,000-token input batch cap. `policy.resolve(model.context_metadata())`
 exposes the effective configuration for inspection.
 
 ```rust

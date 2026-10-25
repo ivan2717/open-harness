@@ -1,4 +1,5 @@
 import { createRequire } from "node:module";
+import { homedir, tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
 import { validateArguments } from "./schema.mjs";
 
@@ -57,6 +58,51 @@ async function loadChromium() {
       "Browser runtime is unavailable. Prepare Browser Use in Open Harness's Extensions page.",
     );
   }
+}
+
+function browserLaunchError(error) {
+  const message = typeof error?.message === "string" ? error.message : "";
+  // Let Playwright identify the executable it selected: headless launches can
+  // use a different binary from chromium.executablePath().
+  if (/executable (?:doesn't|does not) exist at/i.test(message)) {
+    return new BrowserError(
+      "browser_not_prepared",
+      "The required browser executable is missing. Open Extensions → Independent Browser and select Prepare Browser, then try again after preparation finishes.",
+    );
+  }
+  // Playwright includes its launch command and local profile paths in errors.
+  // Keep useful stderr without forwarding command lines or unbounded logs.
+  let diagnostic = message
+    .slice(0, 16_384)
+    .replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "")
+    .split(/\r?\n/)
+    .filter((line) => !/<launching>|Call log:/i.test(line))
+    .join("\n")
+    .replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, "");
+  for (const path of [tmpdir(), homedir()])
+    if (path.length > 1)
+      diagnostic = diagnostic.split(path).join("[local path]");
+  diagnostic = truncateText(
+    diagnostic
+      .replace(/\b(?:https?|wss?):\/\/[^\s"'<>]+/gi, "[URL]")
+      .replace(/\bBearer\s+\S+/gi, "Bearer [redacted]")
+      .replace(
+        /\b(token|password|api[_-]?key|authorization)\s*[:=]\s*[^\s,;]+/gi,
+        "$1=[redacted]",
+      )
+      .trim(),
+    800,
+  );
+  const hint =
+    /missing x server|\$DISPLAY|cannot open display|no display|failed to open.*display/i.test(
+      message,
+    )
+      ? "A graphical desktop is unavailable for this browser launch. Start it in an active desktop session."
+      : "The isolated browser could not start. Check the launch diagnostic before changing setup or permissions.";
+  return new BrowserError(
+    "browser_launch_failed",
+    `${hint} Launch diagnostic: ${diagnostic || "No diagnostic was returned by the browser runtime."}`,
+  );
 }
 
 export class BrowserSession {
@@ -146,11 +192,8 @@ export class BrowserSession {
           headless: this.headless,
           timeout: 20_000,
         });
-      } catch {
-        throw new BrowserError(
-          "browser_launch_failed",
-          "Could not start the isolated browser. Prepare Browser Use in Extensions and check that a graphical session is available.",
-        );
+      } catch (error) {
+        throw browserLaunchError(error);
       }
       if (generation !== this.closedGeneration) {
         throw new BrowserError("session_cancelled");

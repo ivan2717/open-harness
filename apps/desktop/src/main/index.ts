@@ -17,6 +17,7 @@ import { Backend } from './backend'
 import { initializeRuntime, watchInitializedRuntime } from './runtime-startup'
 import { BundledPlugins } from './bundled-plugins'
 import { ChromeConnection } from './chrome-connection'
+import { COMPUTER_APP_NAME, installComputerApp } from './computer-app'
 import { execFile, spawn } from 'node:child_process'
 import { promisify } from 'node:util'
 import { createRequire } from 'node:module'
@@ -32,6 +33,7 @@ import {
 import { SubscriptionRegistry } from './subscriptions'
 import { ModelVault } from './model-vault'
 import { fetchModelCapacity } from './model-metadata'
+import { refreshModelContext } from './model-context'
 import { resolveModelLimits } from '../shared/model-limits'
 import { importClipboardFiles, importFilePaths } from './file-references'
 import {
@@ -234,6 +236,11 @@ function installBridge(): void {
       await workspaces.verify(mapped.body.workspace_path)
     }
     await modelsReady
+    const refreshContext = /^\/api\/models\/([a-zA-Z0-9_-]+)\/context\/refresh$/.exec(mapped.path)
+    if (refreshContext) {
+      if (!modelVault) throw new Error('模型配置尚未就绪')
+      return refreshModelContext(refreshContext[1], backend, modelVault)
+    }
     if (mapped.path === '/api/models') {
       const input = mapped.body as ConfigureModelInput
       const capacity = await fetchModelCapacity(input)
@@ -332,7 +339,7 @@ if (!app.requestSingleInstanceLock()) {
       window.focus()
     } else if (app.isReady()) createWindow()
   })
-  void app.whenReady().then(() => {
+  void app.whenReady().then(async () => {
     session.defaultSession.setPermissionRequestHandler((_contents, _permission, callback) =>
       callback(false),
     )
@@ -350,12 +357,31 @@ if (!app.requestSingleInstanceLock()) {
       : process.platform === 'win32'
         ? join(app.getAppPath(), 'resources/plugins')
         : join(workspace, 'plugins')
+    let computerAppPath: string | undefined
+    let computerSetupError: string | undefined
+    if (process.platform === 'darwin') {
+      try {
+        computerAppPath = await installComputerApp(
+          join(pluginRoot, 'computer-use', 'bin', COMPUTER_APP_NAME),
+          app.getPath('userData'),
+        )
+      } catch {
+        // Do not let a failed update launch an older or nested permission host.
+        computerAppPath = join(app.getPath('userData'), 'computer-use', '.unavailable')
+        computerSetupError = '电脑组件安装失败，请重启 Open Harness 或重新安装应用。'
+        console.warn(computerSetupError)
+      }
+    }
     chromeConnection = new ChromeConnection({
       root: pluginRoot,
       executable: process.execPath,
       userData: app.getPath('userData'),
       home: app.getPath('home'),
       platform: process.platform,
+    })
+    void chromeConnection.refreshExisting().catch(() => {
+      // Do not include filesystem/configuration details in startup logs.
+      console.warn('Chrome 连接组件更新失败；可在扩展页重新配置，不影响应用启动。')
     })
     bundledPlugins = new BundledPlugins({
       root: pluginRoot,
@@ -366,6 +392,8 @@ if (!app.requestSingleInstanceLock()) {
       browsers: process.env.PLAYWRIGHT_BROWSERS_PATH ?? join(app.getPath('userData'), 'browsers'),
       platform: process.platform,
       chrome: chromeConnection,
+      computerAppPath,
+      computerSetupError,
     })
     backend = new Backend(
       binary,

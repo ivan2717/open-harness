@@ -102,6 +102,16 @@ its socket; the extension detaches the selected tab but leaves tabs open for
 review. Chrome owns the native host's lifetime; native-port loss closes all
 client sockets and detaches all selected tabs.
 
+Unexpected native-host loss reconnects with a capped exponential backoff. A
+Chrome alarm resumes retries when the MV3 worker has slept. Explicitly choosing
+**断开连接** persists that choice until **连接 Open Harness** is clicked again.
+Reconnection never replays an interrupted action or restores old tab grants;
+observe the page before deciding whether an action should be repeated.
+The desktop refreshes previously configured local extension files on startup,
+preserving the connection identity and leaving unconfigured profiles untouched.
+Unpacked installations need a reload in Chrome after an update to activate the
+new worker and manifest.
+
 Local IPC uses a two-round-trip, mutually authenticated HMAC-SHA256 handshake.
 The initial `hello` sends only a random client nonce and random session UUID.
 The host returns a fresh server nonce and a role-specific server proof; the

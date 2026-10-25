@@ -107,13 +107,21 @@ longer exists.
 
 Automatic limits are resolved in the desktop main process before they reach the
 Rust runtime. Provider metadata takes priority over a small directory of verified
-model IDs on official endpoints. Unknown models start with an 8,192-token window
-and a 2,048-token output budget. Known models normally use an 8,192-token output
+model IDs on official endpoints. Unknown models default to a 1,000,000-token window
+and an 8,192-token output budget; the UI labels this as an assumption, not a verified
+provider limit. Known models normally use an 8,192-token output
 budget, bounded by their output capability and one quarter of the context window.
 The output budget includes reasoning where the protocol counts it as output.
 Metadata lookup is bounded and falls back when unavailable; manual values take
 priority. The encrypted model configuration stores the final numbers so reopening
 the app preserves the model identity and conversation budget without another lookup.
+Previously saved configurations keep their limits, including legacy 8K values:
+older versions did not retain whether those numbers were automatic or manual.
+Use **更新上下文容量** on an existing model to resolve its window again without
+re-entering the API key. This keeps the output and reasoning settings, and migrates
+idle conversations to the updated model configuration while preserving their history
+and checkpoints. Active execution or compaction blocks the update. Both connections
+are saved before migration; the old one is removed only after all bindings are updated.
 
 Commands require a separate one-time approval showing the exact command and
 working directory. Supported macOS hosts run commands in an OS sandbox with
@@ -489,13 +497,16 @@ For **Computer Use**, install it on macOS 14+, use **辅助功能** and **屏幕
 its card to request OS permissions, and **检查权限** to refresh status. Follow the
 listed component path when diagnosing system grants. The independently launched
 **Open Harness Computer Use.app** (`dev.openharness.computeruse`) owns both system
-permissions; the main desktop application remains **Open Harness**. Existing
+permissions; the main desktop application remains **Open Harness**.
+On macOS it is deployed, without changing its signature, to
+`userData/computer-use/Open Harness Computer Use.app`, outside the main app bundle
+so macOS can attribute Screen Recording to the correct component. Existing
 Open Harness/Electron grants are not transferred or removed automatically. A status check
 does not trigger a permission prompt, and returning to the app window refreshes
 the check automatically. A failed check is reported separately from a denied
 permission. If System Settings shows an enabled entry but a previously built
 local app has a different signing identity, remove that old entry and add the
-current packaged Open Harness Computer Use app again. After granting permissions, stop the
+current deployed Open Harness Computer Use app shown by the permission card again. After granting permissions, stop the
 current control session and try again; the OS may require restarting the host.
 On Windows, **电脑操作** uses the bundled **OpenHarnessComputerUse.exe** helper.
 Its card reports whether the interactive desktop is available; there are no macOS

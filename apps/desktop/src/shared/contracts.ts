@@ -71,6 +71,7 @@ export interface ConfigureModelResult {
   persisted: boolean
   limits: ResolvedModelLimits
   capacity?: ModelCapacity
+  warning?: string
 }
 
 export interface RunSummary {
@@ -275,6 +276,7 @@ export interface DesktopBridge {
   compactRun(id: string): Promise<RunDetail>
   cancelCompaction(id: string): Promise<RunDetail>
   configureModel(input: ConfigureModelInput): Promise<ConfigureModelResult>
+  refreshModelContext(id: string): Promise<ConfigureModelResult>
   submitInput(id: string, message: string, files?: TextFileReference[]): Promise<RunDetail>
   watchRun(
     id: string,
