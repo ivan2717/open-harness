@@ -32,7 +32,8 @@ import {
 } from './protocol'
 import { SubscriptionRegistry } from './subscriptions'
 import { ModelVault } from './model-vault'
-import { fetchModelCapacity } from './model-metadata'
+import { fetchModelMetadata } from './model-metadata'
+import { resolveReasoningCapability } from '../shared/model-reasoning'
 import { refreshModelContext } from './model-context'
 import { resolveModelLimits } from '../shared/model-limits'
 import { importClipboardFiles, importFilePaths } from './file-references'
@@ -243,12 +244,16 @@ function installBridge(): void {
     }
     if (mapped.path === '/api/models') {
       const input = mapped.body as ConfigureModelInput
-      const capacity = await fetchModelCapacity(input)
+      const metadata = await fetchModelMetadata(input)
+      const capacity = metadata?.capacity
       const limits = resolveModelLimits(input, capacity)
       const resolved = resolvedModelConfiguration({
         ...input,
         context_window: limits.context_window,
         max_output_tokens: limits.max_output_tokens,
+        ...(input.reasoning_mode === 'off'
+          ? { reasoning_capability: resolveReasoningCapability(input, metadata?.reasoning) }
+          : {}),
       })
       const model = (await backend.request({ ...mapped, body: resolved })) as ModelInfo
       const persisted = (await modelVault?.save(model.id, resolved)) ?? false

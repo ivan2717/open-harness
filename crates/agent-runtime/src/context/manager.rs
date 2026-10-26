@@ -22,6 +22,7 @@ pub struct CompactingContextManager<C, K, N> {
     checkpoint_store: K,
     token_counter: N,
     usage: ContextUsageTracker,
+    portable_history_through: Option<u64>,
 }
 
 impl<C, K, N> CompactingContextManager<C, K, N> {
@@ -32,11 +33,22 @@ impl<C, K, N> CompactingContextManager<C, K, N> {
             checkpoint_store,
             token_counter,
             usage: ContextUsageTracker::default(),
+            portable_history_through: None,
         }
     }
 
     pub fn policy(&self) -> ContextPolicy {
         self.policy
+    }
+
+    /// Explicit host-owned model transition boundary. Older assistant/tool
+    /// events become labeled historical text; provider-private replay state is
+    /// never transferred to a different model. Persist this boundary with the
+    /// conversation and advance it on every model/adapter settings change.
+    /// Original events and derived summaries remain unchanged.
+    pub fn with_portable_history_through(mut self, sequence: Option<u64>) -> Self {
+        self.portable_history_through = sequence;
+        self
     }
 
     pub fn compactor(&self) -> &C {
@@ -272,14 +284,21 @@ where
         // Even below the compaction threshold, inserting mutable derived data
         // could change the prefix covered by signed provider replay state.
         if !input.derived_messages.is_empty()
-            && input.events.iter().any(|event| {
-                matches!(
-                    &event.event,
-                    agent_core::agent::RunEvent::ModelResponseReceived {
-                        provider_state: Some(state), ..
-                    } if state.scope == crate::ProviderReplayScope::Prefix
-                )
-            })
+            && input
+                .events
+                .iter()
+                .filter(|event| {
+                    self.portable_history_through
+                        .is_none_or(|through| event.sequence > through)
+                })
+                .any(|event| {
+                    matches!(
+                        &event.event,
+                        agent_core::agent::RunEvent::ModelResponseReceived {
+                            provider_state: Some(state), ..
+                        } if state.scope == crate::ProviderReplayScope::Prefix
+                    )
+                })
         {
             return Err(CompactingContextError::DerivedContextWithPrefixBoundState);
         }
@@ -290,7 +309,7 @@ where
         let mut previous = match self.checkpoint_store.latest(input.run_id.to_owned()).await {
             Ok(previous) => previous,
             Err(source) => {
-                let mut fallback = uncompacted_context(input);
+                let mut fallback = uncompacted_context(input, self.portable_history_through);
                 fallback.request.max_output_tokens = policy.output_token_limit();
                 if !force_compaction
                     && self.decision_tokens(input, &fallback.request) <= policy.input_token_limit()
@@ -304,7 +323,7 @@ where
             .is_err()
         {
             if let Err(source) = self.checkpoint_store.clear(input.run_id.to_owned()).await {
-                let mut fallback = uncompacted_context(input);
+                let mut fallback = uncompacted_context(input, self.portable_history_through);
                 fallback.request.max_output_tokens = policy.output_token_limit();
                 if !force_compaction
                     && self.decision_tokens(input, &fallback.request) <= policy.input_token_limit()
@@ -321,7 +340,8 @@ where
             previous
                 .as_ref()
                 .and_then(|checkpoint| checkpoint.pruning.as_ref()),
-        );
+        )
+        .with_portable_history_through(self.portable_history_through);
         let previous_through = previous
             .as_ref()
             .and_then(ContextCheckpoint::summary_through_sequence);
@@ -351,14 +371,22 @@ where
 
         // Signed thinking binds the entire prefix. Even pruning an old result
         // would invalidate it, so portable maintenance never rewrites it.
-        if input.events.iter().any(|event| matches!(&event.event,
-            agent_core::agent::RunEvent::ModelResponseReceived { provider_continuation: None, provider_state: Some(state), .. }
-                if state.scope == crate::ProviderReplayScope::Prefix
-        )) {
+        let has_bound_state = input.events.iter().any(|event| {
+            self.portable_history_through
+                .is_none_or(|through| event.sequence > through)
+                && matches!(&event.event,
+                    agent_core::agent::RunEvent::ModelResponseReceived {
+                        provider_continuation: None, provider_state: Some(state), ..
+                    } if state.scope == crate::ProviderReplayScope::Prefix)
+        });
+        if has_bound_state {
             if force_compaction || initial_tokens > policy.input_token_limit() {
                 return Err(CompactingContextError::PrefixBoundStateRequiresNativeCompaction);
             }
-            return Ok(PreparedContext { request: initial_request, omitted_history: initial_omitted });
+            return Ok(PreparedContext {
+                request: initial_request,
+                omitted_history: initial_omitted,
+            });
         }
 
         // Pressure first removes oversized tool details, then measures again.
@@ -448,7 +476,8 @@ where
                 previous
                     .as_ref()
                     .and_then(|checkpoint| checkpoint.pruning.as_ref()),
-            );
+            )
+            .with_portable_history_through(self.portable_history_through);
         }
         let compaction_is_required =
             force_compaction || initial_tokens > policy.input_token_limit();
@@ -504,7 +533,8 @@ where
             previous
                 .as_ref()
                 .and_then(|checkpoint| checkpoint.pruning.as_ref()),
-        );
+        )
+        .with_portable_history_through(self.portable_history_through);
         summary_projection.enable_pruning(policy.max_tool_output_chars());
 
         loop {

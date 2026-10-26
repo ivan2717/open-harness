@@ -17,6 +17,9 @@ async fn cancellation_reconciles_completion_or_failure_after_its_initial_read() 
         let now = time::now();
         let detail = RunDetail {
             summary: RunSummary {
+                reasoning_settings_version: 1,
+                reasoning_effort: None,
+                model_history_through: None,
                 delegation: None,
                 execution_policy: Default::default(),
                 compacting: false,
@@ -117,6 +120,7 @@ async fn shutdown_settles_active_work_and_rejects_new_execution() {
         .await
         .unwrap();
     let input = || CreateRunInput {
+        reasoning_effort: None,
         execution_policy: Default::default(),
         prompt: "shutdown".into(),
         files: Vec::new(),
@@ -159,6 +163,7 @@ async fn compact_waits_for_idle_worker_cleanup_and_rechecks_admission() {
             .unwrap();
         let created = state
             .create(CreateRunInput {
+                reasoning_effort: None,
                 execution_policy: Default::default(),
                 prompt: "/ask compact cleanup".into(),
                 files: Vec::new(),

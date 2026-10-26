@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
-import type { RunDetail } from '../../shared/contracts'
+import type { ModelInfo, RunDetail } from '../../shared/contracts'
 import { RunPage } from './WorkspacePage'
 
 vi.mock('@tanstack/react-router', () => ({
@@ -17,10 +17,16 @@ vi.mock('../components/Conversation', () => ({
     <article>{run.messages.map((message) => message.text).join('\n')}</article>
   ),
 }))
-vi.mock('../components/Composer', () => ({ Composer: () => <textarea aria-label="任务输入" /> }))
+const composer = vi.hoisted(() => ({ props: {} as Record<string, any> }))
+vi.mock('../components/Composer', () => ({
+  Composer: (props: Record<string, any>) => {
+    composer.props = props
+    return <textarea aria-label="任务输入" />
+  },
+}))
 vi.mock('../components/ExtensionApprovals', () => ({ ExtensionApprovals: () => null }))
 
-function render(overrides: Partial<RunDetail> = {}): string {
+function render(overrides: Partial<RunDetail> = {}, models?: Partial<ModelInfo>[]): string {
   const run: RunDetail = {
     id: 'task',
     revision: 1,
@@ -38,7 +44,9 @@ function render(overrides: Partial<RunDetail> = {}): string {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   client.setQueryData(['run', run.id], run)
   client.setQueryData(['runs'], [run])
-  client.setQueryData(['config'], { models: [{ id: 'test', name: 'Test', available: true }] })
+  client.setQueryData(['config'], {
+    models: models ?? [{ id: 'test', name: 'Test', available: true }],
+  })
   try {
     return renderToStaticMarkup(
       <QueryClientProvider client={client}>
@@ -93,5 +101,35 @@ describe('delegated task and pause controls', () => {
     expect(html).toContain('<textarea')
     expect(html).not.toContain('legacy budget error')
     expect(html).not.toContain('role="alert"')
+  })
+})
+
+describe('conversation model selection', () => {
+  it('keeps model switching available when an old configuration is missing', () => {
+    render({ reasoning_effort: 'high' }, [
+      { id: 'test', name: 'Unavailable', available: false },
+      { id: 'replacement', name: 'Replacement', available: true },
+      { id: 'local-demo', name: 'Demo', available: true },
+    ])
+    expect(composer.props.modelId).toBe('test')
+    expect(composer.props.reasoningEffort).toBe('high')
+    expect(composer.props.disabled).toBe(true)
+    expect(composer.props.modelSettingsDisabled).toBeFalsy()
+    expect(composer.props.onModelChange).toBeTypeOf('function')
+    expect(composer.props.models.map((model: ModelInfo) => model.id)).toEqual([
+      'test',
+      'replacement',
+    ])
+  })
+
+  it('blocks settings during compaction and never offers real providers in demo sessions', () => {
+    render({ compacting: true })
+    expect(composer.props.modelSettingsDisabled).toBe(true)
+    expect(composer.props.modelSettingsDisabledReason).toContain('正在整理上下文')
+    render({ model_id: 'local-demo' }, [
+      { id: 'test', available: true },
+      { id: 'local-demo', available: true },
+    ])
+    expect(composer.props.models.map((model: ModelInfo) => model.id)).toEqual(['local-demo'])
   })
 })

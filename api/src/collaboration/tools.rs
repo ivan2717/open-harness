@@ -169,6 +169,9 @@ mod tests {
         let now = time::now();
         let detail = RunDetail {
             summary: RunSummary {
+                reasoning_settings_version: 1,
+                reasoning_effort: None,
+                model_history_through: None,
                 delegation: Some(Delegation {
                     parent_run_id: "parent".into(),
                     root_run_id: "parent".into(),

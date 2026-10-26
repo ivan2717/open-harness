@@ -66,6 +66,8 @@ impl Fixture {
                 max_output_tokens: 4096,
                 reasoning_mode: "off".into(),
                 reasoning_effort: "high".into(),
+                reasoning_capability: None,
+                reasoning_default: None,
             })
             .await
             .unwrap();
@@ -199,6 +201,7 @@ async fn settled(state: &AppState, id: &str) -> RunDetail {
 async fn create(state: &AppState, model_id: &str, prompt: String) -> String {
     let run = state
         .create(CreateRunInput {
+            reasoning_effort: None,
             execution_policy: Default::default(),
             prompt,
             files: Vec::new(),

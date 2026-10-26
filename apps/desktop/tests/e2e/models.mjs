@@ -5,6 +5,15 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { createRequire } from 'node:module'
 import { _electron, expect } from '@playwright/test'
+import {
+  exerciseRunModelSettings,
+  verifyRunModelSettingsAfterRestart,
+} from './run-model-settings.mjs'
+import {
+  metadataReasoning,
+  exerciseReasoningCapabilities,
+  verifyReasoningCapabilitiesAfterRestart,
+} from './reasoning-capabilities.mjs'
 
 const require = createRequire(import.meta.url)
 const directory = await mkdtemp(join(tmpdir(), 'openharness-model-e2e-'))
@@ -39,6 +48,7 @@ const server = createServer(async (request, response) => {
             : {
                 data: [
                   { id: 'fixture-metadata', context_window: 262144, max_output_tokens: 4096 },
+                  { id: 'fixture-reasoning-metadata', reasoning_capability: metadataReasoning },
                   { id: 'unrelated-model', context_window: 2097152, max_output_tokens: 65536 },
                 ],
               },
@@ -268,10 +278,14 @@ try {
   await output.fill('3072')
   const beforeOverride = metadataCalls.length
   const overridden = await saveUiModel(page, 64000)
-  assert.equal(metadataCalls.length, beforeOverride, 'two explicit limits skip metadata lookup')
+  assert.equal(
+    metadataCalls.length,
+    beforeOverride + 1,
+    'explicit capacities still discover reasoning',
+  )
   await page.screenshot({ path: join(artifacts, 'desktop-model-advanced.png') })
   await checkCapacity(page, overridden, { ...basicInput, model: 'fixture-metadata' }, 64000, 3072)
-  await page.getByRole('button', { name: '恢复自动设置', exact: true }).click()
+  await page.getByRole('button', { name: '恢复容量自动设置', exact: true }).click()
   await expect(context).toHaveValue('')
   await expect(output).toHaveValue('')
   await page.getByLabel('API key', { exact: true }).fill(basicInput.api_key)
@@ -283,7 +297,7 @@ try {
   await output.fill('2048')
   await expect(context).toHaveAttribute('placeholder', /(?:^|（)262144(?:）|$)/)
   await expect(page.locator('.model-advanced')).toContainText('已采用服务商提供的容量。')
-  await page.getByRole('button', { name: '恢复自动设置', exact: true }).click()
+  await page.getByRole('button', { name: '恢复容量自动设置', exact: true }).click()
   await expect(context).toHaveValue('')
   await expect(output).toHaveValue('')
   await expect(context).toHaveAttribute('placeholder', /(?:^|（)262144(?:）|$)/)
@@ -479,12 +493,24 @@ try {
       persisted: configured.persisted,
     })
   }
+  const switchedRun = await exerciseRunModelSettings(page, {
+    baseInput: basicInput,
+    calls,
+    settled,
+  })
+  const capabilityRun = await exerciseReasoningCapabilities(page, {
+    baseInput: basicInput,
+    calls,
+    settled,
+  })
   const metadataBeforeRestart = metadataCalls.length
   await application.close()
   application = undefined
   page = await launch()
   const restarted = await page.evaluate(() => window.harness.config())
   assert.equal(metadataCalls.length, metadataBeforeRestart, 'restart must reuse resolved limits')
+  await verifyRunModelSettingsAfterRestart(page, switchedRun, settled, calls)
+  await verifyReasoningCapabilitiesAfterRestart(page, capabilityRun, settled, calls)
   for (const item of capacityRuns) {
     const model = restarted.models.find((model) => model.id === item.model_id)
     assert(model, 'the exact configured identity survives restart')
@@ -507,7 +533,7 @@ try {
   assert.equal(
     metadataCalls.length,
     metadataBeforeRestart,
-    'restoring explicit limits never probes',
+    'restoring saved capabilities and limits never probes',
   )
   for (const item of saved) {
     if (!item.persisted) {
@@ -551,9 +577,7 @@ try {
     'no token-count requests',
   )
   assert(
-    metadataCalls.every((path) =>
-      ['/v1/models', '/v1/models/fixture-messages-metadata'].includes(path),
-    ),
+    metadataCalls.every((path) => /^\/v1\/models(?:\/[a-zA-Z0-9_-]+)?$/.test(path)),
     'metadata uses only model information routes',
   )
   assert.equal(errors.length, 0, errors.join('\n'))

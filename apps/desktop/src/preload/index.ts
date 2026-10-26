@@ -61,6 +61,7 @@ const bridge: DesktopBridge = {
   listRuns: () => invoke<RunSummary[]>({ operation: 'listRuns' }),
   getRun: (id) => invoke<RunDetail>({ operation: 'getRun', id }),
   createRun: (input) => invoke<RunDetail>({ operation: 'createRun', input }),
+  updateRunModel: (id, input) => invoke<RunDetail>({ operation: 'updateRunModel', id, input }),
   chooseWorkspace: () => ipcRenderer.invoke(channels.chooseWorkspace) as Promise<string | null>,
   openWorkspace: (path) => ipcRenderer.invoke(channels.openWorkspace, path) as Promise<string>,
   chooseFiles: () => ipcRenderer.invoke(channels.chooseFiles) as Promise<FileImportResult>,

@@ -106,6 +106,7 @@ impl AppState {
                 0,
                 Some(entry.snapshot.clone()),
                 Some(&replacement.model),
+                true,
             )?;
             // Preserve the Snapshot and its live subscriptions. Persist the
             // binding before exposing the new runtime. On failure, both model

@@ -56,7 +56,14 @@ impl HttpModel {
                     messages.push(json!({"role":"user","content":observations}));
                 }
                 let mut body = json!({"model":self.model,"messages":messages,"stream":true,"stream_options":{"include_usage":true}});
-                let field = if matches!(self.reasoning, ReasoningMode::Effort { .. }) {
+                let field = if matches!(
+                    self.reasoning,
+                    ReasoningMode::Effort { .. }
+                        | ReasoningMode::Configured {
+                            adapter: ReasoningAdapter::Effort,
+                            ..
+                        }
+                ) {
                     "max_completion_tokens"
                 } else {
                     "max_tokens"
@@ -118,6 +125,55 @@ impl HttpModel {
                 if max > 1024 {
                     body["thinking"] =
                         json!({"type":"enabled","budget_tokens":(*tokens).min(max - 1)});
+                }
+            }
+            ReasoningMode::Configured { adapter, option } => {
+                match adapter {
+                    ReasoningAdapter::None => return Err(ProviderError::InvalidRequest),
+                    ReasoningAdapter::Effort => {
+                        if self.protocol == ProviderProtocol::Responses {
+                            body["reasoning"] = json!({"effort":option.effort});
+                        } else {
+                            body["reasoning_effort"] = json!(option.effort);
+                        }
+                    }
+                    ReasoningAdapter::MessagesEffortOnly => {
+                        body["output_config"] = json!({"effort":option.effort});
+                    }
+                    ReasoningAdapter::Deepseek
+                    | ReasoningAdapter::MessagesEffort
+                    | ReasoningAdapter::AnthropicAdaptive => {
+                        let enabled = option.enabled != Some(false);
+                        let kind = if !enabled {
+                            "disabled"
+                        } else if *adapter == ReasoningAdapter::AnthropicAdaptive {
+                            "adaptive"
+                        } else {
+                            "enabled"
+                        };
+                        body["thinking"] = json!({"type":kind});
+                        if enabled {
+                            if *adapter == ReasoningAdapter::Deepseek {
+                                body["reasoning_effort"] = json!(option.effort);
+                            } else {
+                                body["output_config"] = json!({"effort":option.effort});
+                            }
+                        }
+                    }
+                    ReasoningAdapter::AnthropicBudget => {
+                        if option.enabled == Some(false) {
+                            body["thinking"] = json!({"type":"disabled"});
+                        } else if max > 1024 {
+                            // Summaries can reserve less output than normal turns.
+                            body["thinking"] = json!({"type":"enabled","budget_tokens":option.budget_tokens.unwrap().min(max - 1)});
+                        }
+                    }
+                    ReasoningAdapter::ChatToggle => {
+                        body["enable_thinking"] = json!(option.enabled);
+                    }
+                    ReasoningAdapter::ThinkingToggle => {
+                        body["thinking"] = json!({"type":if option.enabled == Some(true) { "enabled" } else { "disabled" }});
+                    }
                 }
             }
         }

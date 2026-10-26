@@ -2,7 +2,7 @@ use crate::{
     AppState,
     contracts::{
         AppConfig, ApprovalInput, ConfigureModel, CreateRunInput, ModelInfo, ReplaceModelInput,
-        ResumeRunInput, RevertInput, RunDetail, RunSummary, SubmitInput,
+        ResumeRunInput, RevertInput, RunDetail, RunSummary, SubmitInput, UpdateRunModelInput,
     },
     service::ServiceError,
 };
@@ -15,7 +15,7 @@ use axum::{
         IntoResponse, Response, Sse,
         sse::{Event, KeepAlive},
     },
-    routing::{delete, get, post},
+    routing::{delete, get, patch, post},
 };
 use std::{convert::Infallible, time::Duration};
 mod health_router;
@@ -43,6 +43,7 @@ pub(crate) fn router(state: AppState) -> Router {
         )
         .route("/runs", get(list).post(create))
         .route("/runs/{id}", get(detail))
+        .route("/runs/{id}/model", patch(update_run_model))
         .route(
             "/runs/{id}/messages/{message_id}/images/{index}",
             get(message_image),
@@ -186,6 +187,13 @@ async fn replace_model(
         .replace_model(&id, &input.replacement_model_id)
         .await
         .map(Json)
+}
+async fn update_run_model(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(input): Json<UpdateRunModelInput>,
+) -> Result<Json<RunDetail>, ServiceError> {
+    state.update_run_model(&id, input).await.map(Json)
 }
 async fn compact(
     State(state): State<AppState>,

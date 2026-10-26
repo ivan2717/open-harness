@@ -115,8 +115,12 @@ pub(super) fn protected_user_context(
     )))
 }
 
-pub(super) fn uncompacted_context(input: ContextInputRef<'_>) -> PreparedContext {
-    let projection = ToolOutputProjection::restored(input, None);
+pub(super) fn uncompacted_context(
+    input: ContextInputRef<'_>,
+    portable_history_through: Option<u64>,
+) -> PreparedContext {
+    let projection = ToolOutputProjection::restored(input, None)
+        .with_portable_history_through(portable_history_through);
     let omitted_history = projected_omission(input.run_id, None, input.events, &projection);
     let request = build_compacted_request(
         input,
@@ -268,6 +272,8 @@ pub(super) struct ToolOutputProjection<'a> {
     prune_new: bool,
     replacements: HashMap<u64, PrunedToolOutput>,
     tool_calls: HashMap<&'a str, &'a str>,
+    tool_call_sequences: HashMap<&'a str, u64>,
+    portable_history_through: Option<u64>,
     projector: Option<&'a dyn ToolOutputProjector>,
 }
 
@@ -299,6 +305,31 @@ impl<'a> ToolOutputProjection<'a> {
             prune_new: true,
             replacements: HashMap::new(),
             tool_calls,
+            tool_call_sequences: input
+                .events
+                .iter()
+                .flat_map(|envelope| match &envelope.event {
+                    RunEvent::ToolCallRequested { call_id, .. } => {
+                        vec![(call_id.as_str(), envelope.sequence)]
+                    }
+                    RunEvent::ModelResponseReceived {
+                        response: Some(response),
+                        ..
+                    } => response
+                        .content
+                        .iter()
+                        .filter_map(|block| {
+                            if let ContentBlock::ToolCall { id, .. } = block {
+                                Some((id.as_str(), envelope.sequence))
+                            } else {
+                                None
+                            }
+                        })
+                        .collect(),
+                    _ => Vec::new(),
+                })
+                .collect(),
+            portable_history_through: None,
             projector: input.tool_output_projector,
         }
     }
@@ -317,6 +348,11 @@ impl<'a> ToolOutputProjection<'a> {
     pub(super) fn enable_pruning(&mut self, max_chars: usize) {
         self.max_chars = max_chars;
         self.prune_new = true;
+    }
+
+    pub(super) fn with_portable_history_through(mut self, sequence: Option<u64>) -> Self {
+        self.portable_history_through = sequence;
+        self
     }
 
     pub(super) fn replacements(&self, events: &[RunEventEnvelope]) -> Vec<PrunedToolOutput> {
@@ -356,6 +392,16 @@ impl<'a> ToolOutputProjection<'a> {
         let mut messages: Vec<ModelMessage> = Vec::new();
         let mut assistant_step = None;
         for envelope in events {
+            if self
+                .portable_history_through
+                .is_some_and(|through| envelope.sequence <= through)
+                && let Some(message) =
+                    super::portable::historical_message(envelope, self.output(envelope))
+            {
+                messages.push(message);
+                assistant_step = None;
+                continue;
+            }
             match &envelope.event {
                 RunEvent::RunStarted { .. } | RunEvent::InputReceived { .. } => messages.push(
                     ModelMessage::user(envelope.event.user_input().expect("user event")),
@@ -378,6 +424,19 @@ impl<'a> ToolOutputProjection<'a> {
                     // Native windows may already contain the assistant calls;
                     // their missing results must still appear in this tail.
                     for call in interrupted_calls {
+                        if self.portable_history_through.is_some_and(|through| {
+                            envelope.sequence <= through
+                                || self
+                                    .tool_call_sequences
+                                    .get(call.call_id.as_str())
+                                    .is_some_and(|sequence| *sequence <= through)
+                        }) {
+                            messages.push(super::portable::historical_interruption(
+                                &call.call_id,
+                                call.outcome.explanation(),
+                            ));
+                            continue;
+                        }
                         messages.push(ModelMessage::tool_result(
                             call.call_id.clone(),
                             call.outcome.explanation().into(),

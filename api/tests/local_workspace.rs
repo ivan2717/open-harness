@@ -81,6 +81,8 @@ impl Fixture {
                 max_output_tokens: 4096,
                 reasoning_mode: "off".into(),
                 reasoning_effort: "high".into(),
+                reasoning_capability: None,
+                reasoning_default: None,
             })
             .await
             .unwrap()
@@ -89,6 +91,7 @@ impl Fixture {
 
     fn input(&self, model_id: String, permission_mode: PermissionMode) -> CreateRunInput {
         CreateRunInput {
+            reasoning_effort: None,
             execution_policy: Default::default(),
             prompt: "Fix answer.txt and preserve my existing changes.".into(),
             files: Vec::new(),
@@ -368,13 +371,30 @@ async fn snapshot_failure_does_not_lose_the_authoritative_resume_event() {
         .join("state/runs")
         .join(format!("{id}.json.tmp"));
     fs::create_dir(&blocked_snapshot).unwrap();
-    // The recovery event commits before context observation hits the unwritable
-    // snapshot. That turn fails, but its durable recovery history is retained.
-    state
-        .resume(&id, Some("Continue after cancellation.".into()))
+    // Admission writes the authoritative recovery event before projecting the
+    // snapshot. A projection failure is returned synchronously and must not
+    // launch a model request or leave a phantom running task behind.
+    let requests_before = fixture.requests.lock().unwrap().len();
+    assert!(
+        state
+            .resume(&id, Some("Continue after cancellation.".into()))
+            .await
+            .is_err()
+    );
+    assert_ne!(state.get(&id).unwrap().summary.status, RunStatus::Running);
+    assert_eq!(fixture.requests.lock().unwrap().len(), requests_before);
+    use agent_runtime::EventStore;
+    let stored = agent_runtime::JsonlEventStore::new(fixture.directory.join("state/events"))
+        .load_for_runtime(&id)
         .await
+        .unwrap()
         .unwrap();
-    assert_eq!(settled(&state, &id).await.summary.status, RunStatus::Failed);
+    assert!(
+        stored
+            .events
+            .iter()
+            .any(|event| matches!(event.event, agent_core::agent::RunEvent::RunResumed { .. }))
+    );
     fs::remove_dir(&blocked_snapshot).unwrap();
     state.shutdown().await;
     drop(state);

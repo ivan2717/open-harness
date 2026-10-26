@@ -3,8 +3,10 @@ import type {
   CreateRunInput,
   ResolvedModelConfiguration,
   TextFileReference,
+  UpdateRunModelInput,
 } from '../shared/contracts'
 import { MODEL_TOKEN_LIMIT, resolveModelLimits } from '../shared/model-limits'
+import { validReasoningId, validateReasoningCapability } from '../shared/model-reasoning'
 import type { ExtensionConfig } from '../shared/extensions'
 import { extensionConfiguration, pluginIdentifier } from './extension-protocol'
 import {
@@ -63,17 +65,19 @@ export type BridgeRequest =
   | { operation: 'configureModel'; input: ConfigureModelInput }
   | { operation: 'refreshModelContext'; id: string }
   | { operation: 'createRun'; input: CreateRunInput }
+  | { operation: 'updateRunModel'; id: string; input: UpdateRunModelInput }
   | { operation: 'submitInput'; id: string; message: string; files?: TextFileReference[] }
 
 export interface ApiRequest {
   path: string
-  method: 'GET' | 'POST' | 'DELETE'
+  method: 'GET' | 'POST' | 'PATCH' | 'DELETE'
   /** Main-process access check only; never forwarded in the HTTP body. */
   workspacePath?: string
   body?:
     | ExtensionConfig
     | CreateRunInput
     | ConfigureModelInput
+    | UpdateRunModelInput
     | { message?: string; files?: TextFileReference[] }
     | { path: string }
     | { allow: boolean }
@@ -142,6 +146,14 @@ function userText(value: unknown, files?: TextFileReference[]): string {
   return value
 }
 
+function reasoningEffort(value: unknown): string | undefined {
+  if (value === undefined || value === null) return undefined
+  // The backend validates the selected model's advertised choices. This
+  // boundary only admits short names, never arbitrary provider payloads.
+  if (!validReasoningId(value)) throw new Error('无效的思考强度')
+  return value
+}
+
 function absolutePath(path: string): boolean {
   return path.startsWith('/') || path.startsWith('\\\\') || /^[A-Za-z]:[\\/]/.test(path)
 }
@@ -188,10 +200,27 @@ export function modelConfiguration(value: unknown): ConfigureModelInput {
   const reasoning_effort = input.reasoning_effort
   if (
     !['off', 'standard', 'deepseek'].includes(String(reasoning_mode)) ||
-    !['low', 'medium', 'high'].includes(String(reasoning_effort)) ||
+    !validReasoningId(reasoning_effort) ||
     (reasoning_mode === 'deepseek' && protocol !== 'chat_completions')
   )
     throw new Error('Invalid reasoning configuration')
+  const reasoning_capability =
+    input.reasoning_capability === undefined
+      ? undefined
+      : validateReasoningCapability(input.reasoning_capability, protocol)
+  const reasoning_default = reasoningEffort(input.reasoning_default)
+  if (reasoning_capability && reasoning_mode !== 'off')
+    throw new Error('请使用模型思考能力选择默认强度，不能同时使用旧思考模式')
+  if (reasoning_default && reasoning_capability) {
+    const selected = reasoning_capability.options.find((option) => option.id === reasoning_default)
+    if (
+      !selected ||
+      (max_output_tokens !== undefined &&
+        selected.budget_tokens !== undefined &&
+        selected.budget_tokens >= max_output_tokens)
+    )
+      throw new Error('所选思考设置不受支持或超过输出上限')
+  }
   const configuration: ConfigureModelInput = {
     protocol,
     base_url,
@@ -201,6 +230,10 @@ export function modelConfiguration(value: unknown): ConfigureModelInput {
     api_key: boundedText(input.api_key, 4096, 'API key').trim(),
     reasoning_mode: reasoning_mode as ConfigureModelInput['reasoning_mode'],
     reasoning_effort: reasoning_effort as ConfigureModelInput['reasoning_effort'],
+    ...(reasoning_capability ? { reasoning_capability } : {}),
+    ...(input.reasoning_default !== undefined
+      ? { reasoning_default: reasoning_default ?? null }
+      : {}),
     ...(input.supports_images === undefined
       ? {}
       : { supports_images: input.supports_images === true }),
@@ -218,6 +251,8 @@ export function resolvedModelConfiguration(value: unknown): ResolvedModelConfigu
   const { context_window, max_output_tokens } = configuration
   if (context_window === undefined || max_output_tokens === undefined)
     throw new Error('Model capacities must be resolved before saving')
+  if (configuration.reasoning_default && !configuration.reasoning_capability)
+    throw new Error('选择思考强度前需要声明模型能力')
   return { ...configuration, context_window, max_output_tokens }
 }
 
@@ -320,9 +355,21 @@ export function apiRequest(value: unknown): ApiRequest {
       return { path: '/api/models', method: 'POST', body: modelConfiguration(request.input) }
     case 'refreshModelContext':
       return { path: `/api/models/${identifier(request.id)}/context/refresh`, method: 'POST' }
+    case 'updateRunModel': {
+      const input = object(request.input)
+      return {
+        path: `/api/runs/${identifier(request.id)}/model`,
+        method: 'PATCH',
+        body: {
+          model_id: identifier(input.model_id),
+          reasoning_effort: reasoningEffort(input.reasoning_effort) ?? null,
+        },
+      }
+    }
     case 'createRun': {
       const input = object(request.input)
       const files = fileReferences(input.files)
+      const reasoning_effort = reasoningEffort(input.reasoning_effort)
       let workspace: Pick<CreateRunInput, 'workspace_path' | 'permission_mode'> = {}
       if (input.workspace_path !== undefined) {
         const path = boundedText(input.workspace_path, 4096, 'project path')
@@ -340,6 +387,7 @@ export function apiRequest(value: unknown): ApiRequest {
         body: {
           prompt: userText(input.prompt, files),
           model_id: boundedText(input.model_id, 256, 'model'),
+          ...(reasoning_effort ? { reasoning_effort } : {}),
           ...(files?.length ? { files } : {}),
           ...workspace,
         },

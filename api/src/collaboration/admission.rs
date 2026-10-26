@@ -59,6 +59,9 @@ impl AppState {
         let now = time::now();
         let detail = RunDetail {
             summary: RunSummary {
+                reasoning_settings_version: root.summary.reasoning_settings_version,
+                reasoning_effort: root.summary.reasoning_effort.clone(),
+                model_history_through: None,
                 delegation: Some(Delegation {
                     parent_run_id: caller.into(),
                     root_run_id: caller.into(),
@@ -88,7 +91,13 @@ impl AppState {
             context: Some(initial_context()),
             error: None,
         };
-        let entry = self.make_entry(detail, 0)?;
+        let entry = self.make_entry_with_snapshot(
+            detail,
+            0,
+            None,
+            None,
+            root.summary.reasoning_settings_version == 0,
+        )?;
         Self::require_workspace_available(&entry)?;
         let access = root
             .summary

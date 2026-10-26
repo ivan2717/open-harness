@@ -25,7 +25,7 @@ import { configOptions, storeSnapshot, useRun, useWorkspace } from '../lib/queri
 import { taskModels } from '../lib/task-models'
 import { useCreateRun } from '../lib/use-create-run'
 import { useUiStore } from '../state/ui-store'
-import type { TextFileReference } from '../../shared/contracts'
+import type { TextFileReference, UpdateRunModelInput } from '../../shared/contracts'
 
 interface UserMessageInput {
   message?: string
@@ -56,11 +56,18 @@ export function WelcomePage() {
   const create = useCreateRun()
   const selectedModel = useUiStore((state) => state.selectedModel)
   const setModel = useUiStore((state) => state.setSelectedModel)
+  const draftEfforts = useUiStore((state) => state.draftReasoningEfforts)
+  const setDraftEffort = useUiStore((state) => state.setDraftReasoningEffort)
   const project = useUiStore((state) => state.project)
   const setProject = useUiStore((state) => state.setProject)
   if (config.isPending) return <Loading />
   if (config.isError) return <ErrorState error={config.error} retry={() => void config.refetch()} />
   const { models, selected: model } = taskModels(config.data, selectedModel)
+  const savedEffort = model ? draftEfforts[model.id] : undefined
+  const reasoningEffort =
+    savedEffort && model?.reasoning?.supported_efforts.includes(savedEffort)
+      ? savedEffort
+      : undefined
   const draftKey = project ? `new:${project.path}` : 'new'
   return (
     <div className="workspace-layout">
@@ -76,6 +83,10 @@ export function WelcomePage() {
                 models={models}
                 modelId={model?.id ?? ''}
                 onModelChange={setModel}
+                reasoningEffort={reasoningEffort}
+                onReasoningChange={(effort) => {
+                  if (model) setDraftEffort(model.id, effort)
+                }}
                 project={project}
                 onProjectChange={setProject}
                 pending={create.isPending}
@@ -85,6 +96,7 @@ export function WelcomePage() {
                   await create.mutateAsync({
                     prompt,
                     model_id: model.id,
+                    ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
                     files,
                     ...(project
                       ? { workspace_path: project.path, permission_mode: project.permission }
@@ -154,6 +166,10 @@ export function RunPage({ runId }: { runId: string }) {
     mutationFn: () => window.harness.cancelCompaction(runId),
     onSuccess: (run) => storeSnapshot(client, run),
   })
+  const modelSettings = useMutation({
+    mutationFn: (settings: UpdateRunModelInput) => window.harness.updateRunModel(runId, settings),
+    onSuccess: (run) => storeSnapshot(client, run),
+  })
   if (query.isPending) return <Loading label="正在恢复会话记录" />
   if (query.isError && !query.data)
     return <ErrorState error={query.error} retry={() => void query.refetch()} />
@@ -163,15 +179,20 @@ export function RunPage({ runId }: { runId: string }) {
   const waiting = run.status === 'waiting_for_input'
   const delegated = Boolean(run.delegation)
   const compacting = run.compacting || compact.isPending
-  const active = running || compacting || input.isPending || resume.isPending
+  const active =
+    running || compacting || input.isPending || resume.isPending || modelSettings.isPending
   const mutationError =
     cancel.error ??
     input.error ??
     resume.error ??
     compact.error ??
     cancelCompaction.error ??
-    approve.error
+    approve.error ??
+    modelSettings.error
   const model = config.data?.models.find((entry) => entry.id === run.model_id)
+  const models = (config.data?.models ?? []).filter((entry) =>
+    run.model_id === 'local-demo' ? entry.id === 'local-demo' : entry.id !== 'local-demo',
+  )
   return (
     <div className="workspace-layout">
       <section className="main-pane">
@@ -257,7 +278,9 @@ export function RunPage({ runId }: { runId: string }) {
               {!delegated && (
                 <button
                   className="resume-button"
-                  disabled={resume.isPending || compacting || !model?.available}
+                  disabled={
+                    resume.isPending || modelSettings.isPending || compacting || !model?.available
+                  }
                   onClick={() => resume.mutate({})}
                 >
                   <Play size={12} />
@@ -271,7 +294,9 @@ export function RunPage({ runId }: { runId: string }) {
               {run.status === 'interrupted' && <span>执行已中断，消息已保存。</span>}
               <button
                 className="resume-button"
-                disabled={resume.isPending || compacting || !model?.available}
+                disabled={
+                  resume.isPending || modelSettings.isPending || compacting || !model?.available
+                }
                 onClick={() => resume.mutate({})}
               >
                 <Play size={12} />
@@ -300,8 +325,21 @@ export function RunPage({ runId }: { runId: string }) {
                 key={runId}
                 runId={runId}
                 draftKey={`run:${runId}`}
-                models={config.data?.models ?? []}
+                models={models}
                 modelId={run.model_id}
+                reasoningEffort={run.reasoning_effort}
+                onModelChange={(modelId) => {
+                  if (modelId !== run.model_id)
+                    modelSettings.mutate({ model_id: modelId, reasoning_effort: null })
+                }}
+                onReasoningChange={(effort) => {
+                  if (effort !== (run.reasoning_effort ?? null))
+                    modelSettings.mutate({ model_id: run.model_id, reasoning_effort: effort })
+                }}
+                modelSettingsDisabled={compacting}
+                modelSettingsDisabledReason={
+                  compacting ? '正在整理上下文，完成后可切换模型和思考强度。' : undefined
+                }
                 project={
                   run.workspace_path
                     ? {
@@ -313,7 +351,7 @@ export function RunPage({ runId }: { runId: string }) {
                 running={running}
                 onStop={() => cancel.mutate()}
                 stopping={cancel.isPending}
-                pending={input.isPending || resume.isPending}
+                pending={input.isPending || resume.isPending || modelSettings.isPending}
                 disabled={compacting || (!running && !model?.available)}
                 onSubmit={async (prompt, files) => {
                   if (waiting) await input.mutateAsync({ message: prompt, files })
@@ -337,6 +375,7 @@ export function RunPage({ runId }: { runId: string }) {
                 disabled={
                   input.isPending ||
                   resume.isPending ||
+                  modelSettings.isPending ||
                   (compacting
                     ? cancelCompaction.isPending
                     : running ||

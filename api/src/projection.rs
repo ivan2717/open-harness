@@ -282,6 +282,9 @@ mod tests {
     fn detail() -> RunDetail {
         RunDetail {
             summary: RunSummary {
+                reasoning_settings_version: 1,
+                reasoning_effort: None,
+                model_history_through: None,
                 delegation: None,
                 execution_policy: Default::default(),
                 compacting: false,

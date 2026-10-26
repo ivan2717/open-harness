@@ -32,6 +32,25 @@ afterEach(async () => {
 })
 
 describe('model credential storage', () => {
+  it('preserves independent capability mapping and default across restart', async () => {
+    const file = await location()
+    const configured: ResolvedModelConfiguration = {
+      ...input,
+      reasoning_mode: 'off',
+      reasoning_default: 'thorough',
+      reasoning_capability: {
+        source: 'manual',
+        adapter: 'effort',
+        options: [{ id: 'thorough', label: '深入', effort: 'xhigh' }],
+      },
+    }
+    const vault = new ModelVault(file, cipher)
+    await vault.save('model', configured)
+    const copy = vault.get('model')!
+    copy.reasoning_capability!.options[0].effort = 'low'
+    expect(vault.get('model')).toEqual(configured)
+    expect(await new ModelVault(file, cipher).load()).toEqual([configured])
+  })
   it('stores only cipher output, serializes concurrent saves, and restores multiple configurations', async () => {
     const file = await location()
     const vault = new ModelVault(file, cipher)
@@ -87,6 +106,56 @@ describe('model credential storage', () => {
 })
 
 describe('provider IPC validation', () => {
+  it('validates configured defaults after capability discovery without conflating default and off', () => {
+    const capability = {
+      source: 'manual',
+      adapter: 'deepseek',
+      options: [
+        { id: 'off', enabled: false },
+        { id: 'thorough', effort: 'max' },
+      ],
+    }
+    const configured = {
+      ...input,
+      protocol: 'chat_completions',
+      reasoning_mode: 'off',
+      reasoning_capability: capability,
+    }
+    expect(
+      resolvedModelConfiguration({ ...configured, reasoning_default: null }).reasoning_default,
+    ).toBeNull()
+    expect(
+      resolvedModelConfiguration({ ...configured, reasoning_default: 'off' }).reasoning_default,
+    ).toBe('off')
+    expect(
+      resolvedModelConfiguration({ ...configured, reasoning_default: 'thorough' })
+        .reasoning_default,
+    ).toBe('thorough')
+    expect(() => resolvedModelConfiguration({ ...configured, reasoning_default: 'high' })).toThrow(
+      '不受支持',
+    )
+    expect(() => modelConfiguration({ ...configured, reasoning_mode: 'standard' })).toThrow()
+    expect(
+      modelConfiguration({ ...input, reasoning_mode: 'off', reasoning_default: 'xhigh' })
+        .reasoning_default,
+    ).toBe('xhigh')
+    expect(() =>
+      resolvedModelConfiguration({ ...input, reasoning_mode: 'off', reasoning_default: 'xhigh' }),
+    ).toThrow('声明模型能力')
+    expect(() =>
+      resolvedModelConfiguration({
+        ...input,
+        protocol: 'anthropic_messages',
+        reasoning_mode: 'off',
+        reasoning_default: 'large',
+        reasoning_capability: {
+          source: 'manual',
+          adapter: 'anthropic_budget',
+          options: [{ id: 'large', budget_tokens: 8192 }],
+        },
+      }),
+    ).toThrow('输出上限')
+  })
   it('accepts explicit protocol settings and only fixed maintenance routes', () => {
     expect(modelConfiguration(input)).toEqual(input)
     expect(apiRequest({ operation: 'compactRun', id: 'run-a' }).path).toBe(

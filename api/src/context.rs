@@ -246,6 +246,11 @@ impl<C: ContextCompactor> ObservedContext<C> {
         self
     }
 
+    pub fn with_portable_history_through(mut self, sequence: Option<u64>) -> Self {
+        self.inner = self.inner.with_portable_history_through(sequence);
+        self
+    }
+
     fn derived_messages(&self, input: ContextInputRef<'_>) -> Vec<agent_runtime::ModelMessage> {
         let mut messages = input.derived_messages.to_vec();
         if let Some(memory) = &self.memory {
@@ -517,6 +522,7 @@ mod tests {
         let snapshot = Snapshot::new(
             RunDetail {
                 summary: RunSummary {
+                    reasoning_settings_version: 1,
                     delegation: None,
                     execution_policy: Default::default(),
                     compacting: false,
@@ -526,6 +532,8 @@ mod tests {
                     prompt: "Continue the task".into(),
                     status: RunStatus::Running,
                     model_id: "test".into(),
+                    reasoning_effort: None,
+                    model_history_through: None,
                     workspace_path: None,
                     permission_mode: Default::default(),
                     created_at: String::new(),
@@ -633,6 +641,7 @@ mod tests {
         fs::create_dir_all(&directory).unwrap();
         let detail = RunDetail {
             summary: RunSummary {
+                reasoning_settings_version: 1,
                 delegation: None,
                 execution_policy: Default::default(),
                 compacting: false,
@@ -642,6 +651,8 @@ mod tests {
                 prompt: "test".into(),
                 status: RunStatus::Running,
                 model_id: "local-demo".into(),
+                reasoning_effort: None,
+                model_history_through: None,
                 workspace_path: None,
                 permission_mode: Default::default(),
                 created_at: String::new(),
@@ -706,6 +717,7 @@ mod tests {
         let snapshot = Snapshot::new(
             RunDetail {
                 summary: RunSummary {
+                    reasoning_settings_version: 1,
                     delegation: None,
                     execution_policy: Default::default(),
                     compacting: false,
@@ -715,6 +727,8 @@ mod tests {
                     prompt: "test".into(),
                     status: RunStatus::WaitingForInput,
                     model_id: "local-demo".into(),
+                    reasoning_effort: None,
+                    model_history_through: None,
                     workspace_path: None,
                     permission_mode: Default::default(),
                     created_at: String::new(),

@@ -1,4 +1,6 @@
 import type { ModelCapacity, ResolvedModelLimits } from './model-limits'
+import type { ReasoningCapability } from './model-reasoning'
+export type { ReasoningCapability, ReasoningOption } from './model-reasoning'
 import type {
   ExtensionConfig,
   ExtensionSettings,
@@ -34,6 +36,11 @@ export interface ModelInfo {
   description: string
   available: boolean
   context_window: number
+  reasoning?: {
+    default_effort: string | null
+    supported_efforts: string[]
+    capability?: ReasoningCapability
+  }
 }
 
 export interface AppConfig {
@@ -54,7 +61,11 @@ export interface ConfigureModelInput {
   /** Per-request output budget, not the provider's physical maximum. */
   max_output_tokens?: number
   reasoning_mode: 'off' | 'standard' | 'deepseek'
-  reasoning_effort: 'low' | 'medium' | 'high'
+  reasoning_effort: string
+  /** Omitted for legacy profiles; resolved independently of the default selection. */
+  reasoning_capability?: ReasoningCapability
+  /** Omitted/null leaves the provider's default parameters unchanged. */
+  reasoning_default?: string | null
   supports_images?: boolean
 }
 
@@ -86,6 +97,8 @@ export interface RunSummary {
   delegation?: RunDelegation | null
   execution_policy?: ExecutionPolicy
   model_id: string
+  /** Omitted/null inherits this model configuration's default. */
+  reasoning_effort?: string | null
   workspace_path?: string | null
   permission_mode?: PermissionMode
   created_at: string
@@ -171,9 +184,16 @@ export interface RunDetail extends RunSummary {
 export interface CreateRunInput {
   prompt: string
   model_id: string
+  reasoning_effort?: string
   files?: TextFileReference[]
   workspace_path?: string
   permission_mode?: PermissionMode
+}
+
+export interface UpdateRunModelInput {
+  model_id: string
+  /** Omitted/null resets the conversation override to the selected model's default. */
+  reasoning_effort?: string | null
 }
 
 /** A user-selected UTF-8 file snapshot, not a grant to its parent directory. */
@@ -263,6 +283,7 @@ export interface DesktopBridge {
   listRuns(): Promise<RunSummary[]>
   getRun(id: string): Promise<RunDetail>
   createRun(input: CreateRunInput): Promise<RunDetail>
+  updateRunModel(id: string, input: UpdateRunModelInput): Promise<RunDetail>
   chooseFiles(): Promise<FileImportResult>
   importFiles(files: File[]): Promise<FileImportResult>
   pasteFiles(): Promise<FileImportResult>

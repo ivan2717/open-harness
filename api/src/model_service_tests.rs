@@ -29,6 +29,8 @@ fn input(window: usize) -> ConfigureModel {
         max_output_tokens: 2048,
         reasoning_mode: "off".into(),
         reasoning_effort: "medium".into(),
+        reasoning_capability: None,
+        reasoning_default: None,
         supports_images: false,
     }
 }
@@ -56,6 +58,9 @@ impl Fixture {
     async fn conversation(&self, id: &str) -> Arc<RunEntry> {
         let detail = RunDetail {
             summary: RunSummary {
+                reasoning_settings_version: 1,
+                reasoning_effort: None,
+                model_history_through: None,
                 delegation: None,
                 execution_policy: Default::default(),
                 id: id.into(),

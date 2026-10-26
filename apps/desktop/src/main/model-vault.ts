@@ -23,7 +23,7 @@ export class ModelVault {
   /** Main-process access only; never send saved credentials through IPC. */
   get(id: string): ResolvedModelConfiguration | undefined {
     const input = this.entries.get(identifier(id))
-    return input ? { ...input } : undefined
+    return input ? structuredClone(input) : undefined
   }
 
   /** Remove a superseded profile only after its replacement and run bindings are saved. */

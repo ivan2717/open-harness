@@ -170,6 +170,8 @@ impl Fixture {
                 max_output_tokens: 4096,
                 reasoning_mode: "off".into(),
                 reasoning_effort: "high".into(),
+                reasoning_capability: None,
+                reasoning_default: None,
                 supports_images: false,
             })
             .await
@@ -179,6 +181,7 @@ impl Fixture {
 
     fn input(&self, model_id: String, prompt: &str) -> CreateRunInput {
         CreateRunInput {
+            reasoning_effort: None,
             prompt: prompt.into(),
             model_id,
             files: Vec::new(),

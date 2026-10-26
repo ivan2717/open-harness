@@ -60,6 +60,9 @@ mod plugins;
 #[path = "model_service.rs"]
 mod models;
 
+#[path = "run_model.rs"]
+mod run_model;
+
 #[path = "collaboration/mod.rs"]
 pub(crate) mod collaboration;
 
@@ -176,7 +179,7 @@ impl AppState {
         self.inner.token.as_deref()
     }
     pub fn config(&self) -> AppConfig {
-        let mut models = vec![ModelInfo { id: MODEL_ID.into(), name: "Local demo · 离线演示".into(), description: "确定性本地脚本，使用真实运行循环、工具与压缩管理器。8K 演示窗口用于快速观察压缩；不会产生 API 费用。".into(), available: true, context_window: WINDOW_TOKENS }];
+        let mut models = vec![ModelInfo { id: MODEL_ID.into(), name: "Local demo · 离线演示".into(), description: "确定性本地脚本，使用真实运行循环、工具与压缩管理器。8K 演示窗口用于快速观察压缩；不会产生 API 费用。".into(), available: true, context_window: WINDOW_TOKENS, reasoning: None }];
         let mut configured: Vec<_> = self
             .inner
             .models
@@ -196,6 +199,7 @@ impl AppState {
                     description: "重新添加相同模型配置后可继续此会话。".into(),
                     available: false,
                     context_window: detail.context.map_or(0, |c| c.window_tokens),
+                    reasoning: None,
                 });
             }
         }
@@ -245,6 +249,7 @@ impl AppState {
                 0,
                 Some(entry.snapshot.clone()),
                 Some(&configured.model),
+                true,
             )?;
             prepared.push((detail.summary.id, restored));
         }
@@ -298,7 +303,7 @@ impl AppState {
             .ok_or(ServiceError::NotFound)
     }
     fn make_entry(&self, detail: RunDetail, round: u32) -> io::Result<Arc<RunEntry>> {
-        self.make_entry_with_snapshot(detail, round, None, None)
+        self.make_entry_with_snapshot(detail, round, None, None, false)
     }
     fn make_entry_with_snapshot(
         &self,
@@ -306,10 +311,12 @@ impl AppState {
         round: u32,
         existing: Option<Snapshot>,
         configured: Option<&agent_providers::HttpModel>,
+        restore_saved_reasoning: bool,
     ) -> io::Result<Arc<RunEntry>> {
         let id = detail.summary.id.clone();
         let child = detail.summary.delegation.is_some();
         let max_steps = detail.summary.execution_policy.max_steps;
+        let model_history_through = detail.summary.model_history_through;
         let demo = detail.summary.model_id == MODEL_ID;
         let ask = detail.summary.prompt.trim_start().starts_with("/ask");
         let model = if demo {
@@ -325,6 +332,20 @@ impl AppState {
                 .map_or(ServiceModel::Unavailable, |config| {
                     ServiceModel::Http(Arc::new(config.model.clone()))
                 })
+        };
+        let model = match (&model, detail.summary.reasoning_effort.as_deref()) {
+            (ServiceModel::Http(model), Some(effort)) => ServiceModel::Http(Arc::new(
+                (if restore_saved_reasoning && detail.summary.reasoning_settings_version == 0 {
+                    model.restore_legacy_reasoning_effort(effort)
+                } else {
+                    model.with_reasoning_effort(effort)
+                })
+                .map_err(io::Error::other)?,
+            )),
+            (ServiceModel::Demo(_), Some(_)) => {
+                return Err(io::Error::other("离线演示不支持设置思考强度"));
+            }
+            _ => model,
         };
         let context_policy = if demo {
             policy()
@@ -369,6 +390,7 @@ impl AppState {
             context_policy,
             compactor,
         )?;
+        let context = context.with_portable_history_through(model_history_through);
         let context = if demo {
             context
         } else {
@@ -422,16 +444,7 @@ impl AppState {
         let _gate = self.inner.model_gate.lock().await;
         self.ensure_accepting_work()?;
         collaboration::validate_policy(&input.execution_policy)?;
-        if input.model_id != MODEL_ID
-            && !self
-                .inner
-                .models
-                .read()
-                .expect("models lock poisoned")
-                .contains_key(&input.model_id)
-        {
-            return Err(ServiceError::BadRequest("请先配置此模型".into()));
-        }
+        self.validate_run_model(&input.model_id, input.reasoning_effort.as_deref())?;
         crate::input::validate(&input.prompt, &input.files)?;
         let workspace_path = self.validate_workspace_input(&input)?;
         if let Some(path) = &workspace_path {
@@ -441,6 +454,9 @@ impl AppState {
         let now = time::now();
         let detail = RunDetail {
             summary: RunSummary {
+                reasoning_settings_version: 1,
+                reasoning_effort: input.reasoning_effort,
+                model_history_through: None,
                 delegation: None,
                 execution_policy: input.execution_policy,
                 compacting: false,

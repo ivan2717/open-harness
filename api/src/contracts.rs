@@ -15,6 +15,16 @@ pub struct ModelInfo {
     pub description: String,
     pub available: bool,
     pub context_window: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<ModelReasoning>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelReasoning {
+    pub default_effort: Option<String>,
+    pub supported_efforts: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capability: Option<agent_providers::ReasoningCapability>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -62,6 +72,16 @@ pub struct RunSummary {
     #[serde(default)]
     pub compacting: bool,
     pub model_id: String,
+    /// None uses the registered model's reasoning settings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
+    /// Zero identifies selections persisted before model capability validation.
+    /// Only historical restoration may retain these legacy request semantics.
+    #[serde(default)]
+    pub reasoning_settings_version: u8,
+    /// Explicit boundary after which provider-native replay belongs to this binding.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_history_through: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_path: Option<String>,
     #[serde(default)]
@@ -186,6 +206,8 @@ pub struct CreateRunInput {
     pub files: Vec<agent_core::TextFileReference>,
     pub model_id: String,
     #[serde(default)]
+    pub reasoning_effort: Option<String>,
+    #[serde(default)]
     pub workspace_path: Option<String>,
     #[serde(default)]
     pub permission_mode: agent_local::PermissionMode,
@@ -232,6 +254,10 @@ pub struct ConfigureModel {
     pub reasoning_mode: String,
     pub reasoning_effort: String,
     #[serde(default)]
+    pub reasoning_capability: Option<agent_providers::ReasoningCapability>,
+    #[serde(default)]
+    pub reasoning_default: Option<String>,
+    #[serde(default)]
     pub supports_images: bool,
 }
 
@@ -239,6 +265,14 @@ pub struct ConfigureModel {
 #[serde(deny_unknown_fields)]
 pub struct ReplaceModelInput {
     pub replacement_model_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateRunModelInput {
+    pub model_id: String,
+    /// Omitted/null resets to the chosen model's configured default.
+    pub reasoning_effort: Option<String>,
 }
 
 #[cfg(test)]

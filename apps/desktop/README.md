@@ -63,10 +63,18 @@ observable without changing production defaults. Existing demo history remains
 readable and can be continued as a demo.
 
 In **模型 → 接入模型**, configure a model using Chat Completions, Responses,
-or Anthropic Messages. Supply the provider's base URL, model ID and API key;
-select the matching reasoning option explicitly. Context capacity and the
+or Anthropic Messages. Supply the provider's base URL, model ID and API key.
+Reasoning controls prefer the connection's model metadata, then an editable
+provider or protocol preset. Provider recognition uses the configured official
+HTTPS host, not a list of model IDs. An unknown relay receives a generic protocol
+preset and never inherits an official provider's dialect merely by model name.
+Presets are labeled **默认预设** because they are compatibility suggestions, not
+verified support for every model. The initial selection remains the service
+default and sends no reasoning override. **高级设置 → 自定义当前选项** copies the
+current choices for editing their wire format, levels and budgets.
+Context capacity and the
 per-request output budget are automatic. **高级设置** offers optional overrides and
-**恢复自动设置**; changing the model, endpoint or protocol clears those overrides.
+**恢复容量自动设置**; changing the model, endpoint or protocol clears those overrides.
 Saving may read the provider's model metadata, but makes no generation or token
 counting request. It selects the configured model for new conversations.
 Real-model conversations support follow-up
@@ -87,8 +95,55 @@ Project access defaults to **只读**. Select **允许修改** in the permission
 authorize file edits within that project. The agent can list, read and search
 files, load project instructions, and make guarded edits. The renderer cannot
 start work in an arbitrary path without native directory selection.
-Existing conversations display their bound project, permission and model as
-fixed values; starting a new task is required to change that execution context.
+An idle conversation's lower-right model menu can switch to another configured
+model or adjust **思考强度** for the next turn. **默认** inherits that model's saved
+configuration; selecting a different model resets the conversation override.
+These choices survive restart without changing other conversations or saved
+model defaults. The menu is locked during generation, compaction and saving.
+Reasoning choices are model-specific: a connection can expose effort values,
+an on/off switch, or explicit thinking budgets that fit its output limit.
+The adapter maps those choices to Chat Completions, Responses or Messages fields,
+including DeepSeek thinking and Anthropic adaptive/budget settings. A service
+default sends no override; it is distinct from explicitly disabling thinking.
+Advanced compatibility templates can retain their parameter mapping while the
+default remains unchanged, so a later conversation override still uses the right
+format. Custom choices can map a display ID to a different provider effort value.
+Saving uses at most one bounded model metadata GET; it never tries generation
+requests to discover supported levels. Manual capacities do not skip reasoning
+discovery. Resolved choices are stored per connection with the encrypted model
+configuration and reused on restart. Changing session settings makes no generation request.
+Existing saved declarations are retained on restart, including declarations from
+older versions; an upgrade does not silently change a conversation's model ID or
+reasoning request. The raw Rust API accepts the same explicit capability contract;
+without one it supplies protocol presets. Provider discovery belongs to the desktop
+configuration layer, so the runtime does not maintain a duplicate provider catalog.
+Switching preserves the visible conversation, files, Wiki and original event log;
+the runtime passes earlier assistant/tool work as labeled historical context and
+does not replay another model's private reasoning or signed state. New replies
+retain strict provider-state validation. Context budgets use the newly selected
+model. Offline demo conversations remain separate from real-model conversations.
+
+Reasoning discovery uses documented, machine-readable model APIs. It does not
+scrape documentation pages at runtime or probe generation requests. The adapter
+coverage below was checked against official documentation on 2026-10-26:
+
+| Service                                                                                 | Discovery and fallback                                                                                                                                                                                     |
+| --------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [OpenAI](https://developers.openai.com/api/reference/resources/models/methods/retrieve) | The Models API exposes identity fields, not effort choices; use editable effort presets.                                                                                                                   |
+| [DeepSeek](https://api-docs.deepseek.com/api/list-models/)                              | Read `effort.supported_levels` from `/models`; map Chat, Responses and Messages separately.                                                                                                                |
+| [Anthropic](https://platform.claude.com/docs/en/api/http/models/retrieve)               | Read effort and thinking capabilities from `/v1/models/{id}`. Prefer adaptive thinking when declared; otherwise use effort-only or explicitly supported budget mode.                                       |
+| [xAI / Grok](https://docs.x.ai/developers/rest-api-reference/inference/models)          | Read `capabilities.reasoning_effort` from `/v1/models`; use effort presets when absent.                                                                                                                    |
+| [Moonshot / Kimi](https://platform.kimi.com/docs/api/list-models)                       | Read the published model metadata, including `supports_reasoning`; a boolean alone does not establish effort levels, so those remain presets.                                                              |
+| [Qwen / DashScope](https://help.aliyun.com/zh/model-studio/list-models)                 | Read `/api/v1/models?model=...` on the same regional host, including for Messages connections. Published capacity/capability fields do not supply exact effort levels; use editable compatibility presets. |
+| [Google Gemini](https://ai.google.dev/api/models)                                       | For OpenAI-compatible connections, read the native same-host model resource for limits and `thinking`; effort levels remain presets unless explicitly declared.                                            |
+| [OpenRouter](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens)         | Read the single-model resource and `reasoning.supported_efforts`; honor `mandatory` by omitting disable choices.                                                                                           |
+
+Failure, timeout or missing metadata falls back without blocking setup. Metadata
+requests never send the configured key to another host or follow redirects.
+Manual settings take priority over discovered data. A service's reported default
+effort does not become a forced request parameter: **使用服务默认设置** leaves that
+decision to the service.
+Project and permission remain fixed; start a new task to change them.
 
 Use **＋ → 添加文件** (hover or focus for its “添加文件或使用技能” hint), drag local files into the composer, or copy files in the
 file manager and paste with Cmd+V / Ctrl+V to add references. Ordinary text pastes
