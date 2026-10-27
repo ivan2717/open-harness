@@ -30,6 +30,7 @@ async fn cancellation_reconciles_completion_or_failure_after_its_initial_read() 
                 status: RunStatus::Running,
                 model_id: MODEL_ID.into(),
                 workspace_path: None,
+                execution_directory: None,
                 permission_mode: Default::default(),
                 created_at: now.clone(),
                 updated_at: now,

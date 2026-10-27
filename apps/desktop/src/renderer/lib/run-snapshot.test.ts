@@ -66,11 +66,14 @@ describe('session list updates', () => {
 
   it('keeps one summary per run without copying detail blocks into the list cache', () => {
     const run = snapshot({
+      execution_directory: '/private/tmp/conversations/run-1',
       messages: [{ id: 'answer', role: 'assistant', text: 'output', status: 'complete' }],
     })
     const list = updateRunList(updateRunList([], run), { ...run, status: 'completed' })
     expect(list).toHaveLength(1)
     expect(list[0].status).toBe('completed')
+    expect(list[0].execution_directory).toBe(run.execution_directory)
+    expect(list[0].workspace_path).toBeUndefined()
     expect(list[0]).not.toHaveProperty('messages')
     expect(list[0]).not.toHaveProperty('context')
   })

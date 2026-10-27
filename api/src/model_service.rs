@@ -86,6 +86,10 @@ impl AppState {
                 || entry.runtime.is_executing(&detail.summary.id)
                 || detail.summary.compacting
                 || detail.summary.status == RunStatus::Running
+                || entry
+                    .workspace
+                    .as_ref()
+                    .is_some_and(|workspace| workspace.commands_running())
             {
                 return Err(ServiceError::Conflict(
                     "此模型仍有运行或压缩任务，请等待结束后更新容量".into(),

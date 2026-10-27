@@ -45,7 +45,13 @@ pub struct Delegation {
     pub parent_run_id: String,
     pub root_run_id: String,
     pub task_name: String,
-    pub write_paths: Vec<String>,
+    /// None inherits the parent's workspace permissions. An explicit list
+    /// restricts writes to leased files; an empty list is read-only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub write_paths: Option<Vec<String>>,
+    /// None follows the parent's model at each subsequent delegation turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_override: Option<UpdateRunModelInput>,
     pub spawn_call_id: String,
 }
 
@@ -84,10 +90,22 @@ pub struct RunSummary {
     pub model_history_through: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_path: Option<String>,
+    /// Private, host-created files for a conversation without a selected project.
+    /// This is never accepted from a create request or listed as a user project.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_directory: Option<String>,
     #[serde(default)]
     pub permission_mode: agent_local::PermissionMode,
     pub created_at: String,
     pub updated_at: String,
+}
+
+impl RunSummary {
+    pub fn working_directory(&self) -> Option<&str> {
+        self.workspace_path
+            .as_deref()
+            .or(self.execution_directory.as_deref())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -225,6 +243,8 @@ pub struct ResumeRunInput {
 #[serde(deny_unknown_fields)]
 pub struct ApprovalInput {
     pub allow: bool,
+    #[serde(default)]
+    pub scope: agent_local::CommandApprovalScope,
 }
 
 #[derive(Debug, Deserialize)]
@@ -267,7 +287,7 @@ pub struct ReplaceModelInput {
     pub replacement_model_id: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct UpdateRunModelInput {
     pub model_id: String,

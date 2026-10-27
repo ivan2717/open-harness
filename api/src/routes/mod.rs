@@ -56,7 +56,15 @@ pub(crate) fn router(state: AppState) -> Router {
         .route("/runs/{id}/input", post(input))
         .route("/runs/{id}/resume", post(resume))
         .route("/runs/{id}/workspace", get(workspace))
+        .route(
+            "/runs/{id}/workspace/commands/{command}/stop",
+            post(stop_command),
+        )
         .route("/runs/{id}/approvals/{approval}", post(approve))
+        .route(
+            "/runs/{id}/workspace/command-grants/revoke",
+            post(revoke_command_grants),
+        )
         .route("/runs/{id}/revert", post(revert))
         .route("/runs/{id}/compact", post(compact))
         .route("/runs/{id}/compact/cancel", post(cancel_compaction))
@@ -269,9 +277,21 @@ async fn approve(
     Json(input): Json<ApprovalInput>,
 ) -> Result<Json<agent_local::WorkspaceReview>, ServiceError> {
     state
-        .approve_command(&id, &approval, input.allow)
+        .approve_command(&id, &approval, input.allow, input.scope)
         .await
         .map(Json)
+}
+async fn revoke_command_grants(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<agent_local::WorkspaceReview>, ServiceError> {
+    state.revoke_command_grants(&id).await.map(Json)
+}
+async fn stop_command(
+    State(state): State<AppState>,
+    Path((id, command)): Path<(String, String)>,
+) -> Result<Json<agent_local::WorkspaceReview>, ServiceError> {
+    state.stop_command(&id, &command).await.map(Json)
 }
 async fn revert(
     State(state): State<AppState>,

@@ -230,16 +230,16 @@ impl ReasoningCapability {
                 enabled: None,
             })
             .collect();
-        if let ReasoningMode::Effort { effort } | ReasoningMode::DeepSeek { effort } = mode {
-            if !options.iter().any(|option| &option.id == effort) {
-                options.push(ReasoningOption {
-                    id: effort.clone(),
-                    label: None,
-                    effort: Some(effort.clone()),
-                    budget_tokens: None,
-                    enabled: None,
-                });
-            }
+        if let ReasoningMode::Effort { effort } | ReasoningMode::DeepSeek { effort } = mode
+            && !options.iter().any(|option| &option.id == effort)
+        {
+            options.push(ReasoningOption {
+                id: effort.clone(),
+                label: None,
+                effort: Some(effort.clone()),
+                budget_tokens: None,
+                enabled: None,
+            });
         }
         Self {
             source: ReasoningSource::Legacy,

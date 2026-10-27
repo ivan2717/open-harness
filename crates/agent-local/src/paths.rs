@@ -6,36 +6,14 @@ use std::{
 pub(crate) const FILE_LIMIT: usize = 256 * 1024;
 pub(crate) const READ_LIMIT: usize = 32 * 1024 * 1024;
 pub(crate) const OUTPUT_LIMIT: usize = 64 * 1024;
-const PROTECTED_NAMES: &[&str] = &[
-    ".git",
-    ".ssh",
-    ".aws",
-    ".gnupg",
-    ".codex",
-    ".agents",
-    ".npmrc",
-    ".netrc",
-    "credentials",
-    "credentials.json",
-    ".env",
-];
-const PROTECTED_PREFIXES: &[&str] = &[".env.", "id_rsa", "id_ed25519"];
-const PROTECTED_SUFFIXES: &[&str] = &[".pem", ".key"];
-
-pub(crate) fn denied_component(name: &str) -> bool {
-    let name = name.to_ascii_lowercase();
-    PROTECTED_NAMES.contains(&name.as_str())
-        || PROTECTED_PREFIXES
-            .iter()
-            .any(|prefix| name.starts_with(prefix))
-        || PROTECTED_SUFFIXES
-            .iter()
-            .any(|suffix| name.ends_with(suffix))
-}
+pub(crate) use crate::protected_paths::denied_component;
+#[cfg(not(windows))]
+use crate::protected_paths::{PROTECTED_NAMES, PROTECTED_PREFIXES, PROTECTED_SUFFIXES};
 
 /// Use the same component policy for Rust tools and Seatbelt. Explicit ASCII
 /// case classes also match case-sensitive volumes without relying on flags
 /// unsupported by older Seatbelt regex implementations.
+#[cfg(not(windows))]
 pub(crate) fn secret_patterns() -> Vec<String> {
     let names = PROTECTED_NAMES
         .iter()
@@ -60,6 +38,7 @@ pub(crate) fn secret_patterns() -> Vec<String> {
     ]
 }
 
+#[cfg(not(windows))]
 pub(crate) fn regex_literal(text: &str) -> String {
     text.chars()
         .map(|ch| match ch {

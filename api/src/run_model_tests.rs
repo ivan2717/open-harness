@@ -79,6 +79,7 @@ impl Fixture {
                         execution_policy: Default::default(),
                         compacting: false,
                         workspace_path: None,
+                        execution_directory: None,
                         permission_mode: Default::default(),
                         created_at: time::now(),
                         updated_at: time::now(),
@@ -727,5 +728,250 @@ async fn pre_capability_selection_restores_and_continues_without_expanding_proto
             .is_none()
     );
     restored.shutdown().await;
+    server.abort();
+}
+
+async fn wait_for_child_turn(state: &AppState, id: &str) {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while state.entry(id).unwrap().background.load(Ordering::Acquire) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let detail = state.get(id).unwrap();
+    assert_eq!(
+        detail.summary.status,
+        RunStatus::Completed,
+        "{:?}",
+        detail.error
+    );
+}
+
+#[tokio::test]
+async fn resumed_child_follows_parent_model_without_replaying_foreign_reasoning() {
+    let fixture = Fixture::new().await;
+    let source_requests = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let target_requests = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/v1", listener.local_addr().unwrap());
+    let source = Router::new()
+        .route("/v1/chat/completions", post(fake_model))
+        .with_state((source_requests.clone(), json!({
+            "id":"old-child-response",
+            "choices":[{"message":{"role":"assistant","content":"Verified result from the previous child turn","reasoning_content":"private-source-reasoning-marker"},"finish_reason":"stop"}],
+            "usage":{"prompt_tokens":100,"completion_tokens":30,"completion_tokens_details":{"reasoning_tokens":10}}
+        })));
+    let target = Router::new()
+        .route("/v1/responses", post(fake_model))
+        .with_state((target_requests.clone(), json!({
+            "id":"new-child-response", "status":"completed",
+            "output":[{"id":"m1","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"Verified follow-up result"}]}]
+        })));
+    let server = tokio::spawn(axum::serve(listener, source.merge(target)).into_future());
+    let original = fixture
+        .state
+        .configure_model(config(
+            ProviderProtocol::ChatCompletions,
+            &url,
+            "source-model",
+        ))
+        .await
+        .unwrap();
+    let replacement = fixture
+        .state
+        .configure_model(config(ProviderProtocol::Responses, &url, "target-model"))
+        .await
+        .unwrap();
+    fixture.conversation("parent").await;
+    fixture
+        .change("parent", &original.id, Some("low"))
+        .await
+        .unwrap();
+    fixture
+        .state
+        .entry("parent")
+        .unwrap()
+        .snapshot
+        .update(|detail| detail.summary.status = RunStatus::Running)
+        .unwrap();
+    let spawned: Value = serde_json::from_str(&fixture.state.collaboration_call("parent", agent_runtime::ToolCall {
+        id: "inherit-model".into(), name: "spawn_agent".into(), arguments: json!({"task_name":"inherited", "task":"Inspect the source and preserve the findings"}).to_string(),
+    }).await.unwrap()).unwrap();
+    let child_id = spawned["agent_id"].as_str().unwrap();
+    wait_for_child_turn(&fixture.state, child_id).await;
+    let history_before = fixture.state.get(child_id).unwrap();
+    assert_eq!(history_before.summary.model_id, original.id);
+    assert_eq!(
+        history_before.summary.reasoning_effort.as_deref(),
+        Some("low")
+    );
+    assert!(
+        JsonlEventStore::new(fixture.directory.join("events"))
+            .load_for_runtime(child_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .events
+            .iter()
+            .any(|event| matches!(
+                &event.event,
+                RunEvent::ModelResponseReceived {
+                    provider_state: Some(_),
+                    ..
+                }
+            ))
+    );
+
+    fixture
+        .state
+        .entry("parent")
+        .unwrap()
+        .snapshot
+        .update(|detail| detail.summary.status = RunStatus::WaitingForInput)
+        .unwrap();
+    fixture
+        .change("parent", &replacement.id, Some("high"))
+        .await
+        .unwrap();
+    fixture
+        .state
+        .entry("parent")
+        .unwrap()
+        .snapshot
+        .update(|detail| detail.summary.status = RunStatus::Running)
+        .unwrap();
+    fixture.state.collaboration_call("parent", agent_runtime::ToolCall {
+        id:"resume-new-model".into(), name:"agent_control".into(), arguments:json!({"action":"resume","agent_id":child_id,"message":"Continue checking the previous result"}).to_string(),
+    }).await.unwrap();
+    wait_for_child_turn(&fixture.state, child_id).await;
+    let after = fixture.state.get(child_id).unwrap();
+    assert_eq!(after.summary.model_id, replacement.id);
+    assert_eq!(after.summary.reasoning_effort.as_deref(), Some("high"));
+    assert!(after.summary.model_history_through.is_some());
+    assert!(after.messages.iter().any(|message| {
+        message
+            .text
+            .contains("Verified result from the previous child turn")
+    }));
+    {
+        let requests = target_requests.lock().unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0]["model"], "target-model");
+        assert_eq!(requests[0]["reasoning"]["effort"], "high");
+        let body = requests[0].to_string();
+        assert!(body.contains("Inspect the source and preserve the findings"));
+        assert!(body.contains("Verified result from the previous child turn"));
+        assert!(!body.contains("private-source-reasoning-marker"));
+        assert!(!body.contains("reasoning_content"));
+    }
+
+    // An explicit per-task choice stays pinned instead of being overwritten by
+    // the coordinator's current selection when the task is continued.
+    let pinned: Value = serde_json::from_str(&fixture.state.collaboration_call("parent", agent_runtime::ToolCall {
+        id:"pinned-model".into(), name:"spawn_agent".into(), arguments:json!({"task_name":"pinned","task":"Check the evidence independently","model":{"model_id":original.id,"reasoning_effort":"low"}}).to_string(),
+    }).await.unwrap()).unwrap();
+    let pinned_id = pinned["agent_id"].as_str().unwrap();
+    wait_for_child_turn(&fixture.state, pinned_id).await;
+    fixture.state.collaboration_call("parent", agent_runtime::ToolCall {
+        id:"resume-pinned-model".into(), name:"agent_control".into(), arguments:json!({"action":"resume","agent_id":pinned_id,"message":"Recheck the previous evidence"}).to_string(),
+    }).await.unwrap();
+    wait_for_child_turn(&fixture.state, pinned_id).await;
+    assert_eq!(
+        fixture.state.get(pinned_id).unwrap().summary.model_id,
+        original.id
+    );
+    assert_eq!(source_requests.lock().unwrap().len(), 3);
+    assert_eq!(target_requests.lock().unwrap().len(), 1);
+    fixture.state.shutdown().await;
+    server.abort();
+}
+
+#[tokio::test]
+async fn cancellation_waiting_on_old_binding_stops_the_rebound_execution() {
+    let fixture = Fixture::new().await;
+    let entry = fixture.conversation("selected").await;
+    let request_started = Arc::new(tokio::sync::Notify::new());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/v1", listener.local_addr().unwrap());
+    let notification = request_started.clone();
+    let server = tokio::spawn(
+        axum::serve(
+            listener,
+            Router::new().route(
+                "/v1/chat/completions",
+                post(move || {
+                    let notification = notification.clone();
+                    async move {
+                        notification.notify_one();
+                        std::future::pending::<Json<Value>>().await
+                    }
+                }),
+            ),
+        )
+        .into_future(),
+    );
+    let target = fixture
+        .state
+        .configure_model(config(
+            ProviderProtocol::ChatCompletions,
+            &url,
+            "slow-target",
+        ))
+        .await
+        .unwrap();
+    let gate = fixture.state.inner.model_gate.lock().await;
+    let operation = entry.operations.lock().await;
+    let cancelling = fixture.state.clone();
+    // Background parent cleanup does not own model_gate. It can already be
+    // waiting on this run's operation lock while a resume changes its model.
+    let cancellation =
+        tokio::spawn(async move { cancelling.cancel_member("selected", false).await });
+    tokio::task::yield_now().await;
+    assert!(!cancellation.is_finished());
+    let rebound = fixture
+        .state
+        .rebind_idle_model(
+            &entry,
+            UpdateRunModelInput {
+                model_id: target.id,
+                reasoning_effort: None,
+            },
+        )
+        .await
+        .unwrap();
+    assert!(Arc::ptr_eq(&entry.operations, &rebound.operations));
+    let mut run = rebound
+        .runtime
+        .restore_run("selected")
+        .await
+        .unwrap()
+        .unwrap();
+    rebound
+        .runtime
+        .submit_input(&mut run, "Continue with the new model")
+        .await
+        .unwrap();
+    execute(fixture.state.clone(), rebound.clone(), run);
+    tokio::time::timeout(Duration::from_secs(5), request_started.notified())
+        .await
+        .unwrap();
+    drop(operation);
+    drop(gate);
+    let cancelled = tokio::time::timeout(Duration::from_secs(5), cancellation)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(cancelled.summary.status, RunStatus::Cancelled);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while rebound.background.load(Ordering::Acquire) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(!rebound.runtime.is_executing("selected"));
+    fixture.state.shutdown().await;
     server.abort();
 }

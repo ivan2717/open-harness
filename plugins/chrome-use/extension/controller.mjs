@@ -1,6 +1,7 @@
 import { validate, allowedUrl } from './schema.mjs';
 import { pageOperation } from './page.mjs';
 import { TaskTabGroups } from './groups.mjs';
+const belongsToTask = (owned, sessionId, taskKey) => owned?.sessionId === sessionId || (owned?.taskKey !== undefined && owned.taskKey === taskKey);
 const pageLoading = () => new Error('page_loading: navigation has not committed. Retry chrome_snapshot for this same tab; do not repeat chrome_open or an action.');
 function committedOrigin(tab) {
   // pendingUrl is a navigation destination, never evidence of the document
@@ -26,17 +27,18 @@ export class ChromeController {
         await this.checkOwnership(tab);
         const owned = this.owned.get(tab.id);
         const sharedOrigin = this.shared.get(tab.id);
-        if ((!owned || owned.sessionId !== sessionId) && !sharedOrigin) continue;
+        const taskOwned = belongsToTask(owned, sessionId, taskKey);
+        if (!taskOwned && !sharedOrigin) continue;
         let origin; try { origin = committedOrigin(tab); } catch {
-          if (owned?.sessionId === sessionId && (tab.pendingUrl || !tab.url || tab.url === 'about:blank'))
-            tabs.push({ tab_id: tab.id, origin: owned.origin, owned: true, loading: true });
+          if (taskOwned && (tab.pendingUrl || !tab.url || tab.url === 'about:blank'))
+            tabs.push({ tab_id: tab.id, origin: owned.origin, owned: owned?.sessionId === sessionId, loading: true });
           continue;
         }
         // Do not leak titles or URLs after the user navigates outside a grant.
-        if (owned?.sessionId === sessionId && origin !== owned.origin) {
-          tabs.push({ tab_id: tab.id, origin, owned: true, reauthorization_required: true }); continue;
+        if (taskOwned && origin !== owned.origin) {
+          tabs.push({ tab_id: tab.id, origin, owned: owned?.sessionId === sessionId, reauthorization_required: true }); continue;
         }
-        if (origin !== (owned?.sessionId === sessionId ? owned.origin : sharedOrigin)) continue;
+        if (origin !== (taskOwned ? owned.origin : sharedOrigin)) continue;
         tabs.push({ tab_id: tab.id, origin, url: tab.url, title: String(tab.title ?? '').slice(0, 500), owned: owned?.sessionId === sessionId, busy: this.attached.has(tab.id) && this.attached.get(tab.id) !== sessionId });
       }
       return { tabs };
@@ -45,11 +47,11 @@ export class ChromeController {
       if (!this.allowNewTabs) throw new Error('Enable background tabs in the Open Harness Chrome extension popup first.');
       const url = allowedUrl(args.url);
       const tab = await this.groups.open(taskKey, url.href);
-      this.owned.set(tab.id, { sessionId, origin: url.origin, groupId: tab.groupId });
+      this.owned.set(tab.id, { sessionId, taskKey, origin: url.origin, groupId: tab.groupId });
       await this.releaseSession(sessionId);
       try { await this.api.debugger.attach({ tabId: tab.id }, '1.3'); }
       catch { throw new Error(`Created tab ${tab.id} in group ${tab.groupId}, but Chrome could not attach. Use chrome_tabs and select that existing tab after checking DevTools/browser policy; do not repeat chrome_open.`); }
-      this.attached.set(tab.id, sessionId); this.sessions.set(sessionId, { tabId: tab.id, origin: url.origin, revision: null });
+      this.attached.set(tab.id, sessionId); this.sessions.set(sessionId, { tabId: tab.id, taskKey, origin: url.origin, revision: null });
       return { tab_id: tab.id, group_id: tab.groupId, origin: url.origin, url: url.href, created: true, selected: true };
     }
     if (method === 'chrome_select_tab') {
@@ -57,13 +59,13 @@ export class ChromeController {
       await this.checkOwnership(tab);
       const owned = this.owned.get(tab.id);
       if (origin !== args.origin) throw new Error('origin_changed: use the actual current origin and request a new grant.');
-      if (owned?.sessionId !== sessionId && this.shared.get(tab.id) !== origin) throw new Error('Share this exact tab and origin from the Open Harness Chrome extension popup first.');
+      if (!belongsToTask(owned, sessionId, taskKey) && this.shared.get(tab.id) !== origin) throw new Error('Share this exact tab and origin from the Open Harness Chrome extension popup first.');
       const owner = this.attached.get(tab.id);
       if (owner && owner !== sessionId) throw new Error('Tab is already controlled by another session.');
       await this.releaseSession(sessionId);
       try { await this.api.debugger.attach({ tabId: tab.id }, '1.3'); } catch { throw new Error('Chrome could not attach to this tab. Close its DevTools or reconnect after browser policy checks.'); }
-      if (owned?.sessionId === sessionId) owned.origin = origin;
-      this.attached.set(tab.id, sessionId); this.sessions.set(sessionId, { tabId: tab.id, origin, revision: null });
+      if (belongsToTask(owned, sessionId, taskKey)) owned.origin = origin;
+      this.attached.set(tab.id, sessionId); this.sessions.set(sessionId, { tabId: tab.id, taskKey, origin, revision: null });
       return this.snapshot(sessionId);
     }
     if (method === 'chrome_release') {
@@ -115,7 +117,7 @@ export class ChromeController {
     const tab = await this.api.tabs.get(session.tabId);
     await this.checkOwnership(tab);
     const owned = this.owned.get(session.tabId);
-    if (!(owned?.sessionId === sessionId && owned.origin === session.origin) && this.shared.get(session.tabId) !== session.origin) throw new Error('Tab sharing was revoked.');
+    if (!(belongsToTask(owned, sessionId, session.taskKey) && owned.origin === session.origin) && this.shared.get(session.tabId) !== session.origin) throw new Error('Tab sharing was revoked.');
     let origin;
     try { origin = committedOrigin(tab); }
     catch (error) { session.revision = null; throw error; }

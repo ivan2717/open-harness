@@ -38,13 +38,9 @@ export function desktopVersionChanged({ baseSha, headSha = 'HEAD', cwd = process
   const path = 'apps/desktop/package.json'
   const previousVersion = versionOf(committedJson(cwd, baseSha, path), 'Previous package.json')
   const version = versionOf(committedJson(cwd, headSha, path), 'Current package.json')
-  const lock = committedJson(cwd, headSha, 'apps/desktop/package-lock.json')
-  if (
-    versionOf(lock, 'package-lock.json') !== version ||
-    versionOf(lock.packages?.[''], 'package-lock.json root package') !== version
-  ) {
-    throw new Error('package-lock.json root versions must match package.json')
-  }
+  // pnpm locks dependency resolutions, not the application's own version.
+  // CI validates that lock with `pnpm install --frozen-lockfile` before this
+  // check. Installer gating therefore compares only committed app versions.
   return { changed: previousVersion !== version, previousVersion, version }
 }
 

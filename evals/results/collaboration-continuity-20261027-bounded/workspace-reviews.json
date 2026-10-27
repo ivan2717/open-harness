@@ -1,0 +1,50 @@
+[
+  {
+    "run_id": "run-18e249a817b59bf0-bee1-2",
+    "review": {
+      "root": "/private/var/folders/rv/ghrq1zqn405dtldv_2vymry80000gn/T/openharness-continuity-veZfAv/workspace",
+      "permission_mode": "workspace_write",
+      "changes": [
+        {
+          "path": ".openharness-tmp/continuity_reconcile.py",
+          "status": "added",
+          "before": null,
+          "after": "#!/usr/bin/env python3\n\"\"\"Auditable, read-only reconciliation of the four specified source files.\"\"\"\n\nimport csv\nfrom collections import Counter, defaultdict\nfrom decimal import Decimal\nfrom pathlib import Path\n\n\nROOT = Path(__file__).resolve().parent.parent\n\n\ndef read_csv(filename):\n    with (ROOT / filename).open(\"r\", encoding=\"utf-8-sig\", newline=\"\") as stream:\n        return list(csv.DictReader(stream))\n\n\ndef money(value):\n    return Decimal(value)\n\n\ndef fmt(value):\n    return f\"{value:.2f}\"\n\n\norders_rows = read_csv(\"orders.csv\")\npayment_rows = read_csv(\"payments.csv\")\nrefund_rows = read_csv(\"refunds.csv\")\n\norders = {row[\"order_id\"]: money(row[\"amount\"]) for row in orders_rows}\nassert len(orders) == len(orders_rows), \"orders.csv has duplicate order IDs\"\n\n# Deduplicate strictly by payment_id, checking exact row agreement.\npayment_by_id = {}\npayment_counts = Counter()\nfor row in payment_rows:\n    payment_id = row[\"payment_id\"]\n    payment_counts[payment_id] += 1\n    if payment_id in payment_by_id:\n        assert payment_by_id[payment_id] == row, f\"Conflicting duplicate {payment_id}\"\n    else:\n        payment_by_id[payment_id] = row\nduplicate_ids = sorted(pid for pid, count in payment_counts.items() if count > 1)\n\nvalid_payments = {}\nfailed_ids = []\ncancelled_ids = []\norphan_payment_ids = []\nfor payment_id, row in payment_by_id.items():\n    if row[\"status\"] == \"paid\":\n        if row[\"order_id\"] in orders:\n            valid_payments[payment_id] = row\n        else:\n            orphan_payment_ids.append(payment_id)\n    elif row[\"status\"] == \"failed\":\n        failed_ids.append(payment_id)\n    elif row[\"status\"] == \"cancelled\":\n        cancelled_ids.append(payment_id)\n\nvalid_by_order = defaultdict(Decimal)\nfor payment_id, row in valid_payments.items():\n    valid_by_order[row[\"order_id\"]] += money(row[\"amount\"])\n\npayment_order = {pid: row[\"order_id\"] for pid, row in valid_payments.items()}\nrefund_effects = defaultdict(Decimal)\nincluded_refunds = []\npending_excluded = []\norphan_refunds = []\nrefund_decisions = []\n\nfor row in refund_rows:\n    refund_id = row[\"refund_id\"]\n    status = row[\"status\"]\n    effective_status = status\n    reason = \"\"\n    if refund_id == \"R303\":\n        effective_status = \"settled\"\n        reason = 'user correction CORRECTION-ORCHID (event-4): “R303 已经人工核实为 settled。”'\n\n    if effective_status != \"settled\":\n        pending_excluded.append(refund_id)\n        refund_decisions.append(\n            f\"{refund_id}: EXCLUDED (source status={status}; not settled)\"\n        )\n        continue\n\n    payment_id = row[\"payment_id\"]\n    if payment_id not in valid_payments:\n        orphan_refunds.append(refund_id)\n        refund_decisions.append(\n            f\"{refund_id}: ORPHAN (settled/effectively settled, payment {payment_id} \"\n            \"is not an included valid payment)\"\n        )\n        continue\n\n    if row[\"order_id\"] != payment_order[payment_id]:\n        orphan_refunds.append(refund_id)\n        refund_decisions.append(\n            f\"{refund_id}: ORPHAN (refund order {row['order_id']} does not match \"\n            f\"payment {payment_id} order {payment_order[payment_id]})\"\n        )\n        continue\n\n    included_refunds.append(refund_id)\n    refund_effects[row[\"order_id\"]] += money(row[\"amount\"])\n    refund_decisions.append(\n        f\"{refund_id}: INCLUDED amount={fmt(money(row['amount']))} \"\n        f\"order={row['order_id']} payment={payment_id}; {reason or 'source status=settled'}\"\n    )\n\norder_net = {\n    order_id: valid_by_order[order_id] - refund_effects[order_id]\n    for order_id in orders\n}\nunpaid_by_order = {\n    order_id: max(orders[order_id] - valid_by_order[order_id], Decimal(0))\n    for order_id in orders\n}\nunpaid_orders = [oid for oid in orders if valid_by_order[oid] == 0]\npartial_orders = [\n    oid for oid in orders if Decimal(0) < valid_by_order[oid] < orders[oid]\n]\norder_total = sum(orders.values(), Decimal(0))\nvalid_payment_total = sum(\n    (money(row[\"amount\"]) for row in valid_payments.values()), Decimal(0)\n)\napplied_refund = sum(refund_effects.values(), Decimal(0))\nnet_received = sum(order_net.values(), Decimal(0))\nunpaid_before_refunds = sum(unpaid_by_order.values(), Decimal(0))\n\nprint(\"ORDER RECONCILIATION — AUDIT SUMMARY\")\nprint(\"Inputs read: orders.csv, payments.csv, refunds.csv, rules.md\")\nprint(\"Rules source: rules.md; amounts in yuan; one settlement period.\")\nprint('Applied user correction from parent-session event-4: CORRECTION-ORCHID, “R303 已经人工核实为 settled。”')\nprint(\"\\nORDERS\")\nprint(f\"Unique order count: {len(orders)}; total ordered={fmt(order_total)}\")\nfor order_id, amount in orders.items():\n    print(f\"  {order_id}: amount={fmt(amount)}\")\n\nprint(\"\\nPAYMENTS\")\nprint(f\"Payment rows={len(payment_rows)}; unique payment IDs={len(payment_by_id)}\")\nprint(f\"Duplicate payment IDs (identical repeated rows counted once): {duplicate_ids}\")\nprint(f\"Included valid paid payments ({len(valid_payments)}):\")\nfor payment_id, row in valid_payments.items():\n    print(f\"  {payment_id}: order={row['order_id']} amount={fmt(money(row['amount']))}\")\nprint(f\"Valid payment total={fmt(valid_payment_total)}\")\nprint(f\"Excluded failed payment IDs: {sorted(failed_ids)}\")\nprint(f\"Excluded cancelled payment IDs: {sorted(cancelled_ids)}\")\nprint(f\"Orphan paid payment IDs (unknown order): {sorted(orphan_payment_ids)}\")\n\nprint(\"\\nREFUNDS\")\nprint(f\"Refund source rows={len(refund_rows)}\")\nfor decision in refund_decisions:\n    print(f\"  {decision}\")\nprint(f\"Included refund IDs: {included_refunds}\")\nprint(f\"Excluded pending refund IDs (source status pending, excluding override): {pending_excluded}\")\nprint(f\"Orphan settled/effectively settled refund IDs: {orphan_refunds}\")\nprint(f\"Applied refund total={fmt(applied_refund)}\")\n\nprint(\"\\nPER-ORDER CALCULATION\")\nfor order_id in orders:\n    print(\n        f\"  {order_id}: order={fmt(orders[order_id])} - valid_payments=\"\n        f\"{fmt(valid_by_order[order_id])} - applied_refunds=\"\n        f\"{fmt(refund_effects[order_id])} = net_received={fmt(order_net[order_id])}; \"\n        f\"unpaid_before_refunds=max(order-valid_payments,0)=\"\n        f\"{fmt(unpaid_by_order[order_id])}\"\n    )\n\nprint(\"\\nTOTALS\")\nprint(f\"Net received = valid payments {fmt(valid_payment_total)} - applied refunds {fmt(applied_refund)} = {fmt(net_received)}\")\nprint(f\"unpaid_before_refunds = {fmt(unpaid_before_refunds)}\")\nprint(f\"Unpaid orders (valid payment=0): {unpaid_orders}\")\nprint(f\"Partial payment orders: {partial_orders}\")\nprint(f\"Refund IDs counted: {included_refunds}\")\n",
+          "revertible": true
+        }
+      ],
+      "approvals": [],
+      "commands": [
+        {
+          "id": "command-1793076630068362000-1",
+          "command": "\"/Users/jiangtao/Desktop/open-harness/apps/desktop/resources/workspace-runtime/python/bin/python3\" -I -B .openharness-tmp/continuity_reconcile.py",
+          "status": "cancelled",
+          "output": "",
+          "exit_code": null,
+          "network_access": "denied",
+          "access": "read_only"
+        }
+      ],
+      "busy": false,
+      "sandbox_available": true,
+      "execution_mode": "sandboxed",
+      "review_incomplete": false,
+      "command_grants": []
+    }
+  },
+  {
+    "run_id": "run-18e2499bcbbec778-bee1-1",
+    "review": {
+      "root": "/private/var/folders/rv/ghrq1zqn405dtldv_2vymry80000gn/T/openharness-continuity-veZfAv/workspace",
+      "permission_mode": "workspace_write",
+      "changes": [],
+      "approvals": [],
+      "commands": [],
+      "busy": false,
+      "sandbox_available": true,
+      "execution_mode": "sandboxed",
+      "review_incomplete": false,
+      "command_grants": []
+    }
+  }
+]

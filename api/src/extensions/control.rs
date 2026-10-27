@@ -26,6 +26,10 @@ pub struct ControlAccess {
     pub server_name: String,
     pub scope: ControlScope,
     pub remembered: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_run_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task_title: Option<String>,
     #[serde(skip)]
     binding: String,
     #[serde(skip)]
@@ -34,6 +38,8 @@ pub struct ControlAccess {
 
 #[derive(Default)]
 pub struct ControlRegistry {
+    /// Host-owned delegation binding. A model can never choose its approval family.
+    families: HashMap<String, String>,
     epochs: HashMap<String, u64>,
     access: HashMap<(String, String), ControlAccess>,
     // Active selection and remembered permissions are separate. Returning to
@@ -44,6 +50,24 @@ pub struct ControlRegistry {
 }
 
 impl ControlRegistry {
+    pub fn bind_scope(&mut self, run: &str, root: &str) {
+        self.families.insert(run.into(), root.into());
+    }
+    pub fn authorization_scope<'a>(&'a self, run: &'a str) -> &'a str {
+        self.families.get(run).map_or(run, String::as_str)
+    }
+    pub fn family_members(&self, root: &str) -> Vec<String> {
+        let mut members: Vec<_> = self
+            .families
+            .iter()
+            .filter(|(_, scope)| scope.as_str() == root)
+            .map(|(run, _)| run.clone())
+            .collect();
+        if !members.iter().any(|run| run == root) {
+            members.push(root.into());
+        }
+        members
+    }
     pub fn epoch(&self, run: &str) -> u64 {
         self.epochs.get(run).copied().unwrap_or_default()
     }
@@ -63,14 +87,18 @@ impl ControlRegistry {
         if let Some(scope) = scope {
             return self
                 .remembered
-                .get(&(run.into(), server.into()))
+                .get(&(self.authorization_scope(run).into(), server.into()))
                 .is_some_and(|(approved_binding, scopes)| {
                     approved_binding == binding && scopes.contains(scope)
                 });
         }
         self.access
             .get(&(run.into(), server.into()))
-            .is_some_and(|access| access.remembered && access.binding == binding)
+            .is_some_and(|access| {
+                access.remembered
+                    && access.binding == binding
+                    && self.permits(run, server, binding, Some(&access.scope))
+            })
     }
 
     pub fn activate_remembered(
@@ -116,22 +144,46 @@ impl ControlRegistry {
         }
     }
     pub fn acquire_desktop(&mut self, run: &str) -> io::Result<()> {
+        let scope = self.authorization_scope(run).to_owned();
         if self
             .desktop_owner
             .as_deref()
-            .is_some_and(|owner| owner != run)
+            .is_some_and(|owner| owner != scope)
         {
             return Err(io::Error::other(
                 "其他会话正在控制电脑，请先在该会话停止控制",
             ));
         }
-        self.desktop_owner = Some(run.into());
+        self.desktop_owner = Some(scope);
         Ok(())
     }
     pub fn owns_grant(&self, run: &str, server: &str, grant_id: u64) -> bool {
         self.access
             .get(&(run.into(), server.into()))
             .is_some_and(|access| access.grant_id == grant_id)
+    }
+
+    /// Share a session grant only after its first operation succeeds.
+    pub fn remember_grant(&mut self, run: &str, server: &str, grant_id: u64) -> io::Result<()> {
+        let permission_key = (self.authorization_scope(run).to_owned(), server.to_owned());
+        let access = self
+            .access
+            .get_mut(&(run.into(), server.into()))
+            .filter(|access| access.grant_id == grant_id)
+            .ok_or_else(|| io::Error::other("控制权限已撤销，请重新申请"))?;
+        access.remembered = true;
+        let (binding, scopes) = self
+            .remembered
+            .entry(permission_key)
+            .or_insert_with(|| (access.binding.clone(), Vec::new()));
+        if *binding != access.binding {
+            *binding = access.binding.clone();
+            scopes.clear();
+        }
+        if !scopes.contains(&access.scope) {
+            scopes.push(access.scope.clone());
+        }
+        Ok(())
     }
 
     pub fn grant(
@@ -157,17 +209,18 @@ impl ControlRegistry {
         }
         self.next_grant_id = grant_id;
         let key = (run.into(), server.into());
+        let permission_key = (self.authorization_scope(run).into(), server.into());
         if self
             .remembered
-            .get(&key)
+            .get(&permission_key)
             .is_some_and(|(previous, _)| previous != binding)
         {
-            self.remembered.remove(&key);
+            self.remembered.remove(&permission_key);
         }
         if remembered {
             let (_, scopes) = self
                 .remembered
-                .entry(key.clone())
+                .entry(permission_key)
                 .or_insert_with(|| (binding.into(), Vec::new()));
             if !scopes.contains(&scope) {
                 scopes.push(scope.clone());
@@ -180,6 +233,8 @@ impl ControlRegistry {
                 server_name: name.into(),
                 scope,
                 remembered,
+                source_run_id: None,
+                task_title: None,
                 binding: binding.into(),
                 grant_id,
             },
@@ -196,23 +251,76 @@ impl ControlRegistry {
         result.sort_by(|a, b| a.server_id.cmp(&b.server_id));
         result
     }
+    /// Keep revocation visible even after the agent which obtained a reusable
+    /// permission has stopped. Active selections are displayed separately.
+    pub fn retained_grants(&self, run: &str) -> Vec<ControlAccess> {
+        if self.authorization_scope(run) != run {
+            return Vec::new();
+        }
+        let mut result = Vec::new();
+        for ((owner, server), (binding, scopes)) in &self.remembered {
+            if owner != run {
+                continue;
+            }
+            for scope in scopes {
+                if self.access.iter().any(|((agent, target), access)| {
+                    self.authorization_scope(agent) == run
+                        && target == server
+                        && access.scope == *scope
+                        && access.binding == *binding
+                }) {
+                    continue;
+                }
+                result.push(ControlAccess {
+                    server_id: server.clone(),
+                    server_name: server.clone(),
+                    scope: scope.clone(),
+                    remembered: true,
+                    source_run_id: None,
+                    task_title: None,
+                    binding: binding.clone(),
+                    grant_id: 0,
+                });
+            }
+        }
+        result.sort_by(|a, b| a.server_id.cmp(&b.server_id));
+        result
+    }
     pub fn release_server(&mut self, run: &str, server: &str) {
         self.access.remove(&(run.into(), server.into()));
-        self.remembered.remove(&(run.into(), server.into()));
-        if self.desktop_owner.as_deref() == Some(run)
-            && !self
-                .list(run)
-                .iter()
-                .any(|item| matches!(item.scope, ControlScope::Application { .. }))
+        let scope = self.authorization_scope(run).to_owned();
+        if scope == run {
+            self.remembered.remove(&(run.into(), server.into()));
+        }
+        if self.desktop_owner.as_deref() == Some(scope.as_str())
+            && !self.access.iter().any(|((owner, _), item)| {
+                self.authorization_scope(owner) == scope
+                    && matches!(item.scope, ControlScope::Application { .. })
+            })
         {
             self.desktop_owner = None;
         }
     }
     pub fn revoke_run(&mut self, run: &str) {
-        *self.epochs.entry(run.into()).or_default() += 1;
-        self.access.retain(|(owner, _), _| owner != run);
-        self.remembered.retain(|(owner, _), _| owner != run);
-        if self.desktop_owner.as_deref() == Some(run) {
+        let scope = self.authorization_scope(run).to_owned();
+        let members = if scope == run {
+            self.family_members(run)
+        } else {
+            vec![run.into()]
+        };
+        for member in &members {
+            *self.epochs.entry(member.clone()).or_default() += 1;
+        }
+        self.access.retain(|(owner, _), _| !members.contains(owner));
+        if scope == run {
+            self.remembered.retain(|(owner, _), _| owner != run);
+        }
+        if self.desktop_owner.as_deref() == Some(scope.as_str())
+            && !self.access.iter().any(|((owner, _), item)| {
+                self.authorization_scope(owner) == scope
+                    && matches!(item.scope, ControlScope::Application { .. })
+            })
+        {
             self.desktop_owner = None;
         }
     }
@@ -236,6 +344,28 @@ impl ControlRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn reusable_child_grants_remain_visible_and_revocable_after_child_stops() {
+        let mut registry = ControlRegistry::default();
+        registry.bind_scope("child", "root");
+        registry
+            .grant(
+                "child",
+                "browser",
+                "Browser",
+                "v1",
+                ControlScope::Browser,
+                true,
+            )
+            .unwrap();
+        assert!(registry.retained_grants("root").is_empty());
+        registry.revoke_run("child");
+        assert!(registry.permits("root", "browser", "v1", Some(&ControlScope::Browser)));
+        assert_eq!(registry.retained_grants("root").len(), 1);
+        registry.revoke_run("root");
+        assert!(registry.retained_grants("root").is_empty());
+        assert!(!registry.permits("child", "browser", "v1", Some(&ControlScope::Browser)));
+    }
     #[test]
     fn grants_are_bound_to_run_configuration_and_application_and_revocation() {
         let mut registry = ControlRegistry::default();

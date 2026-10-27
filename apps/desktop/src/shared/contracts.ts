@@ -20,7 +20,8 @@ export interface RunDelegation {
   parent_run_id: string
   root_run_id: string
   task_name: string
-  write_paths: string[]
+  write_paths?: string[] | null
+  model_override?: UpdateRunModelInput | null
 }
 
 export interface ExecutionPolicy {
@@ -100,6 +101,8 @@ export interface RunSummary {
   /** Omitted/null inherits this model configuration's default. */
   reasoning_effort?: string | null
   workspace_path?: string | null
+  /** Backend-owned directory for a conversation that has no selected project. */
+  execution_directory?: string | null
   permission_mode?: PermissionMode
   created_at: string
   updated_at: string
@@ -222,18 +225,35 @@ export interface FileChange {
   revertible: boolean
 }
 
+export type CommandExecutionMode = 'sandboxed' | 'unrestricted' | 'unavailable'
+export type CommandNetworkAccess = 'denied' | 'allowed'
+export type CommandAccess = 'read_only' | 'workspace_write'
+export type CommandApprovalScope = 'once' | 'session'
+
+export interface CommandGrant {
+  access: CommandAccess
+  network_access: CommandNetworkAccess
+}
+
 export interface PendingApproval {
   id: string
+  task_title?: string
   command: string
   cwd: string
+  execution_mode?: CommandExecutionMode
+  access?: CommandAccess
+  network_access?: CommandNetworkAccess
 }
 
 export interface CommandRecord {
   id: string
+  task_title?: string
   command: string
   status: string
   output: string
   exit_code: number | null
+  access?: CommandAccess
+  network_access?: CommandNetworkAccess
 }
 
 export interface WorkspaceReview {
@@ -241,10 +261,12 @@ export interface WorkspaceReview {
   permission_mode: PermissionMode
   busy: boolean
   sandbox_available: boolean
+  execution_mode?: CommandExecutionMode
   review_incomplete?: boolean
   changes: FileChange[]
   approvals: PendingApproval[]
   commands: CommandRecord[]
+  command_grants?: CommandGrant[]
 }
 
 export interface DesktopBridge {
@@ -289,8 +311,16 @@ export interface DesktopBridge {
   pasteFiles(): Promise<FileImportResult>
   chooseWorkspace(): Promise<string | null>
   openWorkspace(path: string): Promise<string>
+  revealWorkspace(id: string): Promise<void>
   getWorkspace(id: string): Promise<WorkspaceReview>
-  approveCommand(id: string, approvalId: string, allow: boolean): Promise<WorkspaceReview>
+  approveCommand(
+    id: string,
+    approvalId: string,
+    allow: boolean,
+    scope?: CommandApprovalScope,
+  ): Promise<WorkspaceReview>
+  revokeCommandGrants(id: string): Promise<WorkspaceReview>
+  stopCommand(id: string, commandId: string): Promise<WorkspaceReview>
   revertFile(id: string, path: string): Promise<WorkspaceReview>
   resumeRun(id: string, message?: string, files?: TextFileReference[]): Promise<RunDetail>
   cancelRun(id: string): Promise<RunDetail>

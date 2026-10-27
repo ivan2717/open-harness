@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
-import type { ModelInfo, RunDetail } from '../../shared/contracts'
+import type { ModelInfo, RunDetail, WorkspaceReview } from '../../shared/contracts'
 import { RunPage } from './WorkspacePage'
 
 vi.mock('@tanstack/react-router', () => ({
@@ -26,7 +26,11 @@ vi.mock('../components/Composer', () => ({
 }))
 vi.mock('../components/ExtensionApprovals', () => ({ ExtensionApprovals: () => null }))
 
-function render(overrides: Partial<RunDetail> = {}, models?: Partial<ModelInfo>[]): string {
+function render(
+  overrides: Partial<RunDetail> = {},
+  models?: Partial<ModelInfo>[],
+  workspace?: WorkspaceReview,
+): string {
   const run: RunDetail = {
     id: 'task',
     revision: 1,
@@ -44,6 +48,7 @@ function render(overrides: Partial<RunDetail> = {}, models?: Partial<ModelInfo>[
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   client.setQueryData(['run', run.id], run)
   client.setQueryData(['runs'], [run])
+  if (workspace) client.setQueryData(['workspace', run.id], workspace)
   client.setQueryData(['config'], {
     models: models ?? [{ id: 'test', name: 'Test', available: true }],
   })
@@ -66,6 +71,27 @@ const delegation = {
 }
 
 describe('delegated task and pause controls', () => {
+  it('lets the user approve a read-only command while other commands are running', () => {
+    const html = render({ status: 'running', workspace_path: '/project' }, undefined, {
+      root: '/project',
+      permission_mode: 'workspace_write',
+      busy: true,
+      sandbox_available: true,
+      changes: [],
+      commands: [],
+      approvals: [
+        {
+          id: 'readonly',
+          command: 'python inspect.py',
+          cwd: '/project',
+          access: 'read_only',
+          execution_mode: 'sandboxed',
+        },
+      ],
+    })
+    expect(html).toMatch(/<button(?![^>]*disabled)[^>]*>允许本次<\/button>/)
+    expect(html).toMatch(/<button(?![^>]*disabled)[^>]*>本会话同范围允许<\/button>/)
+  })
   it('keeps child results visible but directs further instructions to its parent', () => {
     const html = render({ delegation, status: 'failed' })
     expect(html).toContain('检查结果')

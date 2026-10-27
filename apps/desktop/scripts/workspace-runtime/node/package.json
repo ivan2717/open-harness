@@ -1,0 +1,13 @@
+{
+  "name": "openharness-workspace-node",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Managed offline scripting dependencies shipped with Open Harness",
+  "dependencies": {
+    "csv-parse": "6.1.0",
+    "csv-stringify": "6.6.0",
+    "pngjs": "7.0.0",
+    "pnpm": "10.13.1"
+  },
+  "packageManager": "pnpm@10.13.1"
+}

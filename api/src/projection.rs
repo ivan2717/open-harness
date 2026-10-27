@@ -295,6 +295,7 @@ mod tests {
                 status: RunStatus::Running,
                 model_id: "local-demo".into(),
                 workspace_path: None,
+                execution_directory: None,
                 permission_mode: Default::default(),
                 created_at: String::new(),
                 updated_at: String::new(),

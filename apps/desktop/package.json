@@ -12,30 +12,31 @@
   "scripts": {
     "dev": "node scripts/plugins.mjs && node scripts/backend.mjs debug && electron-vite dev",
     "dev:renderer": "electron-vite dev --rendererOnly",
-    "build": "node scripts/plugins.mjs && npm run typecheck && electron-vite build",
+    "build": "node scripts/plugins.mjs && pnpm run typecheck && electron-vite build",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "test": "vitest run",
-    "package": "node scripts/backend.mjs release && npm run build && electron-builder",
-    "package:dir": "node scripts/backend.mjs release && npm run build && node scripts/package-dir.mjs",
+    "package": "node scripts/backend.mjs release && pnpm run build && electron-builder",
+    "package:dir": "node scripts/backend.mjs release && pnpm run build && node scripts/package-dir.mjs",
     "package:win": "node scripts/package-windows.mjs",
     "test:e2e:packaged": "node tests/e2e/packaged.mjs",
     "test:packaging": "vitest run scripts/packaging.test.mjs",
-    "test:e2e": "npm run build && node scripts/backend.mjs debug && node tests/e2e/desktop.mjs",
+    "test:e2e": "pnpm run build && node scripts/backend.mjs debug && node tests/e2e/desktop.mjs",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "test:e2e:models": "npm run build && node scripts/backend.mjs debug && node tests/e2e/models.mjs",
-    "test:e2e:workspace": "npm run build && node scripts/backend.mjs debug && node tests/e2e/workspace.mjs",
-    "test:e2e:files": "npm run build && node scripts/backend.mjs debug && node tests/e2e/file-references.mjs",
-    "test:e2e:extensions": "npm run build && node scripts/backend.mjs debug && node tests/e2e/extensions.mjs",
-    "test:e2e:rich": "npm run build && node scripts/backend.mjs debug && node tests/e2e/rich-messages.mjs",
-    "test:e2e:navigation": "npm run build && node scripts/backend.mjs debug && node tests/e2e/navigation.mjs",
-    "test:e2e:plugins": "npm run build && node scripts/backend.mjs debug && node tests/e2e/plugins.mjs",
-    "test:e2e:memory": "npm run build && node scripts/backend.mjs debug && node tests/e2e/memory.mjs",
+    "test:e2e:models": "pnpm run build && node scripts/backend.mjs debug && node tests/e2e/models.mjs",
+    "test:e2e:workspace": "pnpm run build && node scripts/backend.mjs debug && node tests/e2e/workspace.mjs",
+    "test:e2e:scripts": "pnpm run build && node scripts/backend.mjs debug && node tests/e2e/script-workflow.mjs",
+    "test:e2e:files": "pnpm run build && node scripts/backend.mjs debug && node tests/e2e/file-references.mjs",
+    "test:e2e:extensions": "pnpm run build && node scripts/backend.mjs debug && node tests/e2e/extensions.mjs",
+    "test:e2e:rich": "pnpm run build && node scripts/backend.mjs debug && node tests/e2e/rich-messages.mjs",
+    "test:e2e:navigation": "pnpm run build && node scripts/backend.mjs debug && node tests/e2e/navigation.mjs",
+    "test:e2e:plugins": "pnpm run build && node scripts/backend.mjs debug && node tests/e2e/plugins.mjs",
+    "test:e2e:memory": "pnpm run build && node scripts/backend.mjs debug && node tests/e2e/memory.mjs",
     "test:browser": "node --test ../../plugins/browser-use/tests/*.test.mjs",
     "test:computer": "node --test ../../plugins/computer-use/tests/*.test.mjs",
     "test:chrome": "node --test ../../plugins/chrome-use/tests/*.test.mjs",
     "test:e2e:control-setup": "node tests/e2e/control-setup.mjs",
-    "test:e2e:computer": "npm run build && node scripts/backend.mjs debug && node tests/e2e/computer-use.mjs",
+    "test:e2e:computer": "pnpm run build && node scripts/backend.mjs debug && node tests/e2e/computer-use.mjs",
     "test:e2e:native": "node tests/e2e/native-computer.mjs"
   },
   "dependencies": {
@@ -68,5 +69,12 @@
     "vite": "^8.0.0",
     "vitest": "^4.0.0"
   },
-  "productName": "Open Harness"
+  "productName": "Open Harness",
+  "packageManager": "pnpm@10.13.1",
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "electron",
+      "esbuild"
+    ]
+  }
 }

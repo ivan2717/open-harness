@@ -22,6 +22,8 @@ interface ComposerProps {
   modelSettingsDisabled?: boolean
   modelSettingsDisabledReason?: string
   project?: ProjectSelection | null
+  executionDirectory?: string | null
+  onRevealWorkspace?: () => void
   onProjectChange?: (project: ProjectSelection | null) => void
   onSubmit: (prompt: string, files: TextFileReference[]) => Promise<void>
   pending?: boolean
@@ -44,6 +46,8 @@ export function Composer({
   modelSettingsDisabled,
   modelSettingsDisabledReason,
   project,
+  executionDirectory,
+  onRevealWorkspace,
   onProjectChange,
   onSubmit,
   pending,
@@ -182,6 +186,8 @@ export function Composer({
     <div className="composer-stack">
       <ProjectPicker
         project={project}
+        executionDirectory={executionDirectory}
+        onRevealWorkspace={onRevealWorkspace}
         onChoose={onProjectChange ? () => void chooseProject() : undefined}
         onChange={onProjectChange}
         disabled={controlsBusy}

@@ -40,21 +40,28 @@ jobs:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
+      - uses: pnpm/action-setup@v6
+        with:
+          package_json_file: apps/desktop/package.json
+          run_install: false
       - uses: actions/setup-node@v6
         with:
           node-version: 24
-          cache: npm
-          cache-dependency-path: apps/desktop/package-lock.json
-      - run: npm ci
+      - uses: actions/cache@v5
+        with:
+          path: apps/desktop/.pnpm-store
+          key: ${{ runner.os }}-desktop-pnpm-${{ hashFiles('apps/desktop/pnpm-lock.yaml', 'apps/desktop/package.json') }}
+          restore-keys: ${{ runner.os }}-desktop-pnpm-
+      - run: pnpm install --frozen-lockfile
       - name: Check desktop version change
         id: package-version
         env:
           BASE_SHA: ${{ github.event.before }}
         run: node scripts/ci-package-version.mjs
-      - run: npm run format:check
-      - run: npm run typecheck
-      - run: npm test
-      - run: npm run build
+      - run: pnpm run format:check
+      - run: pnpm run typecheck
+      - run: pnpm test
+      - run: pnpm run build
 
   plugins:
     runs-on: ubuntu-24.04
@@ -64,36 +71,108 @@ jobs:
         working-directory: apps/desktop
     steps:
       - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6
+        with:
+          package_json_file: apps/desktop/package.json
+          run_install: false
       - uses: actions/setup-node@v6
         with:
           node-version: 24
-          cache: npm
-          cache-dependency-path: apps/desktop/package-lock.json
-      - run: npm ci
-      - run: npx playwright install --with-deps chromium
-      - run: npm run test:browser
-      - run: npm run test:chrome
-      - run: npm run test:computer
+      - uses: actions/cache@v5
+        with:
+          path: apps/desktop/.pnpm-store
+          key: ${{ runner.os }}-desktop-pnpm-${{ hashFiles('apps/desktop/pnpm-lock.yaml', 'apps/desktop/package.json') }}
+          restore-keys: ${{ runner.os }}-desktop-pnpm-
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm run test:browser
+      - run: pnpm run test:chrome
+      - run: pnpm run test:computer
 
-  windows:
-    name: Windows x64 installer
-    needs: [check, desktop, plugins]
-    if: needs.desktop.outputs.package_windows == 'true'
+  windows-checks:
+    name: Windows checks
     runs-on: windows-2022
-    timeout-minutes: 45
+    timeout-minutes: 30
     env:
-      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+      OPENHARNESS_WINDOWS_SANDBOX_HELPER: ${{ github.workspace }}\target\debug\openharness-sandbox.exe
     defaults:
       run:
         working-directory: apps/desktop
         shell: pwsh
     steps:
       - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6
+        with:
+          package_json_file: apps/desktop/package.json
+          run_install: false
       - uses: actions/setup-node@v6
         with:
           node-version: 24
-          cache: npm
-          cache-dependency-path: apps/desktop/package-lock.json
+      - uses: actions/cache@v5
+        with:
+          path: apps/desktop/.pnpm-store
+          key: ${{ runner.os }}-desktop-pnpm-${{ hashFiles('apps/desktop/pnpm-lock.yaml', 'apps/desktop/package.json') }}
+          restore-keys: ${{ runner.os }}-desktop-pnpm-
+      - name: Set up Rust
+        run: rustup toolchain install stable --profile minimal
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: windows-x64-checks-rust-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: windows-x64-checks-rust-
+      - run: pnpm install --frozen-lockfile
+      - name: Build Windows command sandbox helper
+        run: cargo build -p agent-local --bin openharness-sandbox --locked
+      - name: Check Windows local command permissions, sandbox, and lifecycle
+        run: cargo test -p agent-local --all-targets --locked
+      - name: Check Windows API execution and runtime shutdown
+        run: cargo test -p api --lib --test local_workspace --test parent_lifetime --locked
+      - name: Check Windows launcher lifecycle
+        run: cargo test -p chrome-native-host --all-targets --locked
+      - name: Check Windows desktop runtime and paths
+        run: >-
+          pnpm exec vitest run
+          scripts/workspace-runtime-node.test.mjs
+          scripts/workspace-runtime-bundle.test.mjs
+          scripts/workspace-runtime.test.mjs
+          src/main/workspace-runtime.test.ts
+          src/main/run-workspace.test.ts
+          src/main/run-workspace.windows.test.ts
+          src/main/chrome-connection.windows.test.ts
+          src/main/chrome-windows.test.ts
+      - name: Check Windows Chrome transport
+        run: node --test ../../plugins/chrome-use/tests/bridge.test.mjs ../../plugins/chrome-use/tests/launch.test.mjs ../../plugins/chrome-use/tests/controller.test.mjs
+
+  windows:
+    name: Windows x64 installer
+    needs: [check, desktop, plugins, windows-checks]
+    if: needs.desktop.outputs.package_windows == 'true'
+    runs-on: windows-2022
+    timeout-minutes: 45
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+    defaults:
+      run:
+        working-directory: apps/desktop
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6
+        with:
+          package_json_file: apps/desktop/package.json
+          run_install: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - uses: actions/cache@v5
+        with:
+          path: apps/desktop/.pnpm-store
+          key: ${{ runner.os }}-desktop-pnpm-${{ hashFiles('apps/desktop/pnpm-lock.yaml', 'apps/desktop/package.json') }}
+          restore-keys: ${{ runner.os }}-desktop-pnpm-
       - name: Set up Rust
         run: rustup toolchain install stable --profile minimal
       - uses: actions/cache/restore@v5
@@ -105,17 +184,11 @@ jobs:
             target
           key: windows-x64-rust-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/desktop/scripts/backend.mjs') }}
           restore-keys: windows-x64-rust-
-      - run: npm ci
+      - run: pnpm install --frozen-lockfile
       - name: Prepare Chrome for Testing
-        run: npx playwright install chromium
-      - name: Check Windows Chrome transport
-        run: node --test ../../plugins/chrome-use/tests/bridge.test.mjs ../../plugins/chrome-use/tests/launch.test.mjs ../../plugins/chrome-use/tests/controller.test.mjs
-      - name: Check Windows runtime shutdown
-        run: cargo test -p api --test parent_lifetime --locked
-      - name: Check Windows launcher lifecycle
-        run: cargo test -p chrome-native-host --all-targets --locked
+        run: pnpm exec playwright install chromium
       - name: Build Windows installer
-        run: npm run package:win
+        run: pnpm run package:win
       - name: Save compiled backend cache
         if: steps.rust-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v5
@@ -179,6 +252,10 @@ jobs:
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
+      - uses: pnpm/action-setup@v6
+        with:
+          package_json_file: apps/desktop/package.json
+          run_install: false
       - uses: actions/setup-node@v6
         with:
           node-version: 24

@@ -1,0 +1,3806 @@
+[
+  {
+    "name": "single-1",
+    "mode": "single",
+    "repeat": 1,
+    "run_id": "run-18e220539b024f68-1534b-1",
+    "duration_ms": 44266,
+    "stopped_reason": null,
+    "passed": true,
+    "grading": {
+      "passed": true,
+      "passedChecks": 32,
+      "totalChecks": 32,
+      "checks": [
+        {
+          "name": "source_unchanged:orders.csv",
+          "passed": true,
+          "expected": "51b22336d7eda0772cae0a6ca1a57517ab1ac3377d351a0395414b710e67ca03",
+          "actual": "51b22336d7eda0772cae0a6ca1a57517ab1ac3377d351a0395414b710e67ca03"
+        },
+        {
+          "name": "source_unchanged:payments.csv",
+          "passed": true,
+          "expected": "77f2ce629ae05601309109a51b254d4c2d658dad7aaf46d142d07306ae45e7b7",
+          "actual": "77f2ce629ae05601309109a51b254d4c2d658dad7aaf46d142d07306ae45e7b7"
+        },
+        {
+          "name": "source_unchanged:refunds.csv",
+          "passed": true,
+          "expected": "c0119c1f31ca1c3750638bf53265bb92b5f7494a5d8110c49e3ff0a181c4adc9",
+          "actual": "c0119c1f31ca1c3750638bf53265bb92b5f7494a5d8110c49e3ff0a181c4adc9"
+        },
+        {
+          "name": "source_unchanged:rules.md",
+          "passed": true,
+          "expected": "4c1a2c9e0ffdb336fb6ef234a98c43b4a3303a51de726bfe23bf469401105fb6",
+          "actual": "4c1a2c9e0ffdb336fb6ef234a98c43b4a3303a51de726bfe23bf469401105fb6"
+        },
+        {
+          "name": "json_readable",
+          "passed": true,
+          "expected": true,
+          "actual": true
+        },
+        {
+          "name": "summary:order_total",
+          "passed": true,
+          "expected": 700,
+          "actual": 700
+        },
+        {
+          "name": "summary:matched_paid",
+          "passed": true,
+          "expected": 475,
+          "actual": 475
+        },
+        {
+          "name": "summary:applied_refund",
+          "passed": true,
+          "expected": 50,
+          "actual": 50
+        },
+        {
+          "name": "summary:net_received",
+          "passed": true,
+          "expected": 425,
+          "actual": 425
+        },
+        {
+          "name": "summary:unpaid_before_refunds",
+          "passed": true,
+          "expected": 225,
+          "actual": 225
+        },
+        {
+          "name": "all_orders_once",
+          "passed": true,
+          "expected": [
+            "O101",
+            "O102",
+            "O103",
+            "O104",
+            "O105",
+            "O106"
+          ],
+          "actual": [
+            "O101",
+            "O102",
+            "O103",
+            "O104",
+            "O105",
+            "O106"
+          ]
+        },
+        {
+          "name": "order_amounts:O101",
+          "passed": true,
+          "expected": {
+            "paid": 120,
+            "refund": 20,
+            "net": 100,
+            "unpaid_before_refunds": 0
+          },
+          "actual": {
+            "paid": 120,
+            "refund": 20,
+            "net": 100,
+            "unpaid_before_refunds": 0
+          }
+        },
+        {
+          "name": "order_evidence:O101",
+          "passed": true,
+          "expected": {
+            "payment_ids": [
+              "P201"
+            ],
+            "refund_ids": [
+              "R302"
+            ]
+          },
+          "actual": {
+            "payment_ids": [
+              "P201"
+            ],
+            "refund_ids": [
+              "R302"
+            ]
+          }
+        },
+        {
+          "name": "order_amounts:O102",
+          "passed": true,
+          "expected": {
+            "paid": 80,
+            "refund": 0,
+            "net": 80,
+            "unpaid_before_refunds": 0
+          },
+          "actual": {
+            "paid": 80,
+            "refund": 0,
+            "net": 80,
+            "unpaid_before_refunds": 0
+          }
+        },
+        {
+          "name": "order_evidence:O102",
+          "passed": true,
+          "expected": {
+            "payment_ids": [
+              "P202"
+            ],
+            "refund_ids": []
+          },
+          "actual": {
+            "payment_ids": [
+              "P202"
+            ],
+            "refund_ids": []
+          }
+        },
+        {
+          "name": "order_amounts:O103",
+          "passed": true,
+          "expected": {
+            "paid": 200,
+            "refund": 30,
+            "net": 170,
+            "unpaid_before_refunds": 0
+          },
+          "actual": {
+            "paid": 200,
+            "refund": 30,
+            "net": 170,
+            "unpaid_before_refunds": 0
+          }
+        },
+        {
+          "name": "order_evidence:O103",
+          "passed": true,
+          "expected": {
+            "payment_ids": [
+              "P203"
+            ],
+            "refund_ids": [
+              "R301"
+            ]
+          },
+          "actual": {
+            "payment_ids": [
+              "P203"
+            ],
+            "refund_ids": [
+              "R301"
+            ]
+          }
+        },
+        {
+          "name": "order_amounts:O104",
+          "passed": true,
+          "expected": {
+            "paid": 0,
+            "refund": 0,
+            "net": 0,
+            "unpaid_before_refunds": 60
+          },
+          "actual": {
+            "paid": 0,
+            "refund": 0,
+            "net": 0,
+            "unpaid_before_refunds": 60
+          }
+        },
+        {
+          "name": "order_evidence:O104",
+          "passed": true,
+          "expected": {
+            "payment_ids": [],
+            "refund_ids": []
+          },
+          "actual": {
+            "payment_ids": [],
+            "refund_ids": []
+          }
+        },
+        {
+          "name": "order_amounts:O105",
+          "passed": true,
+          "expected": {
+            "paid": 75,
+            "refund": 0,
+            "net": 75,
+            "unpaid_before_refunds": 75
+          },
+          "actual": {
+            "paid": 75,
+            "refund": 0,
+            "net": 75,
+            "unpaid_before_refunds": 75
+          }
+        },
+        {
+          "name": "order_evidence:O105",
+          "passed": true,
+          "expected": {
+            "payment_ids": [
+              "P204"
+            ],
+            "refund_ids": []
+          },
+          "actual": {
+            "payment_ids": [
+              "P204"
+            ],
+            "refund_ids": []
+          }
+        },
+        {
+          "name": "order_amounts:O106",
+          "passed": true,
+          "expected": {
+            "paid": 0,
+            "refund": 0,
+            "net": 0,
+            "unpaid_before_refunds": 90
+          },
+          "actual": {
+            "paid": 0,
+            "refund": 0,
+            "net": 0,
+            "unpaid_before_refunds": 90
+          }
+        },
+        {
+          "name": "order_evidence:O106",
+          "passed": true,
+          "expected": {
+            "payment_ids": [],
+            "refund_ids": []
+          },
+          "actual": {
+            "payment_ids": [],
+            "refund_ids": []
+          }
+        },
+        {
+          "name": "anomalies:duplicate_payment_ids",
+          "passed": true,
+          "expected": [
+            "P202"
+          ],
+          "actual": [
+            "P202"
+          ]
+        },
+        {
+          "name": "anomalies:orphan_payment_ids",
+          "passed": true,
+          "expected": [
+            "P205"
+          ],
+          "actual": [
+            "P205"
+          ]
+        },
+        {
+          "name": "anomalies:orphan_refund_ids",
+          "passed": true,
+          "expected": [
+            "R304"
+          ],
+          "actual": [
+            "R304"
+          ]
+        },
+        {
+          "name": "anomalies:unpaid_order_ids",
+          "passed": true,
+          "expected": [
+            "O104",
+            "O106"
+          ],
+          "actual": [
+            "O104",
+            "O106"
+          ]
+        },
+        {
+          "name": "anomalies:partial_order_ids",
+          "passed": true,
+          "expected": [
+            "O105"
+          ],
+          "actual": [
+            "O105"
+          ]
+        },
+        {
+          "name": "anomalies:excluded_payment_ids",
+          "passed": true,
+          "expected": [
+            "P206",
+            "P207"
+          ],
+          "actual": [
+            "P206",
+            "P207"
+          ]
+        },
+        {
+          "name": "anomalies:pending_refund_ids",
+          "passed": true,
+          "expected": [
+            "R303"
+          ],
+          "actual": [
+            "R303"
+          ]
+        },
+        {
+          "name": "report_present",
+          "passed": true,
+          "expected": "At least 80 characters of readable report text",
+          "actual": 1508
+        },
+        {
+          "name": "report_source_filenames",
+          "passed": true,
+          "expected": [
+            "orders.csv",
+            "payments.csv",
+            "refunds.csv"
+          ],
+          "actual": [
+            "orders.csv",
+            "payments.csv",
+            "refunds.csv"
+          ]
+        }
+      ],
+      "limitations": [
+        "Structured numbers, IDs, input integrity and report presence are checked automatically; report prose requires independent review.",
+        "Runtime permission behavior, delegation and total usage must be evaluated from run records separately."
+      ]
+    },
+    "coordination_passed": true,
+    "statuses_passed": true,
+    "child_count": 0,
+    "approved_commands": 0,
+    "denied_commands": 0,
+    "observed_usage": {
+      "input_tokens": 22785,
+      "output_tokens": 2553,
+      "responses": 4
+    },
+    "members": [
+      {
+        "id": "run-18e220539b024f68-1534b-1",
+        "task": "本次使用单 agent 完成全部工作，不启动任何子 agent。请自行复核数字和依据。\n\n请读取本目录的 orders.csv、",
+        "status": "waiting_for_input",
+        "usage": {
+          "input_tokens": 22785,
+          "output_tokens": 2553,
+          "responses": 4
+        },
+        "steps": 4,
+        "tool_failures": 0
+      }
+    ]
+  },
+  {
+    "name": "auto-1",
+    "mode": "auto",
+    "repeat": 1,
+    "run_id": "run-18e2205dea257b38-1534b-2",
+    "duration_ms": 41218,
+    "stopped_reason": null,
+    "passed": true,
+    "grading": {
+      "passed": true,
+      "passedChecks": 32,
+      "totalChecks": 32,
+      "checks": [
+        {
+          "name": "source_unchanged:orders.csv",
+          "passed": true,
+          "expected": "51b22336d7eda0772cae0a6ca1a57517ab1ac3377d351a0395414b710e67ca03",
+          "actual": "51b22336d7eda0772cae0a6ca1a57517ab1ac3377d351a0395414b710e67ca03"
+        },
+        {
+          "name": "source_unchanged:payments.csv",
+          "passed": true,
+          "expected": "77f2ce629ae05601309109a51b254d4c2d658dad7aaf46d142d07306ae45e7b7",
+          "actual": "77f2ce629ae05601309109a51b254d4c2d658dad7aaf46d142d07306ae45e7b7"
+        },
+        {
+          "name": "source_unchanged:refunds.csv",
+          "passed": true,
+          "expected": "c0119c1f31ca1c3750638bf53265bb92b5f7494a5d8110c49e3ff0a181c4adc9",
+          "actual": "c0119c1f31ca1c3750638bf53265bb92b5f7494a5d8110c49e3ff0a181c4adc9"
+        },
+        {
+          "name": "source_unchanged:rules.md",
+          "passed": true,
+          "expected": "4c1a2c9e0ffdb336fb6ef234a98c43b4a3303a51de726bfe23bf469401105fb6",
+          "actual": "4c1a2c9e0ffdb336fb6ef234a98c43b4a3303a51de726bfe23bf469401105fb6"
+        },
+        {
+          "name": "json_readable",
+          "passed": true,
+          "expected": true,
+          "actual": true
+        },
+        {
+          "name": "summary:order_total",
+          "passed": true,
+          "expected": 700,
+          "actual": 700
+        },
+        {
+          "name": "summary:matched_paid",
+          "passed": true,
+          "expected": 475,
+          "actual": 475
+        },
+        {
+          "name": "summary:applied_refund",
+          "passed": true,
+          "expected": 50,
+          "actual": 50
+        },
+        {
+          "name": "summary:net_received",
+          "passed": true,
+          "expected": 425,
+          "actual": 425
+        },
+        {
+          "name": "summary:unpaid_before_refunds",
+          "passed": true,
+          "expected": 225,
+          "actual": 225
+        },
+        {
+          "name": "all_orders_once",
+          "passed": true,
+          "expected": [
+            "O101",
+            "O102",
+            "O103",
+            "O104",
+            "O105",
+            "O106"
+          ],
+          "actual": [
+            "O101",
+            "O102",
+            "O103",
+            "O104",
+            "O105",
+            "O106"
+          ]
+        },
+        {
+          "name": "order_amounts:O101",
+          "passed": true,
+          "expected": {
+            "paid": 120,
+            "refund": 20,
+            "net": 100,
+            "unpaid_before_refunds": 0
+          },
+          "actual": {
+            "paid": 120,
+            "refund": 20,
+            "net": 100,
+            "unpaid_before_refunds": 0
+          }
+        },
+        {
+          "name": "order_evidence:O101",
+          "passed": true,
+          "expected": {
+            "payment_ids": [
+              "P201"
+            ],
+            "refund_ids": [
+              "R302"
+            ]
+          },
+          "actual": {
+            "payment_ids": [
+              "P201"
+            ],
+            "refund_ids": [
+              "R302"
+            ]
+          }
+        },
+        {
+          "name": "order_amounts:O102",
+          "passed": true,
+          "expected": {
+            "paid": 80,
+            "refund": 0,
+            "net": 80,
+            "unpaid_before_refunds": 0
+          },
+          "actual": {
+            "paid": 80,
+            "refund": 0,
+            "net": 80,
+            "unpaid_before_refunds": 0
+          }
+        },
+        {
+          "name": "order_evidence:O102",
+          "passed": true,
+          "expected": {
+            "payment_ids": [
+              "P202"
+            ],
+            "refund_ids": []
+          },
+          "actual": {
+            "payment_ids": [
+              "P202"
+            ],
+            "refund_ids": []
+          }
+        },
+        {
+          "name": "order_amounts:O103",
+          "passed": true,
+          "expected": {
+            "paid": 200,
+            "refund": 30,
+            "net": 170,
+            "unpaid_before_refunds": 0
+          },
+          "actual": {
+            "paid": 200,
+            "refund": 30,
+            "net": 170,
+            "unpaid_before_refunds": 0
+          }
+        },
+        {
+          "name": "order_evidence:O103",
+          "passed": true,
+          "expected": {
+            "payment_ids": [
+              "P203"
+            ],
+            "refund_ids": [
+              "R301"
+            ]
+          },
+          "actual": {
+            "payment_ids": [
+              "P203"
+            ],
+            "refund_ids": [
+              "R301"
+            ]
+          }
+        },
+        {
+          "name": "order_amounts:O104",
+          "passed": true,
+          "expected": {
+            "paid": 0,
+            "refund": 0,
+            "net": 0,
+            "unpaid_before_refunds": 60
+          },
+          "actual": {
+            "paid": 0,
+            "refund": 0,
+            "net": 0,
+            "unpaid_before_refunds": 60
+          }
+        },
+        {
+          "name": "order_evidence:O104",
+          "passed": true,
+          "expected": {
+            "payment_ids": [],
+            "refund_ids": []
+          },
+          "actual": {
+            "payment_ids": [],
+            "refund_ids": []
+          }
+        },
+        {
+          "name": "order_amounts:O105",
+          "passed": true,
+          "expected": {
+            "paid": 75,
+            "refund": 0,
+            "net": 75,
+            "unpaid_before_refunds": 75
+          },
+          "actual": {
+            "paid": 75,
+            "refund": 0,
+            "net": 75,
+            "unpaid_before_refunds": 75
+          }
+        },
+        {
+          "name": "order_evidence:O105",
+          "passed": true,
+          "expected": {
+            "payment_ids": [
+              "P204"
+            ],
+            "refund_ids": []
+          },
+          "actual": {
+            "payment_ids": [
+              "P204"
+            ],
+            "refund_ids": []
+          }
+        },
+        {
+          "name": "order_amounts:O106",
+          "passed": true,
+          "expected": {
+            "paid": 0,
+            "refund": 0,
+            "net": 0,
+            "unpaid_before_refunds": 90
+          },
+          "actual": {
+            "paid": 0,
+            "refund": 0,
+            "net": 0,
+            "unpaid_before_refunds": 90
+          }
+        },
+        {
+          "name": "order_evidence:O106",
+          "passed": true,
+          "expected": {
+            "payment_ids": [],
+            "refund_ids": []
+          },
+          "actual": {
+            "payment_ids": [],
+            "refund_ids": []
+          }
+        },
+        {
+          "name": "anomalies:duplicate_payment_ids",
+          "passed": true,
+          "expected": [
+            "P202"
+          ],
+          "actual": [
+            "P202"
+          ]
+        },
+        {
+          "name": "anomalies:orphan_payment_ids",
+          "passed": true,
+          "expected": [
+            "P205"
+          ],
+          "actual": [
+            "P205"
+          ]
+        },
+        {
+          "name": "anomalies:orphan_refund_ids",
+          "passed": true,
+          "expected": [
+            "R304"
+          ],
+          "actual": [
+            "R304"
+          ]
+        },
+        {
+          "name": "anomalies:unpaid_order_ids",
+          "passed": true,
+          "expected": [
+            "O104",
+            "O106"
+          ],
+          "actual": [
+            "O104",
+            "O106"
+          ]
+        },
+        {
+          "name": "anomalies:partial_order_ids",
+          "passed": true,
+          "expected": [
+            "O105"
+          ],
+          "actual": [
+            "O105"
+          ]
+        },
+        {
+          "name": "anomalies:excluded_payment_ids",
+          "passed": true,
+          "expected": [
+            "P206",
+            "P207"
+          ],
+          "actual": [
+            "P206",
+            "P207"
+          ]
+        },
+        {
+          "name": "anomalies:pending_refund_ids",
+          "passed": true,
+          "expected": [
+            "R303"
+          ],
+          "actual": [
+            "R303"
+          ]
+        },
+        {
+          "name": "report_present",
+          "passed": true,
+          "expected": "At least 80 characters of readable report text",
+          "actual": 1484
+        },
+        {
+          "name": "report_source_filenames",
+          "passed": true,
+          "expected": [
+            "orders.csv",
+            "payments.csv",
+            "refunds.csv"
+          ],
+          "actual": [
+            "orders.csv",
+            "payments.csv",
+            "refunds.csv"
+          ]
+        }
+      ],
+      "limitations": [
+        "Structured numbers, IDs, input integrity and report presence are checked automatically; report prose requires independent review.",
+        "Runtime permission behavior, delegation and total usage must be evaluated from run records separately."
+      ]
+    },
+    "coordination_passed": true,
+    "statuses_passed": true,
+    "child_count": 0,
+    "approved_commands": 0,
+    "denied_commands": 0,
+    "observed_usage": {
+      "input_tokens": 31926,
+      "output_tokens": 2572,
+      "responses": 6
+    },
+    "members": [
+      {
+        "id": "run-18e2205dea257b38-1534b-2",
+        "task": "请自行判断是否需要子 agent 协作。若使用协作，避免重复工作；主 agent 负责复核数字和依据并交付最终文件。\n\n请读取本",
+        "status": "waiting_for_input",
+        "usage": {
+          "input_tokens": 31926,
+          "output_tokens": 2572,
+          "responses": 6
+        },
+        "steps": 6,
+        "tool_failures": 0
+      }
+    ]
+  },
+  {
+    "name": "delegated-1",
+    "mode": "delegated",
+    "repeat": 1,
+    "run_id": "run-18e2206783846920-1534b-3",
+    "duration_ms": 77482,
+    "stopped_reason": null,
+    "passed": true,
+    "grading": {
+      "passed": true,
+      "passedChecks": 32,
+      "totalChecks": 32,
+      "checks": [
+        {
+          "name": "source_unchanged:orders.csv",
+          "passed": true,
+          "expected": "51b22336d7eda0772cae0a6ca1a57517ab1ac3377d351a0395414b710e67ca03",
+          "actual": "51b22336d7eda0772cae0a6ca1a57517ab1ac3377d351a0395414b710e67ca03"
+        },
+        {
+          "name": "source_unchanged:payments.csv",
+          "passed": true,
+          "expected": "77f2ce629ae05601309109a51b254d4c2d658dad7aaf46d142d07306ae45e7b7",
+          "actual": "77f2ce629ae05601309109a51b254d4c2d658dad7aaf46d142d07306ae45e7b7"
+        },
+        {
+          "name": "source_unchanged:refunds.csv",
+          "passed": true,
+          "expected": "c0119c1f31ca1c3750638bf53265bb92b5f7494a5d8110c49e3ff0a181c4adc9",
+          "actual": "c0119c1f31ca1c3750638bf53265bb92b5f7494a5d8110c49e3ff0a181c4adc9"
+        },
+        {
+          "name": "source_unchanged:rules.md",
+          "passed": true,
+          "expected": "4c1a2c9e0ffdb336fb6ef234a98c43b4a3303a51de726bfe23bf469401105fb6",
+          "actual": "4c1a2c9e0ffdb336fb6ef234a98c43b4a3303a51de726bfe23bf469401105fb6"
+        },
+        {
+          "name": "json_readable",
+          "passed": true,
+          "expected": true,
+          "actual": true
+        },
+        {
+          "name": "summary:order_total",
+          "passed": true,
+          "expected": 700,
+          "actual": 700
+        },
+        {
+          "name": "summary:matched_paid",
+          "passed": true,
+          "expected": 475,
+          "actual": 475
+        },
+        {
+          "name": "summary:applied_refund",
+          "passed": true,
+          "expected": 50,
+          "actual": 50
+        },
+        {
+          "name": "summary:net_received",
+          "passed": true,
+          "expected": 425,
+          "actual": 425
+        },
+        {
+          "name": "summary:unpaid_before_refunds",
+          "passed": true,
+          "expected": 225,
+          "actual": 225
+        },
+        {
+          "name": "all_orders_once",
+          "passed": true,
+          "expected": [
+            "O101",
+            "O102",
+            "O103",
+            "O104",
+            "O105",
+            "O106"
+          ],
+          "actual": [
+            "O101",
+            "O102",
+            "O103",
+            "O104",
+            "O105",
+            "O106"
+          ]
+        },
+        {
+          "name": "order_amounts:O101",
+          "passed": true,
+          "expected": {
+            "paid": 120,
+            "refund": 20,
+            "net": 100,
+            "unpaid_before_refunds": 0
+          },
+          "actual": {
+            "paid": 120,
+            "refund": 20,
+            "net": 100,
+            "unpaid_before_refunds": 0
+          }
+        },
+        {
+          "name": "order_evidence:O101",
+          "passed": true,
+          "expected": {
+            "payment_ids": [
+              "P201"
+            ],
+            "refund_ids": [
+              "R302"
+            ]
+          },
+          "actual": {
+            "payment_ids": [
+              "P201"
+            ],
+            "refund_ids": [
+              "R302"
+            ]
+          }
+        },
+        {
+          "name": "order_amounts:O102",
+          "passed": true,
+          "expected": {
+            "paid": 80,
+            "refund": 0,
+            "net": 80,
+            "unpaid_before_refunds": 0
+          },
+          "actual": {
+            "paid": 80,
+            "refund": 0,
+            "net": 80,
+            "unpaid_before_refunds": 0
+          }
+        },
+        {
+          "name": "order_evidence:O102",
+          "passed": true,
+          "expected": {
+            "payment_ids": [
+              "P202"
+            ],
+            "refund_ids": []
+          },
+          "actual": {
+            "payment_ids": [
+              "P202"
+            ],
+            "refund_ids": []
+          }
+        },
+        {
+          "name": "order_amounts:O103",
+          "passed": true,
+          "expected": {
+            "paid": 200,
+            "refund": 30,
+            "net": 170,
+            "unpaid_before_refunds": 0
+          },
+          "actual": {
+            "paid": 200,
+            "refund": 30,
+            "net": 170,
+            "unpaid_before_refunds": 0
+          }
+        },
+        {
+          "name": "order_evidence:O103",
+          "passed": true,
+          "expected": {
+            "payment_ids": [
+              "P203"
+            ],
+            "refund_ids": [
+              "R301"
+            ]
+          },
+          "actual": {
+            "payment_ids": [
+              "P203"
+            ],
+            "refund_ids": [
+              "R301"
+            ]
+          }
+        },
+        {
+          "name": "order_amounts:O104",
+          "passed": true,
+          "expected": {
+            "paid": 0,
+            "refund": 0,
+            "net": 0,
+            "unpaid_before_refunds": 60
+          },
+          "actual": {
+            "paid": 0,
+            "refund": 0,
+            "net": 0,
+            "unpaid_before_refunds": 60
+          }
+        },
+        {
+          "name": "order_evidence:O104",
+          "passed": true,
+          "expected": {
+            "payment_ids": [],
+            "refund_ids": []
+          },
+          "actual": {
+            "payment_ids": [],
+            "refund_ids": []
+          }
+        },
+        {
+          "name": "order_amounts:O105",
+          "passed": true,
+          "expected": {
+            "paid": 75,
+            "refund": 0,
+            "net": 75,
+            "unpaid_before_refunds": 75
+          },
+          "actual": {
+            "paid": 75,
+            "refund": 0,
+            "net": 75,
+            "unpaid_before_refunds": 75
+          }
+        },
+        {
+          "name": "order_evidence:O105",
+          "passed": true,
+          "expected": {
+            "payment_ids": [
+              "P204"
+            ],
+            "refund_ids": []
+          },
+          "actual": {
+            "payment_ids": [
+              "P204"
+            ],
+            "refund_ids": []
+          }
+        },
+        {
+          "name": "order_amounts:O106",
+          "passed": true,
+          "expected": {
+            "paid": 0,
+            "refund": 0,
+            "net": 0,
+            "unpaid_before_refunds": 90
+          },
+          "actual": {
+            "paid": 0,
+            "refund": 0,
+            "net": 0,
+            "unpaid_before_refunds": 90
+          }
+        },
+        {
+          "name": "order_evidence:O106",
+          "passed": true,
+          "expected": {
+            "payment_ids": [],
+            "refund_ids": []
+          },
+          "actual": {
+            "payment_ids": [],
+            "refund_ids": []
+          }
+        },
+        {
+          "name": "anomalies:duplicate_payment_ids",
+          "passed": true,
+          "expected": [
+            "P202"
+          ],
+          "actual": [
+            "P202"
+          ]
+        },
+        {
+          "name": "anomalies:orphan_payment_ids",
+          "passed": true,
+          "expected": [
+            "P205"
+          ],
+          "actual": [
+            "P205"
+          ]
+        },
+        {
+          "name": "anomalies:orphan_refund_ids",
+          "passed": true,
+          "expected": [
+            "R304"
+          ],
+          "actual": [
+            "R304"
+          ]
+        },
+        {
+          "name": "anomalies:unpaid_order_ids",
+          "passed": true,
+          "expected": [
+            "O104",
+            "O106"
+          ],
+          "actual": [
+            "O104",
+            "O106"
+          ]
+        },
+        {
+          "name": "anomalies:partial_order_ids",
+          "passed": true,
+          "expected": [
+            "O105"
+          ],
+          "actual": [
+            "O105"
+          ]
+        },
+        {
+          "name": "anomalies:excluded_payment_ids",
+          "passed": true,
+          "expected": [
+            "P206",
+            "P207"
+          ],
+          "actual": [
+            "P206",
+            "P207"
+          ]
+        },
+        {
+          "name": "anomalies:pending_refund_ids",
+          "passed": true,
+          "expected": [
+            "R303"
+          ],
+          "actual": [
+            "R303"
+          ]
+        },
+        {
+          "name": "report_present",
+          "passed": true,
+          "expected": "At least 80 characters of readable report text",
+          "actual": 1729
+        },
+        {
+          "name": "report_source_filenames",
+          "passed": true,
+          "expected": [
+            "orders.csv",
+            "payments.csv",
+            "refunds.csv"
+          ],
+          "actual": [
+            "orders.csv",
+            "payments.csv",
+            "refunds.csv"
+          ]
+        }
+      ],
+      "limitations": [
+        "Structured numbers, IDs, input integrity and report presence are checked automatically; report prose requires independent review.",
+        "Runtime permission behavior, delegation and total usage must be evaluated from run records separately."
+      ]
+    },
+    "coordination_passed": true,
+    "statuses_passed": true,
+    "child_count": 2,
+    "approved_commands": 0,
+    "denied_commands": 0,
+    "observed_usage": {
+      "input_tokens": 125162,
+      "output_tokens": 7126,
+      "responses": 21
+    },
+    "members": [
+      {
+        "id": "run-18e2206783846920-1534b-3",
+        "task": "本次必须使用两个子 agent：一个负责订单回款、退款和金额核对，一个负责重复、孤立、失败、取消及未付款记录检查。给它们明确规则",
+        "status": "waiting_for_input",
+        "usage": {
+          "input_tokens": 75359,
+          "output_tokens": 3877,
+          "responses": 11
+        },
+        "steps": 11,
+        "tool_failures": 1
+      },
+      {
+        "id": "run-18e2206dcfa81530-1534b-5",
+        "task": "异常记录分类核查",
+        "status": "completed",
+        "delegation": {
+          "parent_run_id": "run-18e2206783846920-1534b-3",
+          "root_run_id": "run-18e2206783846920-1534b-3",
+          "task_name": "异常记录分类核查",
+          "write_paths": [],
+          "spawn_call_id": "call_9lw8lpe0ci784lhCPQuSBMTi"
+        },
+        "usage": {
+          "input_tokens": 24937,
+          "output_tokens": 2068,
+          "responses": 5
+        },
+        "steps": 5,
+        "tool_failures": 0
+      },
+      {
+        "id": "run-18e2206c6b9920a8-1534b-4",
+        "task": "付款退款金额核对",
+        "status": "completed",
+        "delegation": {
+          "parent_run_id": "run-18e2206783846920-1534b-3",
+          "root_run_id": "run-18e2206783846920-1534b-3",
+          "task_name": "付款退款金额核对",
+          "write_paths": [],
+          "spawn_call_id": "call_zz5bEjGAKeu0Somr8WXSEQj0"
+        },
+        "usage": {
+          "input_tokens": 24866,
+          "output_tokens": 1181,
+          "responses": 5
+        },
+        "steps": 5,
+        "tool_failures": 0
+      }
+    ]
+  },
+  {
+    "name": "delegated-2",
+    "mode": "delegated",
+    "repeat": 2,
+    "run_id": "run-18e220798e413b10-1534b-6",
+    "duration_ms": 56150,
+    "stopped_reason": null,
+    "passed": true,
+    "grading": {
+      "passed": true,
+      "passedChecks": 32,
+      "totalChecks": 32,
+      "checks": [
+        {
+          "name": "source_unchanged:orders.csv",
+          "passed": true,
+          "expected": "51b22336d7eda0772cae0a6ca1a57517ab1ac3377d351a0395414b710e67ca03",
+          "actual": "51b22336d7eda0772cae0a6ca1a57517ab1ac3377d351a0395414b710e67ca03"
+        },
+        {
+          "name": "source_unchanged:payments.csv",
+          "passed": true,
+          "expected": "77f2ce629ae05601309109a51b254d4c2d658dad7aaf46d142d07306ae45e7b7",
+          "actual": "77f2ce629ae05601309109a51b254d4c2d658dad7aaf46d142d07306ae45e7b7"
+        },
+        {
+          "name": "source_unchanged:refunds.csv",
+          "passed": true,
+          "expected": "c0119c1f31ca1c3750638bf53265bb92b5f7494a5d8110c49e3ff0a181c4adc9",
+          "actual": "c0119c1f31ca1c3750638bf53265bb92b5f7494a5d8110c49e3ff0a181c4adc9"
+        },
+        {
+          "name": "source_unchanged:rules.md",
+          "passed": true,
+          "expected": "4c1a2c9e0ffdb336fb6ef234a98c43b4a3303a51de726bfe23bf469401105fb6",
+          "actual": "4c1a2c9e0ffdb336fb6ef234a98c43b4a3303a51de726bfe23bf469401105fb6"
+        },
+        {
+          "name": "json_readable",
+          "passed": true,
+          "expected": true,
+          "actual": true
+        },
+        {
+          "name": "summary:order_total",
+          "passed": true,
+          "expected": 700,
+          "actual": 700
+        },
+        {
+          "name": "summary:matched_paid",
+          "passed": true,
+          "expected": 475,
+          "actual": 475
+        },
+        {
+          "name": "summary:applied_refund",
+          "passed": true,
+          "expected": 50,
+          "actual": 50
+        },
+        {
+          "name": "summary:net_received",
+          "passed": true,
+          "expected": 425,
+          "actual": 425
+        },
+        {
+          "name": "summary:unpaid_before_refunds",
+          "passed": true,
+          "expected": 225,
+          "actual": 225
+        },
+        {
+          "name": "all_orders_once",
+          "passed": true,
+          "expected": [
+            "O101",
+            "O102",
+            "O103",
+            "O104",
+            "O105",
+            "O106"
+          ],
+          "actual": [
+            "O101",
+            "O102",
+            "O103",
+            "O104",
+            "O105",
+            "O106"
+          ]
+        },
+        {
+          "name": "order_amounts:O101",
+          "passed": true,
+          "expected": {
+            "paid": 120,
+            "refund": 20,
+            "net": 100,
+            "unpaid_before_refunds": 0
+          },
+          "actual": {
+            "paid": 120,
+            "refund": 20,
+            "net": 100,
+            "unpaid_before_refunds": 0
+          }
+        },
+        {
+          "name": "order_evidence:O101",
+          "passed": true,
+          "expected": {
+            "payment_ids": [
+              "P201"
+            ],
+            "refund_ids": [
+              "R302"
+            ]
+          },
+          "actual": {
+            "payment_ids": [
+              "P201"
+            ],
+            "refund_ids": [
+              "R302"
+            ]
+          }
+        },
+        {
+          "name": "order_amounts:O102",
+          "passed": true,
+          "expected": {
+            "paid": 80,
+            "refund": 0,
+            "net": 80,
+            "unpaid_before_refunds": 0
+          },
+          "actual": {
+            "paid": 80,
+            "refund": 0,
+            "net": 80,
+            "unpaid_before_refunds": 0
+          }
+        },
+        {
+          "name": "order_evidence:O102",
+          "passed": true,
+          "expected": {
+            "payment_ids": [
+              "P202"
+            ],
+            "refund_ids": []
+          },
+          "actual": {
+            "payment_ids": [
+              "P202"
+            ],
+            "refund_ids": []
+          }
+        },
+        {
+          "name": "order_amounts:O103",
+          "passed": true,
+          "expected": {
+            "paid": 200,
+            "refund": 30,
+            "net": 170,
+            "unpaid_before_refunds": 0
+          },
+          "actual": {
+            "paid": 200,
+            "refund": 30,
+            "net": 170,
+            "unpaid_before_refunds": 0
+          }
+        },
+        {
+          "name": "order_evidence:O103",
+          "passed": true,
+          "expected": {
+            "payment_ids": [
+              "P203"
+            ],
+            "refund_ids": [
+              "R301"
+            ]
+          },
+          "actual": {
+            "payment_ids": [
+              "P203"
+            ],
+            "refund_ids": [
+              "R301"
+            ]
+          }
+        },
+        {
+          "name": "order_amounts:O104",
+          "passed": true,
+          "expected": {
+            "paid": 0,
+            "refund": 0,
+            "net": 0,
+            "unpaid_before_refunds": 60
+          },
+          "actual": {
+            "paid": 0,
+            "refund": 0,
+            "net": 0,
+            "unpaid_before_refunds": 60
+          }
+        },
+        {
+          "name": "order_evidence:O104",
+          "passed": true,
+          "expected": {
+            "payment_ids": [],
+            "refund_ids": []
+          },
+          "actual": {
+            "payment_ids": [],
+            "refund_ids": []
+          }
+        },
+        {
+          "name": "order_amounts:O105",
+          "passed": true,
+          "expected": {
+            "paid": 75,
+            "refund": 0,
+            "net": 75,
+            "unpaid_before_refunds": 75
+          },
+          "actual": {
+            "paid": 75,
+            "refund": 0,
+            "net": 75,
+            "unpaid_before_refunds": 75
+          }
+        },
+        {
+          "name": "order_evidence:O105",
+          "passed": true,
+          "expected": {
+            "payment_ids": [
+              "P204"
+            ],
+            "refund_ids": []
+          },
+          "actual": {
+            "payment_ids": [
+              "P204"
+            ],
+            "refund_ids": []
+          }
+        },
+        {
+          "name": "order_amounts:O106",
+          "passed": true,
+          "expected": {
+            "paid": 0,
+            "refund": 0,
+            "net": 0,
+            "unpaid_before_refunds": 90
+          },
+          "actual": {
+            "paid": 0,
+            "refund": 0,
+            "net": 0,
+            "unpaid_before_refunds": 90
+          }
+        },
+        {
+          "name": "order_evidence:O106",
+          "passed": true,
+          "expected": {
+            "payment_ids": [],
+            "refund_ids": []
+          },
+          "actual": {
+            "payment_ids": [],
+            "refund_ids": []
+          }
+        },
+        {
+          "name": "anomalies:duplicate_payment_ids",
+          "passed": true,
+          "expected": [
+            "P202"
+          ],
+          "actual": [
+            "P202"
+          ]
+        },
+        {
+          "name": "anomalies:orphan_payment_ids",
+          "passed": true,
+          "expected": [
+            "P205"
+          ],
+          "actual": [
+            "P205"
+          ]
+        },
+        {
+          "name": "anomalies:orphan_refund_ids",
+          "passed": true,
+          "expected": [
+            "R304"
+          ],
+          "actual": [
+            "R304"
+          ]
+        },
+        {
+          "name": "anomalies:unpaid_order_ids",
+          "passed": true,
+          "expected": [
+            "O104",
+            "O106"
+          ],
+          "actual": [
+            "O104",
+            "O106"
+          ]
+        },
+        {
+          "name": "anomalies:partial_order_ids",
+          "passed": true,
+          "expected": [
+            "O105"
+          ],
+          "actual": [
+            "O105"
+          ]
+        },
+        {
+          "name": "anomalies:excluded_payment_ids",
+          "passed": true,
+          "expected": [
+            "P206",
+            "P207"
+          ],
+          "actual": [
+            "P206",
+            "P207"
+          ]
+        },
+        {
+          "name": "anomalies:pending_refund_ids",
+          "passed": true,
+          "expected": [
+            "R303"
+          ],
+          "actual": [
+            "R303"
+          ]
+        },
+        {
+          "name": "report_present",
+          "passed": true,
+          "expected": "At least 80 characters of readable report text",
+          "actual": 1598
+        },
+        {
+          "name": "report_source_filenames",
+          "passed": true,
+          "expected": [
+            "orders.csv",
+            "payments.csv",
+            "refunds.csv"
+          ],
+          "actual": [
+            "orders.csv",
+            "payments.csv",
+            "refunds.csv"
+          ]
+        }
+      ],
+      "limitations": [
+        "Structured numbers, IDs, input integrity and report presence are checked automatically; report prose requires independent review.",
+        "Runtime permission behavior, delegation and total usage must be evaluated from run records separately."
+      ]
+    },
+    "coordination_passed": true,
+    "statuses_passed": true,
+    "child_count": 2,
+    "approved_commands": 0,
+    "denied_commands": 0,
+    "observed_usage": {
+      "input_tokens": 125014,
+      "output_tokens": 7930,
+      "responses": 19
+    },
+    "members": [
+      {
+        "id": "run-18e220798e413b10-1534b-6",
+        "task": "本次必须使用两个子 agent：一个负责订单回款、退款和金额核对，一个负责重复、孤立、失败、取消及未付款记录检查。给它们明确规则",
+        "status": "waiting_for_input",
+        "usage": {
+          "input_tokens": 81491,
+          "output_tokens": 4027,
+          "responses": 10
+        },
+        "steps": 10,
+        "tool_failures": 1
+      },
+      {
+        "id": "run-18e2207b52503c58-1534b-8",
+        "task": "异常与状态记录审查",
+        "status": "completed",
+        "delegation": {
+          "parent_run_id": "run-18e220798e413b10-1534b-6",
+          "root_run_id": "run-18e220798e413b10-1534b-6",
+          "task_name": "异常与状态记录审查",
+          "write_paths": [],
+          "spawn_call_id": "call_JqfABtNvgTygKecGAkWhYnKc"
+        },
+        "usage": {
+          "input_tokens": 24842,
+          "output_tokens": 2127,
+          "responses": 5
+        },
+        "steps": 5,
+        "tool_failures": 0
+      },
+      {
+        "id": "run-18e2207b4f9dda10-1534b-7",
+        "task": "金额与回款退款复核",
+        "status": "completed",
+        "delegation": {
+          "parent_run_id": "run-18e220798e413b10-1534b-6",
+          "root_run_id": "run-18e220798e413b10-1534b-6",
+          "task_name": "金额与回款退款复核",
+          "write_paths": [],
+          "spawn_call_id": "call_LzsBH3MFnE8RZ4DU1gZGiql7"
+        },
+        "usage": {
+          "input_tokens": 18681,
+          "output_tokens": 1776,
+          "responses": 4
+        },
+        "steps": 4,
+        "tool_failures": 0
+      }
+    ]
+  },
+  {
+    "name": "single-2",
+    "mode": "single",
+    "repeat": 2,
+    "run_id": "run-18e22086a18a2738-1534b-9",
+    "duration_ms": 27013,
+    "stopped_reason": null,
+    "passed": true,
+    "grading": {
+      "passed": true,
+      "passedChecks": 32,
+      "totalChecks": 32,
+      "checks": [
+        {
+          "name": "source_unchanged:orders.csv",
+          "passed": true,
+          "expected": "51b22336d7eda0772cae0a6ca1a57517ab1ac3377d351a0395414b710e67ca03",
+          "actual": "51b22336d7eda0772cae0a6ca1a57517ab1ac3377d351a0395414b710e67ca03"
+        },
+        {
+          "name": "source_unchanged:payments.csv",
+          "passed": true,
+          "expected": "77f2ce629ae05601309109a51b254d4c2d658dad7aaf46d142d07306ae45e7b7",
+          "actual": "77f2ce629ae05601309109a51b254d4c2d658dad7aaf46d142d07306ae45e7b7"
+        },
+        {
+          "name": "source_unchanged:refunds.csv",
+          "passed": true,
+          "expected": "c0119c1f31ca1c3750638bf53265bb92b5f7494a5d8110c49e3ff0a181c4adc9",
+          "actual": "c0119c1f31ca1c3750638bf53265bb92b5f7494a5d8110c49e3ff0a181c4adc9"
+        },
+        {
+          "name": "source_unchanged:rules.md",
+          "passed": true,
+          "expected": "4c1a2c9e0ffdb336fb6ef234a98c43b4a3303a51de726bfe23bf469401105fb6",
+          "actual": "4c1a2c9e0ffdb336fb6ef234a98c43b4a3303a51de726bfe23bf469401105fb6"
+        },
+        {
+          "name": "json_readable",
+          "passed": true,
+          "expected": true,
+          "actual": true
+        },
+        {
+          "name": "summary:order_total",
+          "passed": true,
+          "expected": 700,
+          "actual": 700
+        },
+        {
+          "name": "summary:matched_paid",
+          "passed": true,
+          "expected": 475,
+          "actual": 475
+        },
+        {
+          "name": "summary:applied_refund",
+          "passed": true,
+          "expected": 50,
+          "actual": 50
+        },
+        {
+          "name": "summary:net_received",
+          "passed": true,
+          "expected": 425,
+          "actual": 425
+        },
+        {
+          "name": "summary:unpaid_before_refunds",
+          "passed": true,
+          "expected": 225,
+          "actual": 225
+        },
+        {
+          "name": "all_orders_once",
+          "passed": true,
+          "expected": [
+            "O101",
+            "O102",
+            "O103",
+            "O104",
+            "O105",
+            "O106"
+          ],
+          "actual": [
+            "O101",
+            "O102",
+            "O103",
+            "O104",
+            "O105",
+            "O106"
+          ]
+        },
+        {
+          "name": "order_amounts:O101",
+          "passed": true,
+          "expected": {
+            "paid": 120,
+            "refund": 20,
+            "net": 100,
+            "unpaid_before_refunds": 0
+          },
+          "actual": {
+            "paid": 120,
+            "refund": 20,
+            "net": 100,
+            "unpaid_before_refunds": 0
+          }
+        },
+        {
+          "name": "order_evidence:O101",
+          "passed": true,
+          "expected": {
+            "payment_ids": [
+              "P201"
+            ],
+            "refund_ids": [
+              "R302"
+            ]
+          },
+          "actual": {
+            "payment_ids": [
+              "P201"
+            ],
+            "refund_ids": [
+              "R302"
+            ]
+          }
+        },
+        {
+          "name": "order_amounts:O102",
+          "passed": true,
+          "expected": {
+            "paid": 80,
+            "refund": 0,
+            "net": 80,
+            "unpaid_before_refunds": 0
+          },
+          "actual": {
+            "paid": 80,
+            "refund": 0,
+            "net": 80,
+            "unpaid_before_refunds": 0
+          }
+        },
+        {
+          "name": "order_evidence:O102",
+          "passed": true,
+          "expected": {
+            "payment_ids": [
+              "P202"
+            ],
+            "refund_ids": []
+          },
+          "actual": {
+            "payment_ids": [
+              "P202"
+            ],
+            "refund_ids": []
+          }
+        },
+        {
+          "name": "order_amounts:O103",
+          "passed": true,
+          "expected": {
+            "paid": 200,
+            "refund": 30,
+            "net": 170,
+            "unpaid_before_refunds": 0
+          },
+          "actual": {
+            "paid": 200,
+            "refund": 30,
+            "net": 170,
+            "unpaid_before_refunds": 0
+          }
+        },
+        {
+          "name": "order_evidence:O103",
+          "passed": true,
+          "expected": {
+            "payment_ids": [
+              "P203"
+            ],
+            "refund_ids": [
+              "R301"
+            ]
+          },
+          "actual": {
+            "payment_ids": [
+              "P203"
+            ],
+            "refund_ids": [
+              "R301"
+            ]
+          }
+        },
+        {
+          "name": "order_amounts:O104",
+          "passed": true,
+          "expected": {
+            "paid": 0,
+            "refund": 0,
+            "net": 0,
+            "unpaid_before_refunds": 60
+          },
+          "actual": {
+            "paid": 0,
+            "refund": 0,
+            "net": 0,
+            "unpaid_before_refunds": 60
+          }
+        },
+        {
+          "name": "order_evidence:O104",
+          "passed": true,
+          "expected": {
+            "payment_ids": [],
+            "refund_ids": []
+          },
+          "actual": {
+            "payment_ids": [],
+            "refund_ids": []
+          }
+        },
+        {
+          "name": "order_amounts:O105",
+          "passed": true,
+          "expected": {
+            "paid": 75,
+            "refund": 0,
+            "net": 75,
+            "unpaid_before_refunds": 75
+          },
+          "actual": {
+            "paid": 75,
+            "refund": 0,
+            "net": 75,
+            "unpaid_before_refunds": 75
+          }
+        },
+        {
+          "name": "order_evidence:O105",
+          "passed": true,
+          "expected": {
+            "payment_ids": [
+              "P204"
+            ],
+            "refund_ids": []
+          },
+          "actual": {
+            "payment_ids": [
+              "P204"
+            ],
+            "refund_ids": []
+          }
+        },
+        {
+          "name": "order_amounts:O106",
+          "passed": true,
+          "expected": {
+            "paid": 0,
+            "refund": 0,
+            "net": 0,
+            "unpaid_before_refunds": 90
+          },
+          "actual": {
+            "paid": 0,
+            "refund": 0,
+            "net": 0,
+            "unpaid_before_refunds": 90
+          }
+        },
+        {
+          "name": "order_evidence:O106",
+          "passed": true,
+          "expected": {
+            "payment_ids": [],
+            "refund_ids": []
+          },
+          "actual": {
+            "payment_ids": [],
+            "refund_ids": []
+          }
+        },
+        {
+          "name": "anomalies:duplicate_payment_ids",
+          "passed": true,
+          "expected": [
+            "P202"
+          ],
+          "actual": [
+            "P202"
+          ]
+        },
+        {
+          "name": "anomalies:orphan_payment_ids",
+          "passed": true,
+          "expected": [
+            "P205"
+          ],
+          "actual": [
+            "P205"
+          ]
+        },
+        {
+          "name": "anomalies:orphan_refund_ids",
+          "passed": true,
+          "expected": [
+            "R304"
+          ],
+          "actual": [
+            "R304"
+          ]
+        },
+        {
+          "name": "anomalies:unpaid_order_ids",
+          "passed": true,
+          "expected": [
+            "O104",
+            "O106"
+          ],
+          "actual": [
+            "O104",
+            "O106"
+          ]
+        },
+        {
+          "name": "anomalies:partial_order_ids",
+          "passed": true,
+          "expected": [
+            "O105"
+          ],
+          "actual": [
+            "O105"
+          ]
+        },
+        {
+          "name": "anomalies:excluded_payment_ids",
+          "passed": true,
+          "expected": [
+            "P206",
+            "P207"
+          ],
+          "actual": [
+            "P206",
+            "P207"
+          ]
+        },
+        {
+          "name": "anomalies:pending_refund_ids",
+          "passed": true,
+          "expected": [
+            "R303"
+          ],
+          "actual": [
+            "R303"
+          ]
+        },
+        {
+          "name": "report_present",
+          "passed": true,
+          "expected": "At least 80 characters of readable report text",
+          "actual": 1545
+        },
+        {
+          "name": "report_source_filenames",
+          "passed": true,
+          "expected": [
+            "orders.csv",
+            "payments.csv",
+            "refunds.csv"
+          ],
+          "actual": [
+            "orders.csv",
+            "payments.csv",
+            "refunds.csv"
+          ]
+        }
+      ],
+      "limitations": [
+        "Structured numbers, IDs, input integrity and report presence are checked automatically; report prose requires independent review.",
+        "Runtime permission behavior, delegation and total usage must be evaluated from run records separately."
+      ]
+    },
+    "coordination_passed": true,
+    "statuses_passed": true,
+    "child_count": 0,
+    "approved_commands": 0,
+    "denied_commands": 0,
+    "observed_usage": {
+      "input_tokens": 26902,
+      "output_tokens": 2681,
+      "responses": 5
+    },
+    "members": [
+      {
+        "id": "run-18e22086a18a2738-1534b-9",
+        "task": "本次使用单 agent 完成全部工作，不启动任何子 agent。请自行复核数字和依据。\n\n请读取本目录的 orders.csv、",
+        "status": "waiting_for_input",
+        "usage": {
+          "input_tokens": 26902,
+          "output_tokens": 2681,
+          "responses": 5
+        },
+        "steps": 5,
+        "tool_failures": 0
+      }
+    ]
+  },
+  {
+    "name": "auto-2",
+    "mode": "auto",
+    "repeat": 2,
+    "run_id": "run-18e2208cec613ea8-1534b-a",
+    "duration_ms": 46416,
+    "stopped_reason": null,
+    "passed": true,
+    "grading": {
+      "passed": true,
+      "passedChecks": 32,
+      "totalChecks": 32,
+      "checks": [
+        {
+          "name": "source_unchanged:orders.csv",
+          "passed": true,
+          "expected": "51b22336d7eda0772cae0a6ca1a57517ab1ac3377d351a0395414b710e67ca03",
+          "actual": "51b22336d7eda0772cae0a6ca1a57517ab1ac3377d351a0395414b710e67ca03"
+        },
+        {
+          "name": "source_unchanged:payments.csv",
+          "passed": true,
+          "expected": "77f2ce629ae05601309109a51b254d4c2d658dad7aaf46d142d07306ae45e7b7",
+          "actual": "77f2ce629ae05601309109a51b254d4c2d658dad7aaf46d142d07306ae45e7b7"
+        },
+        {
+          "name": "source_unchanged:refunds.csv",
+          "passed": true,
+          "expected": "c0119c1f31ca1c3750638bf53265bb92b5f7494a5d8110c49e3ff0a181c4adc9",
+          "actual": "c0119c1f31ca1c3750638bf53265bb92b5f7494a5d8110c49e3ff0a181c4adc9"
+        },
+        {
+          "name": "source_unchanged:rules.md",
+          "passed": true,
+          "expected": "4c1a2c9e0ffdb336fb6ef234a98c43b4a3303a51de726bfe23bf469401105fb6",
+          "actual": "4c1a2c9e0ffdb336fb6ef234a98c43b4a3303a51de726bfe23bf469401105fb6"
+        },
+        {
+          "name": "json_readable",
+          "passed": true,
+          "expected": true,
+          "actual": true
+        },
+        {
+          "name": "summary:order_total",
+          "passed": true,
+          "expected": 700,
+          "actual": 700
+        },
+        {
+          "name": "summary:matched_paid",
+          "passed": true,
+          "expected": 475,
+          "actual": 475
+        },
+        {
+          "name": "summary:applied_refund",
+          "passed": true,
+          "expected": 50,
+          "actual": 50
+        },
+        {
+          "name": "summary:net_received",
+          "passed": true,
+          "expected": 425,
+          "actual": 425
+        },
+        {
+          "name": "summary:unpaid_before_refunds",
+          "passed": true,
+          "expected": 225,
+          "actual": 225
+        },
+        {
+          "name": "all_orders_once",
+          "passed": true,
+          "expected": [
+            "O101",
+            "O102",
+            "O103",
+            "O104",
+            "O105",
+            "O106"
+          ],
+          "actual": [
+            "O101",
+            "O102",
+            "O103",
+            "O104",
+            "O105",
+            "O106"
+          ]
+        },
+        {
+          "name": "order_amounts:O101",
+          "passed": true,
+          "expected": {
+            "paid": 120,
+            "refund": 20,
+            "net": 100,
+            "unpaid_before_refunds": 0
+          },
+          "actual": {
+            "paid": 120,
+            "refund": 20,
+            "net": 100,
+            "unpaid_before_refunds": 0
+          }
+        },
+        {
+          "name": "order_evidence:O101",
+          "passed": true,
+          "expected": {
+            "payment_ids": [
+              "P201"
+            ],
+            "refund_ids": [
+              "R302"
+            ]
+          },
+          "actual": {
+            "payment_ids": [
+              "P201"
+            ],
+            "refund_ids": [
+              "R302"
+            ]
+          }
+        },
+        {
+          "name": "order_amounts:O102",
+          "passed": true,
+          "expected": {
+            "paid": 80,
+            "refund": 0,
+            "net": 80,
+            "unpaid_before_refunds": 0
+          },
+          "actual": {
+            "paid": 80,
+            "refund": 0,
+            "net": 80,
+            "unpaid_before_refunds": 0
+          }
+        },
+        {
+          "name": "order_evidence:O102",
+          "passed": true,
+          "expected": {
+            "payment_ids": [
+              "P202"
+            ],
+            "refund_ids": []
+          },
+          "actual": {
+            "payment_ids": [
+              "P202"
+            ],
+            "refund_ids": []
+          }
+        },
+        {
+          "name": "order_amounts:O103",
+          "passed": true,
+          "expected": {
+            "paid": 200,
+            "refund": 30,
+            "net": 170,
+            "unpaid_before_refunds": 0
+          },
+          "actual": {
+            "paid": 200,
+            "refund": 30,
+            "net": 170,
+            "unpaid_before_refunds": 0
+          }
+        },
+        {
+          "name": "order_evidence:O103",
+          "passed": true,
+          "expected": {
+            "payment_ids": [
+              "P203"
+            ],
+            "refund_ids": [
+              "R301"
+            ]
+          },
+          "actual": {
+            "payment_ids": [
+              "P203"
+            ],
+            "refund_ids": [
+              "R301"
+            ]
+          }
+        },
+        {
+          "name": "order_amounts:O104",
+          "passed": true,
+          "expected": {
+            "paid": 0,
+            "refund": 0,
+            "net": 0,
+            "unpaid_before_refunds": 60
+          },
+          "actual": {
+            "paid": 0,
+            "refund": 0,
+            "net": 0,
+            "unpaid_before_refunds": 60
+          }
+        },
+        {
+          "name": "order_evidence:O104",
+          "passed": true,
+          "expected": {
+            "payment_ids": [],
+            "refund_ids": []
+          },
+          "actual": {
+            "payment_ids": [],
+            "refund_ids": []
+          }
+        },
+        {
+          "name": "order_amounts:O105",
+          "passed": true,
+          "expected": {
+            "paid": 75,
+            "refund": 0,
+            "net": 75,
+            "unpaid_before_refunds": 75
+          },
+          "actual": {
+            "paid": 75,
+            "refund": 0,
+            "net": 75,
+            "unpaid_before_refunds": 75
+          }
+        },
+        {
+          "name": "order_evidence:O105",
+          "passed": true,
+          "expected": {
+            "payment_ids": [
+              "P204"
+            ],
+            "refund_ids": []
+          },
+          "actual": {
+            "payment_ids": [
+              "P204"
+            ],
+            "refund_ids": []
+          }
+        },
+        {
+          "name": "order_amounts:O106",
+          "passed": true,
+          "expected": {
+            "paid": 0,
+            "refund": 0,
+            "net": 0,
+            "unpaid_before_refunds": 90
+          },
+          "actual": {
+            "paid": 0,
+            "refund": 0,
+            "net": 0,
+            "unpaid_before_refunds": 90
+          }
+        },
+        {
+          "name": "order_evidence:O106",
+          "passed": true,
+          "expected": {
+            "payment_ids": [],
+            "refund_ids": []
+          },
+          "actual": {
+            "payment_ids": [],
+            "refund_ids": []
+          }
+        },
+        {
+          "name": "anomalies:duplicate_payment_ids",
+          "passed": true,
+          "expected": [
+            "P202"
+          ],
+          "actual": [
+            "P202"
+          ]
+        },
+        {
+          "name": "anomalies:orphan_payment_ids",
+          "passed": true,
+          "expected": [
+            "P205"
+          ],
+          "actual": [
+            "P205"
+          ]
+        },
+        {
+          "name": "anomalies:orphan_refund_ids",
+          "passed": true,
+          "expected": [
+            "R304"
+          ],
+          "actual": [
+            "R304"
+          ]
+        },
+        {
+          "name": "anomalies:unpaid_order_ids",
+          "passed": true,
+          "expected": [
+            "O104",
+            "O106"
+          ],
+          "actual": [
+            "O104",
+            "O106"
+          ]
+        },
+        {
+          "name": "anomalies:partial_order_ids",
+          "passed": true,
+          "expected": [
+            "O105"
+          ],
+          "actual": [
+            "O105"
+          ]
+        },
+        {
+          "name": "anomalies:excluded_payment_ids",
+          "passed": true,
+          "expected": [
+            "P206",
+            "P207"
+          ],
+          "actual": [
+            "P206",
+            "P207"
+          ]
+        },
+        {
+          "name": "anomalies:pending_refund_ids",
+          "passed": true,
+          "expected": [
+            "R303"
+          ],
+          "actual": [
+            "R303"
+          ]
+        },
+        {
+          "name": "report_present",
+          "passed": true,
+          "expected": "At least 80 characters of readable report text",
+          "actual": 1493
+        },
+        {
+          "name": "report_source_filenames",
+          "passed": true,
+          "expected": [
+            "orders.csv",
+            "payments.csv",
+            "refunds.csv"
+          ],
+          "actual": [
+            "orders.csv",
+            "payments.csv",
+            "refunds.csv"
+          ]
+        }
+      ],
+      "limitations": [
+        "Structured numbers, IDs, input integrity and report presence are checked automatically; report prose requires independent review.",
+        "Runtime permission behavior, delegation and total usage must be evaluated from run records separately."
+      ]
+    },
+    "coordination_passed": true,
+    "statuses_passed": true,
+    "child_count": 0,
+    "approved_commands": 0,
+    "denied_commands": 0,
+    "observed_usage": {
+      "input_tokens": 22884,
+      "output_tokens": 2449,
+      "responses": 4
+    },
+    "members": [
+      {
+        "id": "run-18e2208cec613ea8-1534b-a",
+        "task": "请自行判断是否需要子 agent 协作。若使用协作，避免重复工作；主 agent 负责复核数字和依据并交付最终文件。\n\n请读取本",
+        "status": "waiting_for_input",
+        "usage": {
+          "input_tokens": 22884,
+          "output_tokens": 2449,
+          "responses": 4
+        },
+        "steps": 4,
+        "tool_failures": 0
+      }
+    ]
+  },
+  {
+    "name": "auto-3",
+    "mode": "auto",
+    "repeat": 3,
+    "run_id": "run-18e22097bb9ecdc0-1534b-b",
+    "duration_ms": 36712,
+    "stopped_reason": null,
+    "passed": true,
+    "grading": {
+      "passed": true,
+      "passedChecks": 32,
+      "totalChecks": 32,
+      "checks": [
+        {
+          "name": "source_unchanged:orders.csv",
+          "passed": true,
+          "expected": "51b22336d7eda0772cae0a6ca1a57517ab1ac3377d351a0395414b710e67ca03",
+          "actual": "51b22336d7eda0772cae0a6ca1a57517ab1ac3377d351a0395414b710e67ca03"
+        },
+        {
+          "name": "source_unchanged:payments.csv",
+          "passed": true,
+          "expected": "77f2ce629ae05601309109a51b254d4c2d658dad7aaf46d142d07306ae45e7b7",
+          "actual": "77f2ce629ae05601309109a51b254d4c2d658dad7aaf46d142d07306ae45e7b7"
+        },
+        {
+          "name": "source_unchanged:refunds.csv",
+          "passed": true,
+          "expected": "c0119c1f31ca1c3750638bf53265bb92b5f7494a5d8110c49e3ff0a181c4adc9",
+          "actual": "c0119c1f31ca1c3750638bf53265bb92b5f7494a5d8110c49e3ff0a181c4adc9"
+        },
+        {
+          "name": "source_unchanged:rules.md",
+          "passed": true,
+          "expected": "4c1a2c9e0ffdb336fb6ef234a98c43b4a3303a51de726bfe23bf469401105fb6",
+          "actual": "4c1a2c9e0ffdb336fb6ef234a98c43b4a3303a51de726bfe23bf469401105fb6"
+        },
+        {
+          "name": "json_readable",
+          "passed": true,
+          "expected": true,
+          "actual": true
+        },
+        {
+          "name": "summary:order_total",
+          "passed": true,
+          "expected": 700,
+          "actual": 700
+        },
+        {
+          "name": "summary:matched_paid",
+          "passed": true,
+          "expected": 475,
+          "actual": 475
+        },
+        {
+          "name": "summary:applied_refund",
+          "passed": true,
+          "expected": 50,
+          "actual": 50
+        },
+        {
+          "name": "summary:net_received",
+          "passed": true,
+          "expected": 425,
+          "actual": 425
+        },
+        {
+          "name": "summary:unpaid_before_refunds",
+          "passed": true,
+          "expected": 225,
+          "actual": 225
+        },
+        {
+          "name": "all_orders_once",
+          "passed": true,
+          "expected": [
+            "O101",
+            "O102",
+            "O103",
+            "O104",
+            "O105",
+            "O106"
+          ],
+          "actual": [
+            "O101",
+            "O102",
+            "O103",
+            "O104",
+            "O105",
+            "O106"
+          ]
+        },
+        {
+          "name": "order_amounts:O101",
+          "passed": true,
+          "expected": {
+            "paid": 120,
+            "refund": 20,
+            "net": 100,
+            "unpaid_before_refunds": 0
+          },
+          "actual": {
+            "paid": 120,
+            "refund": 20,
+            "net": 100,
+            "unpaid_before_refunds": 0
+          }
+        },
+        {
+          "name": "order_evidence:O101",
+          "passed": true,
+          "expected": {
+            "payment_ids": [
+              "P201"
+            ],
+            "refund_ids": [
+              "R302"
+            ]
+          },
+          "actual": {
+            "payment_ids": [
+              "P201"
+            ],
+            "refund_ids": [
+              "R302"
+            ]
+          }
+        },
+        {
+          "name": "order_amounts:O102",
+          "passed": true,
+          "expected": {
+            "paid": 80,
+            "refund": 0,
+            "net": 80,
+            "unpaid_before_refunds": 0
+          },
+          "actual": {
+            "paid": 80,
+            "refund": 0,
+            "net": 80,
+            "unpaid_before_refunds": 0
+          }
+        },
+        {
+          "name": "order_evidence:O102",
+          "passed": true,
+          "expected": {
+            "payment_ids": [
+              "P202"
+            ],
+            "refund_ids": []
+          },
+          "actual": {
+            "payment_ids": [
+              "P202"
+            ],
+            "refund_ids": []
+          }
+        },
+        {
+          "name": "order_amounts:O103",
+          "passed": true,
+          "expected": {
+            "paid": 200,
+            "refund": 30,
+            "net": 170,
+            "unpaid_before_refunds": 0
+          },
+          "actual": {
+            "paid": 200,
+            "refund": 30,
+            "net": 170,
+            "unpaid_before_refunds": 0
+          }
+        },
+        {
+          "name": "order_evidence:O103",
+          "passed": true,
+          "expected": {
+            "payment_ids": [
+              "P203"
+            ],
+            "refund_ids": [
+              "R301"
+            ]
+          },
+          "actual": {
+            "payment_ids": [
+              "P203"
+            ],
+            "refund_ids": [
+              "R301"
+            ]
+          }
+        },
+        {
+          "name": "order_amounts:O104",
+          "passed": true,
+          "expected": {
+            "paid": 0,
+            "refund": 0,
+            "net": 0,
+            "unpaid_before_refunds": 60
+          },
+          "actual": {
+            "paid": 0,
+            "refund": 0,
+            "net": 0,
+            "unpaid_before_refunds": 60
+          }
+        },
+        {
+          "name": "order_evidence:O104",
+          "passed": true,
+          "expected": {
+            "payment_ids": [],
+            "refund_ids": []
+          },
+          "actual": {
+            "payment_ids": [],
+            "refund_ids": []
+          }
+        },
+        {
+          "name": "order_amounts:O105",
+          "passed": true,
+          "expected": {
+            "paid": 75,
+            "refund": 0,
+            "net": 75,
+            "unpaid_before_refunds": 75
+          },
+          "actual": {
+            "paid": 75,
+            "refund": 0,
+            "net": 75,
+            "unpaid_before_refunds": 75
+          }
+        },
+        {
+          "name": "order_evidence:O105",
+          "passed": true,
+          "expected": {
+            "payment_ids": [
+              "P204"
+            ],
+            "refund_ids": []
+          },
+          "actual": {
+            "payment_ids": [
+              "P204"
+            ],
+            "refund_ids": []
+          }
+        },
+        {
+          "name": "order_amounts:O106",
+          "passed": true,
+          "expected": {
+            "paid": 0,
+            "refund": 0,
+            "net": 0,
+            "unpaid_before_refunds": 90
+          },
+          "actual": {
+            "paid": 0,
+            "refund": 0,
+            "net": 0,
+            "unpaid_before_refunds": 90
+          }
+        },
+        {
+          "name": "order_evidence:O106",
+          "passed": true,
+          "expected": {
+            "payment_ids": [],
+            "refund_ids": []
+          },
+          "actual": {
+            "payment_ids": [],
+            "refund_ids": []
+          }
+        },
+        {
+          "name": "anomalies:duplicate_payment_ids",
+          "passed": true,
+          "expected": [
+            "P202"
+          ],
+          "actual": [
+            "P202"
+          ]
+        },
+        {
+          "name": "anomalies:orphan_payment_ids",
+          "passed": true,
+          "expected": [
+            "P205"
+          ],
+          "actual": [
+            "P205"
+          ]
+        },
+        {
+          "name": "anomalies:orphan_refund_ids",
+          "passed": true,
+          "expected": [
+            "R304"
+          ],
+          "actual": [
+            "R304"
+          ]
+        },
+        {
+          "name": "anomalies:unpaid_order_ids",
+          "passed": true,
+          "expected": [
+            "O104",
+            "O106"
+          ],
+          "actual": [
+            "O104",
+            "O106"
+          ]
+        },
+        {
+          "name": "anomalies:partial_order_ids",
+          "passed": true,
+          "expected": [
+            "O105"
+          ],
+          "actual": [
+            "O105"
+          ]
+        },
+        {
+          "name": "anomalies:excluded_payment_ids",
+          "passed": true,
+          "expected": [
+            "P206",
+            "P207"
+          ],
+          "actual": [
+            "P206",
+            "P207"
+          ]
+        },
+        {
+          "name": "anomalies:pending_refund_ids",
+          "passed": true,
+          "expected": [
+            "R303"
+          ],
+          "actual": [
+            "R303"
+          ]
+        },
+        {
+          "name": "report_present",
+          "passed": true,
+          "expected": "At least 80 characters of readable report text",
+          "actual": 1680
+        },
+        {
+          "name": "report_source_filenames",
+          "passed": true,
+          "expected": [
+            "orders.csv",
+            "payments.csv",
+            "refunds.csv"
+          ],
+          "actual": [
+            "orders.csv",
+            "payments.csv",
+            "refunds.csv"
+          ]
+        }
+      ],
+      "limitations": [
+        "Structured numbers, IDs, input integrity and report presence are checked automatically; report prose requires independent review.",
+        "Runtime permission behavior, delegation and total usage must be evaluated from run records separately."
+      ]
+    },
+    "coordination_passed": true,
+    "statuses_passed": true,
+    "child_count": 0,
+    "approved_commands": 0,
+    "denied_commands": 0,
+    "observed_usage": {
+      "input_tokens": 28366,
+      "output_tokens": 2806,
+      "responses": 5
+    },
+    "members": [
+      {
+        "id": "run-18e22097bb9ecdc0-1534b-b",
+        "task": "请自行判断是否需要子 agent 协作。若使用协作，避免重复工作；主 agent 负责复核数字和依据并交付最终文件。\n\n请读取本",
+        "status": "waiting_for_input",
+        "usage": {
+          "input_tokens": 28366,
+          "output_tokens": 2806,
+          "responses": 5
+        },
+        "steps": 5,
+        "tool_failures": 1
+      }
+    ]
+  },
+  {
+    "name": "delegated-3",
+    "mode": "delegated",
+    "repeat": 3,
+    "run_id": "run-18e220a0485c4348-1534b-c",
+    "duration_ms": 77766,
+    "stopped_reason": null,
+    "passed": true,
+    "grading": {
+      "passed": true,
+      "passedChecks": 32,
+      "totalChecks": 32,
+      "checks": [
+        {
+          "name": "source_unchanged:orders.csv",
+          "passed": true,
+          "expected": "51b22336d7eda0772cae0a6ca1a57517ab1ac3377d351a0395414b710e67ca03",
+          "actual": "51b22336d7eda0772cae0a6ca1a57517ab1ac3377d351a0395414b710e67ca03"
+        },
+        {
+          "name": "source_unchanged:payments.csv",
+          "passed": true,
+          "expected": "77f2ce629ae05601309109a51b254d4c2d658dad7aaf46d142d07306ae45e7b7",
+          "actual": "77f2ce629ae05601309109a51b254d4c2d658dad7aaf46d142d07306ae45e7b7"
+        },
+        {
+          "name": "source_unchanged:refunds.csv",
+          "passed": true,
+          "expected": "c0119c1f31ca1c3750638bf53265bb92b5f7494a5d8110c49e3ff0a181c4adc9",
+          "actual": "c0119c1f31ca1c3750638bf53265bb92b5f7494a5d8110c49e3ff0a181c4adc9"
+        },
+        {
+          "name": "source_unchanged:rules.md",
+          "passed": true,
+          "expected": "4c1a2c9e0ffdb336fb6ef234a98c43b4a3303a51de726bfe23bf469401105fb6",
+          "actual": "4c1a2c9e0ffdb336fb6ef234a98c43b4a3303a51de726bfe23bf469401105fb6"
+        },
+        {
+          "name": "json_readable",
+          "passed": true,
+          "expected": true,
+          "actual": true
+        },
+        {
+          "name": "summary:order_total",
+          "passed": true,
+          "expected": 700,
+          "actual": 700
+        },
+        {
+          "name": "summary:matched_paid",
+          "passed": true,
+          "expected": 475,
+          "actual": 475
+        },
+        {
+          "name": "summary:applied_refund",
+          "passed": true,
+          "expected": 50,
+          "actual": 50
+        },
+        {
+          "name": "summary:net_received",
+          "passed": true,
+          "expected": 425,
+          "actual": 425
+        },
+        {
+          "name": "summary:unpaid_before_refunds",
+          "passed": true,
+          "expected": 225,
+          "actual": 225
+        },
+        {
+          "name": "all_orders_once",
+          "passed": true,
+          "expected": [
+            "O101",
+            "O102",
+            "O103",
+            "O104",
+            "O105",
+            "O106"
+          ],
+          "actual": [
+            "O101",
+            "O102",
+            "O103",
+            "O104",
+            "O105",
+            "O106"
+          ]
+        },
+        {
+          "name": "order_amounts:O101",
+          "passed": true,
+          "expected": {
+            "paid": 120,
+            "refund": 20,
+            "net": 100,
+            "unpaid_before_refunds": 0
+          },
+          "actual": {
+            "paid": 120,
+            "refund": 20,
+            "net": 100,
+            "unpaid_before_refunds": 0
+          }
+        },
+        {
+          "name": "order_evidence:O101",
+          "passed": true,
+          "expected": {
+            "payment_ids": [
+              "P201"
+            ],
+            "refund_ids": [
+              "R302"
+            ]
+          },
+          "actual": {
+            "payment_ids": [
+              "P201"
+            ],
+            "refund_ids": [
+              "R302"
+            ]
+          }
+        },
+        {
+          "name": "order_amounts:O102",
+          "passed": true,
+          "expected": {
+            "paid": 80,
+            "refund": 0,
+            "net": 80,
+            "unpaid_before_refunds": 0
+          },
+          "actual": {
+            "paid": 80,
+            "refund": 0,
+            "net": 80,
+            "unpaid_before_refunds": 0
+          }
+        },
+        {
+          "name": "order_evidence:O102",
+          "passed": true,
+          "expected": {
+            "payment_ids": [
+              "P202"
+            ],
+            "refund_ids": []
+          },
+          "actual": {
+            "payment_ids": [
+              "P202"
+            ],
+            "refund_ids": []
+          }
+        },
+        {
+          "name": "order_amounts:O103",
+          "passed": true,
+          "expected": {
+            "paid": 200,
+            "refund": 30,
+            "net": 170,
+            "unpaid_before_refunds": 0
+          },
+          "actual": {
+            "paid": 200,
+            "refund": 30,
+            "net": 170,
+            "unpaid_before_refunds": 0
+          }
+        },
+        {
+          "name": "order_evidence:O103",
+          "passed": true,
+          "expected": {
+            "payment_ids": [
+              "P203"
+            ],
+            "refund_ids": [
+              "R301"
+            ]
+          },
+          "actual": {
+            "payment_ids": [
+              "P203"
+            ],
+            "refund_ids": [
+              "R301"
+            ]
+          }
+        },
+        {
+          "name": "order_amounts:O104",
+          "passed": true,
+          "expected": {
+            "paid": 0,
+            "refund": 0,
+            "net": 0,
+            "unpaid_before_refunds": 60
+          },
+          "actual": {
+            "paid": 0,
+            "refund": 0,
+            "net": 0,
+            "unpaid_before_refunds": 60
+          }
+        },
+        {
+          "name": "order_evidence:O104",
+          "passed": true,
+          "expected": {
+            "payment_ids": [],
+            "refund_ids": []
+          },
+          "actual": {
+            "payment_ids": [],
+            "refund_ids": []
+          }
+        },
+        {
+          "name": "order_amounts:O105",
+          "passed": true,
+          "expected": {
+            "paid": 75,
+            "refund": 0,
+            "net": 75,
+            "unpaid_before_refunds": 75
+          },
+          "actual": {
+            "paid": 75,
+            "refund": 0,
+            "net": 75,
+            "unpaid_before_refunds": 75
+          }
+        },
+        {
+          "name": "order_evidence:O105",
+          "passed": true,
+          "expected": {
+            "payment_ids": [
+              "P204"
+            ],
+            "refund_ids": []
+          },
+          "actual": {
+            "payment_ids": [
+              "P204"
+            ],
+            "refund_ids": []
+          }
+        },
+        {
+          "name": "order_amounts:O106",
+          "passed": true,
+          "expected": {
+            "paid": 0,
+            "refund": 0,
+            "net": 0,
+            "unpaid_before_refunds": 90
+          },
+          "actual": {
+            "paid": 0,
+            "refund": 0,
+            "net": 0,
+            "unpaid_before_refunds": 90
+          }
+        },
+        {
+          "name": "order_evidence:O106",
+          "passed": true,
+          "expected": {
+            "payment_ids": [],
+            "refund_ids": []
+          },
+          "actual": {
+            "payment_ids": [],
+            "refund_ids": []
+          }
+        },
+        {
+          "name": "anomalies:duplicate_payment_ids",
+          "passed": true,
+          "expected": [
+            "P202"
+          ],
+          "actual": [
+            "P202"
+          ]
+        },
+        {
+          "name": "anomalies:orphan_payment_ids",
+          "passed": true,
+          "expected": [
+            "P205"
+          ],
+          "actual": [
+            "P205"
+          ]
+        },
+        {
+          "name": "anomalies:orphan_refund_ids",
+          "passed": true,
+          "expected": [
+            "R304"
+          ],
+          "actual": [
+            "R304"
+          ]
+        },
+        {
+          "name": "anomalies:unpaid_order_ids",
+          "passed": true,
+          "expected": [
+            "O104",
+            "O106"
+          ],
+          "actual": [
+            "O104",
+            "O106"
+          ]
+        },
+        {
+          "name": "anomalies:partial_order_ids",
+          "passed": true,
+          "expected": [
+            "O105"
+          ],
+          "actual": [
+            "O105"
+          ]
+        },
+        {
+          "name": "anomalies:excluded_payment_ids",
+          "passed": true,
+          "expected": [
+            "P206",
+            "P207"
+          ],
+          "actual": [
+            "P206",
+            "P207"
+          ]
+        },
+        {
+          "name": "anomalies:pending_refund_ids",
+          "passed": true,
+          "expected": [
+            "R303"
+          ],
+          "actual": [
+            "R303"
+          ]
+        },
+        {
+          "name": "report_present",
+          "passed": true,
+          "expected": "At least 80 characters of readable report text",
+          "actual": 1737
+        },
+        {
+          "name": "report_source_filenames",
+          "passed": true,
+          "expected": [
+            "orders.csv",
+            "payments.csv",
+            "refunds.csv"
+          ],
+          "actual": [
+            "orders.csv",
+            "payments.csv",
+            "refunds.csv"
+          ]
+        }
+      ],
+      "limitations": [
+        "Structured numbers, IDs, input integrity and report presence are checked automatically; report prose requires independent review.",
+        "Runtime permission behavior, delegation and total usage must be evaluated from run records separately."
+      ]
+    },
+    "coordination_passed": true,
+    "statuses_passed": true,
+    "child_count": 2,
+    "approved_commands": 0,
+    "denied_commands": 0,
+    "observed_usage": {
+      "input_tokens": 113044,
+      "output_tokens": 8058,
+      "responses": 19
+    },
+    "members": [
+      {
+        "id": "run-18e220a0485c4348-1534b-c",
+        "task": "本次必须使用两个子 agent：一个负责订单回款、退款和金额核对，一个负责重复、孤立、失败、取消及未付款记录检查。给它们明确规则",
+        "status": "waiting_for_input",
+        "usage": {
+          "input_tokens": 74348,
+          "output_tokens": 4010,
+          "responses": 11
+        },
+        "steps": 11,
+        "tool_failures": 4
+      },
+      {
+        "id": "run-18e220a561441070-1534b-e",
+        "task": "anomaly-record-audit",
+        "status": "completed",
+        "delegation": {
+          "parent_run_id": "run-18e220a0485c4348-1534b-c",
+          "root_run_id": "run-18e220a0485c4348-1534b-c",
+          "task_name": "anomaly-record-audit",
+          "write_paths": [],
+          "spawn_call_id": "call_a4rMUEeBxr6cquo9i3oBTkPo"
+        },
+        "usage": {
+          "input_tokens": 18905,
+          "output_tokens": 2176,
+          "responses": 4
+        },
+        "steps": 4,
+        "tool_failures": 0
+      },
+      {
+        "id": "run-18e220a42ff56740-1534b-d",
+        "task": "payments-refunds-review",
+        "status": "completed",
+        "delegation": {
+          "parent_run_id": "run-18e220a0485c4348-1534b-c",
+          "root_run_id": "run-18e220a0485c4348-1534b-c",
+          "task_name": "payments-refunds-review",
+          "write_paths": [],
+          "spawn_call_id": "call_lQD9j0gzIL84DxFl78Zr9rcn"
+        },
+        "usage": {
+          "input_tokens": 19791,
+          "output_tokens": 1872,
+          "responses": 4
+        },
+        "steps": 4,
+        "tool_failures": 0
+      }
+    ]
+  },
+  {
+    "name": "single-3",
+    "mode": "single",
+    "repeat": 3,
+    "run_id": "run-18e220b26437b270-1534b-f",
+    "duration_ms": 52149,
+    "stopped_reason": null,
+    "passed": true,
+    "grading": {
+      "passed": true,
+      "passedChecks": 32,
+      "totalChecks": 32,
+      "checks": [
+        {
+          "name": "source_unchanged:orders.csv",
+          "passed": true,
+          "expected": "51b22336d7eda0772cae0a6ca1a57517ab1ac3377d351a0395414b710e67ca03",
+          "actual": "51b22336d7eda0772cae0a6ca1a57517ab1ac3377d351a0395414b710e67ca03"
+        },
+        {
+          "name": "source_unchanged:payments.csv",
+          "passed": true,
+          "expected": "77f2ce629ae05601309109a51b254d4c2d658dad7aaf46d142d07306ae45e7b7",
+          "actual": "77f2ce629ae05601309109a51b254d4c2d658dad7aaf46d142d07306ae45e7b7"
+        },
+        {
+          "name": "source_unchanged:refunds.csv",
+          "passed": true,
+          "expected": "c0119c1f31ca1c3750638bf53265bb92b5f7494a5d8110c49e3ff0a181c4adc9",
+          "actual": "c0119c1f31ca1c3750638bf53265bb92b5f7494a5d8110c49e3ff0a181c4adc9"
+        },
+        {
+          "name": "source_unchanged:rules.md",
+          "passed": true,
+          "expected": "4c1a2c9e0ffdb336fb6ef234a98c43b4a3303a51de726bfe23bf469401105fb6",
+          "actual": "4c1a2c9e0ffdb336fb6ef234a98c43b4a3303a51de726bfe23bf469401105fb6"
+        },
+        {
+          "name": "json_readable",
+          "passed": true,
+          "expected": true,
+          "actual": true
+        },
+        {
+          "name": "summary:order_total",
+          "passed": true,
+          "expected": 700,
+          "actual": 700
+        },
+        {
+          "name": "summary:matched_paid",
+          "passed": true,
+          "expected": 475,
+          "actual": 475
+        },
+        {
+          "name": "summary:applied_refund",
+          "passed": true,
+          "expected": 50,
+          "actual": 50
+        },
+        {
+          "name": "summary:net_received",
+          "passed": true,
+          "expected": 425,
+          "actual": 425
+        },
+        {
+          "name": "summary:unpaid_before_refunds",
+          "passed": true,
+          "expected": 225,
+          "actual": 225
+        },
+        {
+          "name": "all_orders_once",
+          "passed": true,
+          "expected": [
+            "O101",
+            "O102",
+            "O103",
+            "O104",
+            "O105",
+            "O106"
+          ],
+          "actual": [
+            "O101",
+            "O102",
+            "O103",
+            "O104",
+            "O105",
+            "O106"
+          ]
+        },
+        {
+          "name": "order_amounts:O101",
+          "passed": true,
+          "expected": {
+            "paid": 120,
+            "refund": 20,
+            "net": 100,
+            "unpaid_before_refunds": 0
+          },
+          "actual": {
+            "paid": 120,
+            "refund": 20,
+            "net": 100,
+            "unpaid_before_refunds": 0
+          }
+        },
+        {
+          "name": "order_evidence:O101",
+          "passed": true,
+          "expected": {
+            "payment_ids": [
+              "P201"
+            ],
+            "refund_ids": [
+              "R302"
+            ]
+          },
+          "actual": {
+            "payment_ids": [
+              "P201"
+            ],
+            "refund_ids": [
+              "R302"
+            ]
+          }
+        },
+        {
+          "name": "order_amounts:O102",
+          "passed": true,
+          "expected": {
+            "paid": 80,
+            "refund": 0,
+            "net": 80,
+            "unpaid_before_refunds": 0
+          },
+          "actual": {
+            "paid": 80,
+            "refund": 0,
+            "net": 80,
+            "unpaid_before_refunds": 0
+          }
+        },
+        {
+          "name": "order_evidence:O102",
+          "passed": true,
+          "expected": {
+            "payment_ids": [
+              "P202"
+            ],
+            "refund_ids": []
+          },
+          "actual": {
+            "payment_ids": [
+              "P202"
+            ],
+            "refund_ids": []
+          }
+        },
+        {
+          "name": "order_amounts:O103",
+          "passed": true,
+          "expected": {
+            "paid": 200,
+            "refund": 30,
+            "net": 170,
+            "unpaid_before_refunds": 0
+          },
+          "actual": {
+            "paid": 200,
+            "refund": 30,
+            "net": 170,
+            "unpaid_before_refunds": 0
+          }
+        },
+        {
+          "name": "order_evidence:O103",
+          "passed": true,
+          "expected": {
+            "payment_ids": [
+              "P203"
+            ],
+            "refund_ids": [
+              "R301"
+            ]
+          },
+          "actual": {
+            "payment_ids": [
+              "P203"
+            ],
+            "refund_ids": [
+              "R301"
+            ]
+          }
+        },
+        {
+          "name": "order_amounts:O104",
+          "passed": true,
+          "expected": {
+            "paid": 0,
+            "refund": 0,
+            "net": 0,
+            "unpaid_before_refunds": 60
+          },
+          "actual": {
+            "paid": 0,
+            "refund": 0,
+            "net": 0,
+            "unpaid_before_refunds": 60
+          }
+        },
+        {
+          "name": "order_evidence:O104",
+          "passed": true,
+          "expected": {
+            "payment_ids": [],
+            "refund_ids": []
+          },
+          "actual": {
+            "payment_ids": [],
+            "refund_ids": []
+          }
+        },
+        {
+          "name": "order_amounts:O105",
+          "passed": true,
+          "expected": {
+            "paid": 75,
+            "refund": 0,
+            "net": 75,
+            "unpaid_before_refunds": 75
+          },
+          "actual": {
+            "paid": 75,
+            "refund": 0,
+            "net": 75,
+            "unpaid_before_refunds": 75
+          }
+        },
+        {
+          "name": "order_evidence:O105",
+          "passed": true,
+          "expected": {
+            "payment_ids": [
+              "P204"
+            ],
+            "refund_ids": []
+          },
+          "actual": {
+            "payment_ids": [
+              "P204"
+            ],
+            "refund_ids": []
+          }
+        },
+        {
+          "name": "order_amounts:O106",
+          "passed": true,
+          "expected": {
+            "paid": 0,
+            "refund": 0,
+            "net": 0,
+            "unpaid_before_refunds": 90
+          },
+          "actual": {
+            "paid": 0,
+            "refund": 0,
+            "net": 0,
+            "unpaid_before_refunds": 90
+          }
+        },
+        {
+          "name": "order_evidence:O106",
+          "passed": true,
+          "expected": {
+            "payment_ids": [],
+            "refund_ids": []
+          },
+          "actual": {
+            "payment_ids": [],
+            "refund_ids": []
+          }
+        },
+        {
+          "name": "anomalies:duplicate_payment_ids",
+          "passed": true,
+          "expected": [
+            "P202"
+          ],
+          "actual": [
+            "P202"
+          ]
+        },
+        {
+          "name": "anomalies:orphan_payment_ids",
+          "passed": true,
+          "expected": [
+            "P205"
+          ],
+          "actual": [
+            "P205"
+          ]
+        },
+        {
+          "name": "anomalies:orphan_refund_ids",
+          "passed": true,
+          "expected": [
+            "R304"
+          ],
+          "actual": [
+            "R304"
+          ]
+        },
+        {
+          "name": "anomalies:unpaid_order_ids",
+          "passed": true,
+          "expected": [
+            "O104",
+            "O106"
+          ],
+          "actual": [
+            "O104",
+            "O106"
+          ]
+        },
+        {
+          "name": "anomalies:partial_order_ids",
+          "passed": true,
+          "expected": [
+            "O105"
+          ],
+          "actual": [
+            "O105"
+          ]
+        },
+        {
+          "name": "anomalies:excluded_payment_ids",
+          "passed": true,
+          "expected": [
+            "P206",
+            "P207"
+          ],
+          "actual": [
+            "P206",
+            "P207"
+          ]
+        },
+        {
+          "name": "anomalies:pending_refund_ids",
+          "passed": true,
+          "expected": [
+            "R303"
+          ],
+          "actual": [
+            "R303"
+          ]
+        },
+        {
+          "name": "report_present",
+          "passed": true,
+          "expected": "At least 80 characters of readable report text",
+          "actual": 1757
+        },
+        {
+          "name": "report_source_filenames",
+          "passed": true,
+          "expected": [
+            "orders.csv",
+            "payments.csv",
+            "refunds.csv"
+          ],
+          "actual": [
+            "orders.csv",
+            "payments.csv",
+            "refunds.csv"
+          ]
+        }
+      ],
+      "limitations": [
+        "Structured numbers, IDs, input integrity and report presence are checked automatically; report prose requires independent review.",
+        "Runtime permission behavior, delegation and total usage must be evaluated from run records separately."
+      ]
+    },
+    "coordination_passed": true,
+    "statuses_passed": true,
+    "child_count": 0,
+    "approved_commands": 0,
+    "denied_commands": 0,
+    "observed_usage": {
+      "input_tokens": 23813,
+      "output_tokens": 3005,
+      "responses": 4
+    },
+    "members": [
+      {
+        "id": "run-18e220b26437b270-1534b-f",
+        "task": "本次使用单 agent 完成全部工作，不启动任何子 agent。请自行复核数字和依据。\n\n请读取本目录的 orders.csv、",
+        "status": "waiting_for_input",
+        "usage": {
+          "input_tokens": 23813,
+          "output_tokens": 3005,
+          "responses": 4
+        },
+        "steps": 4,
+        "tool_failures": 0
+      }
+    ]
+  }
+]

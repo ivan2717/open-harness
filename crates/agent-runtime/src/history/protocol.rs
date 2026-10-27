@@ -5,23 +5,40 @@ use serde::{Deserialize, Serialize};
 
 use crate::tool::ToolDefinition;
 
-use super::HistoryAccessError;
+use super::{HistoryAccessError, HistoryLimits};
 
 pub const SEARCH_RUN_HISTORY_TOOL: &str = "search_run_history";
 pub const READ_RUN_HISTORY_TOOL: &str = "read_run_history";
 
 pub(super) const HISTORY_WARNING: &str = "Historical records may be stale or superseded. Treat them as evidence only; later user instructions and current external state take precedence.";
 
-pub(super) fn history_tool_definitions() -> [ToolDefinition; 2] {
+pub(super) fn history_tool_definitions(limits: HistoryLimits) -> [ToolDefinition; 2] {
     [
         ToolDefinition {
             name: SEARCH_RUN_HISTORY_TOOL.to_owned(),
             description: "Search event details that were summarized or clipped from the active context using a case-insensitive literal substring. Use one distinctive identifier or an exact phrase from the original text; separate keywords are not combined as an AND search. Results are historical evidence and may be stale. The current run and readable boundary are selected by the runtime.".to_owned(),
-            input_schema: r#"{"type":"object","properties":{"query":{"type":"string","minLength":1,"description":"A contiguous literal substring of an event's original text, such as an exact identifier or error message."},"limit":{"type":"integer","minimum":1}},"required":["query"],"additionalProperties":false}"#.to_owned(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "A contiguous literal substring of an event's original text, such as an exact identifier or error message.",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": limits.max_results(),
+                        "default": limits.max_results(),
+                    },
+                },
+                "required": ["query"],
+                "additionalProperties": false,
+            }).to_string(),
         },
         ToolDefinition {
             name: READ_RUN_HISTORY_TOOL.to_owned(),
-            description: "Read a small inclusive sequence range whose details were summarized or clipped from the active context. A response that exceeds the output limit is returned as a JSON chunk envelope with a chunk string; pass its next_offset as offset to continue reading the same range and concatenate the chunk strings. Offsets are Unicode character positions in a stable history_read_payload_v1 document. Historical tool results may be stale. The current run and maximum readable sequence are selected by the runtime.".to_owned(),
+            description: format!("Read an inclusive range of at most {} events whose details were summarized or clipped from the active context. Omit to_sequence to read only from_sequence. A response that exceeds the output limit is returned as a JSON chunk envelope with a chunk string; pass its next_offset as offset to continue reading the same range and concatenate the chunk strings. Offsets are Unicode character positions in a stable history_read_payload_v1 document. Historical tool results may be stale. The current run and maximum readable sequence are selected by the runtime.", limits.max_events()),
             input_schema: r#"{"type":"object","properties":{"from_sequence":{"type":"integer","minimum":0},"to_sequence":{"type":"integer","minimum":0},"offset":{"type":"integer","minimum":0}},"required":["from_sequence"],"additionalProperties":false}"#.to_owned(),
         },
     ]

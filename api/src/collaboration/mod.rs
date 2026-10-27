@@ -9,20 +9,26 @@ use std::{future::Future, pin::Pin};
 
 mod admission;
 mod control;
+mod handoff;
+mod identity;
 mod lifecycle;
 mod mailbox;
+mod reading;
+mod resume;
 pub(crate) mod tools;
+mod waiting;
 pub(super) use mailbox::Mailboxes;
 
 const DEFAULT_CONCURRENCY: usize = 4;
 const MAX_CONCURRENCY: usize = 8;
 
-pub(super) fn instructions(child: bool) -> &'static str {
-    if child {
+pub(super) fn instructions(summary: &crate::contracts::RunSummary) -> String {
+    let policy = if summary.delegation.is_some() {
         include_str!("delegate.txt")
     } else {
         include_str!("coordinator.txt")
-    }
+    };
+    format!("{policy}\n\n{}", identity::instructions(summary))
 }
 
 #[derive(Deserialize)]
@@ -31,17 +37,33 @@ struct SpawnInput {
     task_name: String,
     task: String,
     #[serde(default)]
-    write_paths: Vec<String>,
+    write_paths: Option<Vec<String>>,
+    #[serde(default)]
+    model: Option<crate::contracts::UpdateRunModelInput>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ControlInput {
     action: String,
+    #[serde(alias = "target")]
     agent_id: Option<String>,
     message: Option<String>,
     timeout_seconds: Option<u64>,
     offset: Option<usize>,
     limit: Option<usize>,
+    message_id: Option<String>,
+    file_index: Option<usize>,
+    text_offset: Option<usize>,
+    text_limit: Option<usize>,
+    include_tools: Option<bool>,
+    #[serde(default, deserialize_with = "deserialize_write_paths")]
+    write_paths: Option<Option<Vec<String>>>,
+}
+
+fn deserialize_write_paths<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Option<Vec<String>>>, D::Error> {
+    Option::<Vec<String>>::deserialize(deserializer).map(Some)
 }
 
 pub(super) fn validate_policy(policy: &ExecutionPolicy) -> Result<(), ServiceError> {
@@ -103,6 +125,10 @@ impl AppState {
         entry.background.load(Ordering::Acquire)
             || entry.runtime.is_executing(&summary.id)
             || summary.status == RunStatus::Running
+            || entry
+                .workspace
+                .as_ref()
+                .is_some_and(|workspace| workspace.commands_running())
     }
 
     fn has_active_children(&self, id: &str) -> bool {
@@ -182,7 +208,10 @@ impl AppState {
                 )
                 .await
                 .map_err(ServiceError::internal)?
-                .map(|id| json!({"agent_id":id,"status":"running"}).to_string());
+                .and_then(|id| {
+                    let summary = self.entry(&id)?.snapshot.get().summary;
+                    Ok(json!({"agent_id":id,"target":identity::target(&summary),"status":"running"}).to_string())
+                });
             }
             let input: ControlInput =
                 serde_json::from_str(&call.arguments).map_err(ServiceError::internal)?;
@@ -212,4 +241,33 @@ fn bounded(text: &str, bytes: usize) -> String {
         "{}\n[truncated; inspect the source run for the rest]",
         &text[..end]
     )
+}
+
+#[cfg(test)]
+mod input_tests {
+    use super::*;
+
+    #[test]
+    fn scope_updates_distinguish_omission_inheritance_and_read_only() {
+        let omitted: ControlInput =
+            serde_json::from_value(json!({"action":"followup", "target":"reader"})).unwrap();
+        assert!(omitted.write_paths.is_none());
+        assert_eq!(omitted.agent_id.as_deref(), Some("reader"));
+        let inherited: ControlInput = serde_json::from_value(
+            json!({"action":"followup", "target":"reader", "write_paths":null}),
+        )
+        .unwrap();
+        assert_eq!(inherited.write_paths, Some(None));
+        let readonly: ControlInput = serde_json::from_value(
+            json!({"action":"followup", "target":"reader", "write_paths":[]}),
+        )
+        .unwrap();
+        assert_eq!(readonly.write_paths, Some(Some(Vec::new())));
+        assert!(
+            serde_json::from_value::<ControlInput>(
+                json!({"action":"read","target":"parent","agent_id":"another"})
+            )
+            .is_err()
+        );
+    }
 }

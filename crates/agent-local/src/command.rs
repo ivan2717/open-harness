@@ -1,18 +1,20 @@
 use crate::{
-    Approval, CommandRecord, LocalTools, PendingApproval, PermissionMode, files::parse, journal,
-    lock_error, output::CommandOutput, paths,
+    Approval, CommandAccess, CommandRecord, CommandStatus, Inner, LocalTools, NetworkAccess,
+    PendingApproval, PermissionMode,
+    command_environment::ReadOnlyScratch,
+    command_process::{CommandProcess, CommandProcessOptions},
+    command_session::CommandSession,
+    files::parse,
+    journal, lock_error, paths,
 };
 use serde::Deserialize;
 use std::{
-    fs, io,
-    path::Path,
-    process::Stdio,
-    sync::{Arc, Mutex, atomic::Ordering},
+    io,
+    sync::{Arc, Weak, atomic::Ordering},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tokio::{
     io::{AsyncRead, AsyncReadExt},
-    process::Command,
     sync::oneshot,
 };
 
@@ -20,22 +22,67 @@ use tokio::{
 #[serde(deny_unknown_fields)]
 struct CommandInput {
     command: String,
-    #[serde(default = "default_timeout")]
-    timeout_seconds: u64,
+    #[serde(default = "default_yield")]
+    yield_time_ms: u64,
+    #[serde(default)]
+    timeout_seconds: Option<u64>,
+    #[serde(default)]
+    network_access: NetworkAccess,
+    #[serde(default)]
+    access: Option<CommandAccess>,
 }
-fn default_timeout() -> u64 {
-    60
+fn default_yield() -> u64 {
+    10_000
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ManageInput {
+    command_id: String,
+    #[serde(default = "default_action")]
+    action: String,
+    #[serde(default)]
+    cursor: u64,
+    #[serde(default)]
+    wait_ms: u64,
+}
+fn default_action() -> String {
+    "output".into()
 }
 
 pub(crate) fn sandbox_available() -> bool {
-    cfg!(target_os = "macos") && Path::new("/usr/bin/sandbox-exec").is_file()
+    crate::command_process::sandbox_available()
+}
+pub(crate) fn execution_mode() -> &'static str {
+    if sandbox_available() {
+        "sandboxed"
+    } else {
+        "unavailable"
+    }
+}
+pub(crate) fn execution_available() -> bool {
+    execution_mode() != "unavailable"
 }
 
 impl LocalTools {
     pub(crate) async fn command(&self, call: agent_runtime::ToolCall) -> io::Result<String> {
         let input: CommandInput = parse(&call.arguments)?;
-        if self.inner.mode != PermissionMode::WorkspaceWrite {
-            return Err(paths::denied("commands are disabled in read-only mode"));
+        let access = input.access.unwrap_or_else(|| {
+            if self.inner.mode == PermissionMode::ReadOnly
+                || self
+                    .collaboration
+                    .as_ref()
+                    .is_some_and(|binding| binding.allowed.is_some())
+            {
+                CommandAccess::ReadOnly
+            } else {
+                CommandAccess::WorkspaceWrite
+            }
+        });
+        if self.inner.mode == PermissionMode::ReadOnly && access == CommandAccess::WorkspaceWrite {
+            return Err(paths::denied(
+                "workspace writes are disabled in read-only mode",
+            ));
         }
         if input.command.trim().is_empty()
             || input.command.len() > 8192
@@ -45,16 +92,22 @@ impl LocalTools {
                 "command must contain 1 to 8192 bytes without NUL",
             ));
         }
-        if !(1..=120).contains(&input.timeout_seconds) {
+        if input.yield_time_ms > 30_000
+            || input
+                .timeout_seconds
+                .is_some_and(|seconds| !(1..=86_400).contains(&seconds))
+        {
             return Err(io::Error::other(
-                "timeout_seconds must be between 1 and 120",
+                "yield_time_ms must be between 0 and 30000; optional timeout_seconds must be between 1 and 86400",
             ));
         }
-        if !sandbox_available() {
+        if !execution_available() {
             return Err(paths::denied(
-                "no supported OS command sandbox is available; commands are disabled",
+                "command execution is not available on this platform",
             ));
         }
+        self.verify_root()?;
+        self.authorize_command(access)?;
         let id = format!(
             "command-{}-{}",
             SystemTime::now()
@@ -63,308 +116,539 @@ impl LocalTools {
                 .as_nanos(),
             self.inner.next_id.fetch_add(1, Ordering::Relaxed)
         );
+        let session = Arc::new(CommandSession::new());
+        self.inner.commands.insert(id.clone(), session.clone())?;
         let mut guard = CommandGuard {
-            tools: self.clone(),
+            inner: Arc::downgrade(&self.inner),
             id: id.clone(),
-            process_group: None,
+            session: session.clone(),
             finished: false,
-            output: Arc::new(Mutex::new(CommandOutput::default())),
+            owns_baseline: false,
         };
         {
             let mut journal = self.inner.journal.lock().map_err(lock_error)?;
-            if journal.commands.len() >= 50 {
-                journal.commands.remove(0);
+            if journal.commands.len() >= 50
+                && let Some(index) = journal.commands.iter().position(|record| {
+                    !matches!(record.status.as_str(), "running" | "awaiting_approval")
+                })
+            {
+                journal.commands.remove(index);
             }
             journal.commands.push(CommandRecord {
                 id: id.clone(),
+                task_title: None,
                 command: input.command.clone(),
                 status: "awaiting_approval".into(),
                 output: String::new(),
                 exit_code: None,
+                network_access: input.network_access,
+                access,
             });
             journal.save(&self.inner.state_dir)?;
         }
-        let (sender, receiver) = oneshot::channel();
-        self.inner.approvals.lock().map_err(lock_error)?.insert(
-            id.clone(),
-            Approval {
-                info: PendingApproval {
-                    id: id.clone(),
-                    command: input.command.clone(),
-                    cwd: self.root().display().to_string(),
-                },
-                sender,
-            },
-        );
-        if !receiver.await.unwrap_or(false) {
-            guard.finish("denied", None)?;
-            return Err(paths::denied("user denied the command"));
-        }
-
-        self.verify_root()?;
-        // A failed previous scan must be reconciled before replacing its
-        // baseline, otherwise earlier command effects would disappear.
+        let mut cancelled = session.cancellation();
+        let allowed = if self
+            .command_permissions
+            .allows(access, input.network_access)?
         {
-            let mut journal = self.inner.journal.lock().map_err(lock_error)?;
-            if let Some(previous) = journal.command_baseline.as_ref() {
-                let after = journal::snapshot(self.root()).map_err(|error| {
-                    io::Error::new(
-                        io::ErrorKind::WouldBlock,
-                        format!("previous command changes still need inspection: {error}"),
-                    )
-                })?;
-                let previous = previous.clone();
-                journal.reconcile_command(previous, after);
-                journal.command_baseline = None;
+            true
+        } else {
+            let (sender, receiver) = oneshot::channel();
+            self.inner.approvals.lock().map_err(lock_error)?.insert(
+                id.clone(),
+                Approval {
+                    info: PendingApproval {
+                        task_title: None,
+                        id: id.clone(),
+                        command: input.command.clone(),
+                        cwd: self.root().display().to_string(),
+                        execution_mode: execution_mode().into(),
+                        network_access: input.network_access,
+                        access,
+                    },
+                    sender,
+                },
+            );
+            await_approval(receiver, &mut cancelled).await
+        };
+        if !allowed || *cancelled.borrow() {
+            guard.finish(
+                if *cancelled.borrow() {
+                    "cancelled"
+                } else {
+                    "denied"
+                },
+                None,
+            )?;
+            return Err(paths::denied("command was denied or cancelled"));
+        }
+        // Approval is not a workspace lock. Recheck delegated authority after
+        // the user decides; file leases may have changed while we were waiting.
+        self.verify_root()?;
+        self.authorize_command(access)?;
+        let slot = self.command_permissions.admit()?;
+        let shared_operation = self
+            .collaboration
+            .as_ref()
+            .map(|binding| binding.access.command_operation(access))
+            .transpose()?
+            .flatten();
+        let operation = if access == CommandAccess::WorkspaceWrite {
+            Some(self.inner.operation.clone().try_lock_owned().map_err(|_| io::Error::new(
+                io::ErrorKind::WouldBlock, "a workspace write operation is running; inspect or stop it before starting another write command"))?)
+        } else {
+            None
+        };
+        self.authorize_command(access)?;
+        let scratch = if access == CommandAccess::ReadOnly {
+            Some(ReadOnlyScratch::create(&id)?)
+        } else {
+            None
+        };
+        if access == CommandAccess::WorkspaceWrite {
+            // Retain an incomplete previous baseline until reconciliation succeeds.
+            {
+                let mut journal = self.inner.journal.lock().map_err(lock_error)?;
+                if let Some(previous) = journal.command_baseline.as_ref() {
+                    let after = journal::snapshot(self.root()).map_err(|error| {
+                        io::Error::new(
+                            io::ErrorKind::WouldBlock,
+                            format!("previous command changes still need inspection: {error}"),
+                        )
+                    })?;
+                    let previous = previous.clone();
+                    journal.reconcile_command(previous, after);
+                    journal.command_baseline = None;
+                    journal.save(&self.inner.state_dir)?;
+                }
+            }
+            let baseline = journal::snapshot(self.root())?;
+            {
+                let mut journal = self.inner.journal.lock().map_err(lock_error)?;
+                journal.command_baseline = Some(baseline);
+                guard.owns_baseline = true;
+                if let Some(record) = journal.commands.iter_mut().find(|record| record.id == id) {
+                    record.status = "running".into();
+                }
                 journal.save(&self.inner.state_dir)?;
             }
-        }
-        let baseline = journal::snapshot(self.root())?;
-        {
+        } else {
             let mut journal = self.inner.journal.lock().map_err(lock_error)?;
-            journal.command_baseline = Some(baseline);
             if let Some(record) = journal.commands.iter_mut().find(|record| record.id == id) {
                 record.status = "running".into();
             }
             journal.save(&self.inner.state_dir)?;
         }
-        let scratch = self.root().join(".openharness-tmp");
-        if fs::symlink_metadata(&scratch).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
-            return Err(paths::denied(
-                "command scratch directory cannot be a symbolic link",
-            ));
-        }
-        fs::create_dir_all(&scratch)?;
-        self.verify_root()?;
-        // The trusted wrapper owns the process group. Its watchdog retains a
-        // group member until this host closes stdin, including on SIGKILL.
-        // User code only enters the sandbox child and cannot inherit that pipe.
-        const WRAPPER: &str = "owner=$$\n(while IFS= read -r line; do :; done; kill -KILL -- \"-$owner\") <&0 >/dev/null 2>&1 &\n/usr/bin/sandbox-exec -p \"$1\" /bin/sh -c \"$2\" </dev/null\nexit \"$?\"";
-        let mut command = Command::new("/bin/sh");
-        command.args([
-            "-c",
-            WRAPPER,
-            "openharness-command",
-            &sandbox_profile(self.root(), &self.inner.state_dir),
+        session.set_status("running", None)?;
+        let mut process = match CommandProcess::spawn_with_options(
+            self,
             &input.command,
-        ]);
-        command
-            .current_dir(self.root())
-            .env_clear()
-            .env(
-                "PATH",
-                std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin:/usr/sbin:/sbin".into()),
-            )
-            .env("HOME", self.root())
-            .env("TMPDIR", &scratch)
-            .env("LANG", "en_US.UTF-8")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
-        #[cfg(unix)]
+            input.network_access,
+            CommandProcessOptions {
+                write_paths: (access == CommandAccess::ReadOnly).then(Vec::new),
+                temporary_directory: scratch.as_ref().map(|scratch| scratch.path().to_owned()),
+            },
+        )
+        .await
         {
-            command.process_group(0);
-        }
-        let mut child = command.spawn()?;
-        guard.process_group = child.id();
-        // Child::wait closes its own stdin to avoid deadlocks. Keep this one
-        // separately: EOF is a cancellation signal to the watchdog.
-        let _supervision = child.stdin.take();
-        let stdout = child
+            Ok(process) => process,
+            Err(error) => {
+                session.append(format!("Could not start command: {error}").as_bytes())?;
+                guard.finish_after_cleanup("failed", None, || {
+                    drop(scratch);
+                    drop(slot);
+                    drop(operation);
+                    drop(shared_operation);
+                })?;
+                return Err(error);
+            }
+        };
+        let stdout = process
+            .child
             .stdout
             .take()
             .ok_or_else(|| io::Error::other("missing command stdout"))?;
-        let stderr = child
+        let stderr = process
+            .child
             .stderr
             .take()
             .ok_or_else(|| io::Error::other("missing command stderr"))?;
-        let output = guard.output.clone();
-        let result = tokio::time::timeout(Duration::from_secs(input.timeout_seconds), async {
-            let (status, stdout, stderr) = tokio::join!(
-                child.wait(),
-                drain(stdout, output.clone()),
-                drain(stderr, output)
-            );
-            stdout?;
-            stderr?;
-            status
-        })
-        .await;
-        kill_group(guard.process_group.take());
-        let (status, code) =
-            match result {
-                Ok(Ok(status)) => {
-                    if !status.success() && status.code().is_none() {
-                        guard.output.lock().map_err(lock_error)?.extend_from_slice(
-                            format!("\nCommand terminated: {status}").as_bytes(),
-                        );
-                    }
-                    (
-                        if status.success() {
-                            "completed"
-                        } else {
-                            "failed"
-                        },
-                        status.code(),
-                    )
-                }
-                Ok(Err(error)) => {
-                    guard
-                        .output
-                        .lock()
-                        .map_err(lock_error)?
-                        .extend_from_slice(format!("\n{error}").as_bytes());
-                    ("failed", None)
-                }
-                Err(_) => {
-                    let _ = child.kill().await;
-                    let _ = child.wait().await;
-                    ("timed_out", None)
+        let worker_session = session.clone();
+        tokio::spawn(async move {
+            // Only write commands retain mutation locks and a journal baseline.
+            // Read-only commands have their own OS-writable temporary directory.
+            let (operation, shared_operation, slot, scratch) =
+                (operation, shared_operation, slot, scratch);
+            let stdout = tokio::spawn(drain(stdout, worker_session.clone()));
+            let stderr = tokio::spawn(drain(stderr, worker_session.clone()));
+            let timeout = async {
+                if let Some(seconds) = input.timeout_seconds {
+                    tokio::time::sleep(Duration::from_secs(seconds)).await;
+                } else {
+                    std::future::pending::<()>().await;
                 }
             };
-        guard.finish(status, code)?;
-        let output = guard.output.lock().map_err(lock_error)?.text();
-        Ok(serde_json::json!({"command_id":id,"status":status,"exit_code":code,"output":paths::bounded(&output,paths::OUTPUT_LIMIT),"note":"Network access is disabled. Command changes require review; automatic undo is unavailable for command changes."}).to_string())
+            let (status, code) = if *cancelled.borrow() {
+                ("cancelled", None)
+            } else {
+                tokio::select! {
+                    result = process.child.wait() => match result {
+                        Ok(exit) => (if exit.success() { "completed" } else { "failed" }, exit.code()),
+                        Err(error) => { let _ = worker_session.append(format!("\n{error}").as_bytes()); ("failed", None) }
+                    },
+                    _ = cancelled.changed() => ("cancelled", None),
+                    _ = timeout => ("timed_out", None),
+                }
+            };
+            process.terminate();
+            let _ = process.child.wait().await;
+            for pipe in [stdout, stderr] {
+                let result = pipe
+                    .await
+                    .map_err(io::Error::other)
+                    .and_then(|result| result);
+                if let Err(error) = result {
+                    let _ = worker_session
+                        .append(format!("\nCould not collect command output: {error}").as_bytes());
+                }
+            }
+            let _ = guard.finish_after_cleanup(status, code, || {
+                drop(process);
+                drop(scratch);
+                drop(slot);
+                drop(operation);
+                drop(shared_operation);
+            });
+        });
+        // Dropping the initial tool future (e.g. stopping the run while it is
+        // awaiting output) cancels it. A successful yield transfers ownership to
+        // the host registry, which is explicitly stopped or cancelled at teardown.
+        let mut initial_wait = InitialWait {
+            session,
+            yielded: false,
+        };
+        wait_until_finished(&initial_wait.session, input.yield_time_ms).await;
+        let result = initial_wait.session.snapshot(&id, 0)?;
+        initial_wait.yielded = true;
+        serde_json::to_string(&result).map_err(io::Error::other)
+    }
+
+    pub(crate) async fn manage_command(&self, call: agent_runtime::ToolCall) -> io::Result<String> {
+        let input: ManageInput = parse(&call.arguments)?;
+        self.authorize_command(CommandAccess::ReadOnly)?;
+        let result = match input.action.as_str() {
+            "output" | "status" => {
+                self.command_status(&input.command_id, input.cursor, input.wait_ms)
+                    .await?
+            }
+            "stop" => self.stop_command(&input.command_id).await?,
+            _ => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "action must be output, status or stop",
+                ));
+            }
+        };
+        serde_json::to_string(&result).map_err(io::Error::other)
+    }
+
+    /// Wait only for new output/completion, never for the workspace mutation lock.
+    pub async fn command_status(
+        &self,
+        id: &str,
+        cursor: u64,
+        wait_ms: u64,
+    ) -> io::Result<CommandStatus> {
+        if wait_ms > 30_000 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "wait_ms must be between 0 and 30000",
+            ));
+        }
+        let session = self.inner.commands.get(id)?;
+        let wait = async {
+            loop {
+                let changed = session.changed.notified();
+                tokio::pin!(changed);
+                changed.as_mut().enable();
+                let snapshot = session.snapshot(id, cursor)?;
+                if !session.active() || snapshot.next_cursor > cursor || snapshot.output_truncated {
+                    return Ok(snapshot);
+                }
+                changed.await;
+            }
+        };
+        match tokio::time::timeout(Duration::from_millis(wait_ms), wait).await {
+            Ok(result) => result,
+            Err(_) => session.snapshot(id, cursor),
+        }
+    }
+
+    pub async fn stop_command(&self, id: &str) -> io::Result<CommandStatus> {
+        let session = self.inner.commands.get(id)?;
+        session.cancel();
+        wait_until_finished(&session, 5000).await;
+        session.snapshot(id, 0)
+    }
+
+    /// Signal every live process and pending approval when the owning run stops.
+    pub fn cancel_commands(&self) {
+        self.inner.commands.cancel_all();
+    }
+
+    pub fn commands_running(&self) -> bool {
+        self.inner.commands.is_active()
+    }
+
+    /// The host must prevent new command admission before invoking shutdown.
+    pub async fn cancel_commands_and_wait(&self) -> io::Result<()> {
+        let sessions = self.inner.commands.active_sessions();
+        for session in &sessions {
+            session.cancel();
+        }
+        let wait = async {
+            for session in sessions {
+                while session.active() {
+                    wait_until_finished(&session, 1000).await;
+                }
+            }
+        };
+        tokio::time::timeout(Duration::from_secs(10), wait)
+            .await
+            .map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "command processes have not finished stopping",
+                )
+            })
     }
 }
 
-async fn drain(
-    mut reader: impl AsyncRead + Unpin,
-    output: Arc<Mutex<CommandOutput>>,
-) -> io::Result<()> {
+async fn await_approval(
+    receiver: oneshot::Receiver<bool>,
+    cancelled: &mut tokio::sync::watch::Receiver<bool>,
+) -> bool {
+    if *cancelled.borrow() {
+        return false;
+    }
+    tokio::select! {
+        biased;
+        _ = cancelled.changed() => false,
+        result = receiver => result.unwrap_or(false),
+    }
+}
+
+async fn wait_until_finished(session: &CommandSession, wait_ms: u64) {
+    let wait = async {
+        loop {
+            let changed = session.changed.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            if !session.active() {
+                break;
+            }
+            changed.await;
+        }
+    };
+    let _ = tokio::time::timeout(Duration::from_millis(wait_ms), wait).await;
+}
+
+async fn drain(mut reader: impl AsyncRead + Unpin, session: Arc<CommandSession>) -> io::Result<()> {
     let mut buffer = [0_u8; 4096];
     loop {
         let count = reader.read(&mut buffer).await?;
         if count == 0 {
             return Ok(());
         }
-        let mut output = output.lock().map_err(lock_error)?;
-        output.extend_from_slice(&buffer[..count]);
+        session.append(&buffer[..count])?;
+    }
+}
+
+struct InitialWait {
+    session: Arc<CommandSession>,
+    yielded: bool,
+}
+impl Drop for InitialWait {
+    fn drop(&mut self) {
+        if !self.yielded {
+            self.session.cancel();
+        }
     }
 }
 
 struct CommandGuard {
-    tools: LocalTools,
+    inner: Weak<Inner>,
     id: String,
-    process_group: Option<u32>,
+    session: Arc<CommandSession>,
     finished: bool,
-    output: Arc<Mutex<CommandOutput>>,
+    owns_baseline: bool,
 }
 impl CommandGuard {
-    fn finish(&mut self, status: &str, exit_code: Option<i32>) -> io::Result<()> {
-        let mut journal = self.tools.inner.journal.lock().map_err(lock_error)?;
-        if let Some(before) = journal.command_baseline.take() {
-            match self
-                .tools
-                .verify_root()
-                .and_then(|_| journal::snapshot(self.tools.root()))
-            {
-                Ok(after) => journal.reconcile_command(before, after),
-                Err(error) => {
-                    journal.command_baseline = Some(before);
-                    self.output.lock().map_err(lock_error)?.extend_from_slice(
-                        format!("\nCould not inspect command changes: {error}").as_bytes(),
-                    );
+    fn finish(&mut self, status: &str, code: Option<i32>) -> io::Result<()> {
+        self.finish_after_cleanup(status, code, || {})
+    }
+
+    fn finish_after_cleanup(
+        &mut self,
+        status: &str,
+        code: Option<i32>,
+        cleanup: impl FnOnce(),
+    ) -> io::Result<()> {
+        let persisted = (|| -> io::Result<()> {
+            if let Some(inner) = self.inner.upgrade() {
+                inner.approvals.lock().map_err(lock_error)?.remove(&self.id);
+                let mut journal = inner.journal.lock().map_err(lock_error)?;
+                if self.owns_baseline
+                    && let Some(before) = journal.command_baseline.take()
+                {
+                    let tools = LocalTools {
+                        command_permissions: Default::default(),
+                        inner: inner.clone(),
+                        collaboration: None,
+                    };
+                    match tools
+                        .verify_root()
+                        .and_then(|_| journal::snapshot(&inner.root))
+                    {
+                        Ok(after) => journal.reconcile_command(before, after),
+                        Err(error) => {
+                            journal.command_baseline = Some(before);
+                            self.session.append(
+                                format!("\nCould not inspect command changes: {error}").as_bytes(),
+                            )?;
+                        }
+                    }
                 }
+                if let Some(record) = journal
+                    .commands
+                    .iter_mut()
+                    .find(|record| record.id == self.id)
+                {
+                    record.status = status.into();
+                    record.exit_code = code;
+                    record.output = self
+                        .session
+                        .state
+                        .lock()
+                        .map_err(lock_error)?
+                        .archive
+                        .text();
+                }
+                journal.save(&inner.state_dir)?;
             }
-        }
-        if let Some(record) = journal
-            .commands
-            .iter_mut()
-            .find(|record| record.id == self.id)
-        {
-            record.status = status.into();
-            record.output = self.output.lock().map_err(lock_error)?.text();
-            record.exit_code = exit_code;
-        }
-        journal.save(&self.tools.inner.state_dir)?;
+            Ok(())
+        })();
+        // Baseline reconciliation must finish under the mutation locks. Until
+        // cleanup returns, CommandSessions::records overlays the journal with
+        // the live session's running status, so neither review nor tool output
+        // advertises completion while a lock/slot or scratch is still held.
+        cleanup();
+        // Failure to persist must not leave an already stopped process marked
+        // running forever or retain a pending approval.
         self.finished = true;
-        Ok(())
+        if let Err(error) = &persisted {
+            let _ = self
+                .session
+                .append(format!("\nCould not save command review: {error}").as_bytes());
+        }
+        self.session.set_status(status, code)?;
+        persisted
     }
 }
 impl Drop for CommandGuard {
     fn drop(&mut self) {
-        kill_group(self.process_group.take());
-        if let Ok(mut approvals) = self.tools.inner.approvals.lock() {
-            approvals.remove(&self.id);
-        }
         if !self.finished {
             let _ = self.finish("cancelled", None);
         }
     }
 }
 
-fn kill_group(group: Option<u32>) {
-    #[cfg(unix)]
-    if let Some(group) = group.and_then(|group| i32::try_from(group).ok()) {
-        // The child starts a new process group. Killing that owned group also
-        // terminates shell descendants when the tool future is dropped.
-        unsafe {
-            libc::kill(-group, libc::SIGKILL);
-        }
-    }
-    #[cfg(not(unix))]
-    let _ = group;
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-fn quoted(path: &Path) -> String {
-    serde_json::to_string(&path.to_string_lossy()).expect("path serialization")
-}
+    #[test]
+    fn terminal_status_is_published_only_after_cleanup_including_workspace_review() {
+        let base = std::env::temp_dir().join(format!(
+            "openharness-command-publication-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(base.join("project")).unwrap();
+        let tools = LocalTools::open(
+            base.join("project"),
+            base.join("state"),
+            PermissionMode::WorkspaceWrite,
+        )
+        .unwrap();
+        let session = Arc::new(CommandSession::new());
+        session.set_status("running", None).unwrap();
+        tools
+            .inner
+            .commands
+            .insert("publication".into(), session.clone())
+            .unwrap();
+        tools
+            .inner
+            .journal
+            .lock()
+            .unwrap()
+            .commands
+            .push(CommandRecord {
+                id: "publication".into(),
+                task_title: None,
+                command: "test".into(),
+                status: "running".into(),
+                output: String::new(),
+                exit_code: None,
+                network_access: NetworkAccess::Denied,
+                access: CommandAccess::ReadOnly,
+            });
+        let mut guard = CommandGuard {
+            inner: Arc::downgrade(&tools.inner),
+            id: "publication".into(),
+            session: session.clone(),
+            finished: false,
+            owns_baseline: false,
+        };
+        let mut cleaned = false;
+        guard
+            .finish_after_cleanup("completed", Some(0), || {
+                assert!(session.active());
+                // Durable reconciliation precedes cleanup, but the live session
+                // stays authoritative while deleting a possibly large cache.
+                assert_eq!(
+                    tools.inner.journal.lock().unwrap().commands[0].status,
+                    "completed"
+                );
+                assert_eq!(tools.review().unwrap().commands[0].status, "running");
+                cleaned = true;
+            })
+            .unwrap();
+        assert!(cleaned);
+        assert!(!session.active());
+        assert_eq!(tools.review().unwrap().commands[0].status, "completed");
+        drop(guard);
+        drop(tools);
+        std::fs::remove_dir_all(base).unwrap();
+    }
 
-fn sandbox_profile(root: &Path, state: &Path) -> String {
-    let mut profile = String::from(
-        "(version 1)\n(deny default)\n(allow process*)\n(allow sysctl-read)\n(allow mach-lookup)\n(allow file-read-metadata)\n(allow file-read* (literal \"/\"))\n",
-    );
-    for directory in [
-        "/usr",
-        "/bin",
-        "/sbin",
-        "/System",
-        "/Library",
-        "/dev",
-        "/private/etc",
-        "/private/var/db",
-        "/opt/homebrew",
-    ] {
-        profile.push_str(&format!(
-            "(allow file-read* (subpath {}))\n",
-            quoted(Path::new(directory))
-        ));
+    #[tokio::test]
+    async fn cancellation_before_approval_subscription_does_not_wait_for_a_new_change() {
+        let session = CommandSession::new();
+        session.cancel();
+        let mut cancellation = session.cancellation();
+        let (_sender, receiver) = oneshot::channel();
+        assert!(
+            !tokio::time::timeout(
+                Duration::from_millis(100),
+                await_approval(receiver, &mut cancellation)
+            )
+            .await
+            .unwrap()
+        );
     }
-    if let Some(home) = std::env::var_os("HOME") {
-        for directory in [".cargo", ".rustup", ".nvm", ".local/share/mise", ".bun/bin"] {
-            profile.push_str(&format!(
-                "(allow file-read* (subpath {}))\n",
-                quoted(&Path::new(&home).join(directory))
-            ));
-        }
-        for secret in [".cargo/credentials", ".cargo/credentials.toml"] {
-            profile.push_str(&format!(
-                "(deny file-read* (literal {}))\n",
-                quoted(&Path::new(&home).join(secret))
-            ));
-        }
-    }
-    profile.push_str(&format!(
-        "(allow file-read* (subpath {}))\n(allow file-write* (subpath {}))\n",
-        quoted(root),
-        quoted(root)
-    ));
-    // Regex restrictions apply throughout nested projects as well as at root.
-    profile.push_str(&format!(
-        "(deny file-write* (regex #\"(^|/){}(/|$)\"))\n",
-        paths::regex_literal(".git")
-    ));
-    for pattern in paths::secret_patterns() {
-        profile.push_str(&format!(
-            "(deny file-read* file-write* (regex #\"{pattern}\"))\n"
-        ));
-    }
-    profile.push_str("(allow file-write* (literal \"/dev/null\"))\n");
-    profile.push_str(&format!(
-        "(deny file-read* file-write* (subpath {}))\n",
-        quoted(state)
-    ));
-    profile
 }

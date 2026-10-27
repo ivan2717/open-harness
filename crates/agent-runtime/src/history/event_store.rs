@@ -32,7 +32,7 @@ impl EventStoreHistoryAccess {
     pub fn with_limits(limits: HistoryLimits) -> Self {
         Self {
             limits,
-            definitions: history_tool_definitions(),
+            definitions: history_tool_definitions(limits),
             excluded_tools: HashSet::new(),
         }
     }

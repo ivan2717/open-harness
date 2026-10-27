@@ -35,12 +35,12 @@ data information, and the optional developer demo.
 
 ## Run locally
 
-Install Node.js 24 LTS (minimum 22.12), npm, and the workspace Rust toolchain.
+Install Node.js 24 LTS (minimum 22.12), pnpm 10.13.1, and the workspace Rust toolchain.
 From this directory:
 
 ```sh
-npm ci
-npm run dev
+pnpm install --frozen-lockfile
+pnpm run dev
 ```
 
 The development command builds the Rust API, starts Electron and the Vite
@@ -178,11 +178,19 @@ idle conversations to the updated model configuration while preserving their his
 and checkpoints. Active execution or compaction blocks the update. Both connections
 are saved before migration; the old one is removed only after all bindings are updated.
 
-Commands require a separate one-time approval showing the exact command and
-working directory. Supported macOS hosts run commands in an OS sandbox with
-network access disabled and writes scoped to the project and temporary storage.
-When the command sandbox is unavailable, commands fail closed; file tools remain
-available. A read-only session cannot execute commands. Stopping a run cancels
+Commands request approval showing the exact command, working directory, file
+access and network scope. The user may approve once or grant that scope for the
+current root conversation and its child tasks. The command panel lists reusable
+grants and can revoke them; they disappear after app restart. Revoking a grant
+does not stop commands that were already approved.
+
+macOS uses Seatbelt and Windows uses AppContainer with Job Objects. Networking
+is disabled unless explicitly authorized. Read-only commands cannot modify the
+project and receive their own writable temporary directory. Workspace-write
+commands can modify the project and its temporary storage. Missing or failed
+sandbox setup never falls back to unrestricted execution; unsupported platforms
+expose file tools only. Read-only projects can run sandboxed read-only commands.
+Stopping a run cancels
 pending approval and owned command processes. Quitting the application normally
 first disconnects event subscriptions, then gives the runtime up to ten seconds
 to stop active work and save cancellation records before a forced backend stop.
@@ -252,10 +260,20 @@ but never resumes interrupted work automatically.
 Children use the same project checkout, read-only by default. A parent with
 write permission may assign exact files through `write_paths`; active assignments
 exclude conflicting edits by the parent or siblings and release when the child
-finishes. Children cannot execute commands, MCP operations or computer/browser
-controls, and cannot delegate further. Required integration tests and external
-actions return to the coordinator's normal approval flow. This provides local
+finishes. Children can execute read-only commands for inspection and tests under
+the OS sandbox; they cannot run workspace-write commands. Test output must use
+the command's private temporary directory. Reads observe live files and can
+overlap edits, so final verification must run after those edits settle. Root and
+child tasks share session command grants, and the parent page shows pending
+approvals and running child commands with their task names. Children cannot
+execute MCP operations or computer/browser controls, and cannot delegate
+further. The coordinator handles workspace-write commands after active file
+reservations finish, and external actions through the normal approval flow. This provides local
 coordination, not separate Git worktrees or a shared Teams task board.
+
+Windows read-only commands grant access to existing project files without
+inheriting read access to new files. Start another command after files are added
+or atomically replaced; their paths are checked again before access is granted.
 
 The concurrent-child limit defaults to 4. API clients may choose 1–8 through
 `execution_policy.max_agents`; the parent does not count toward this limit.
@@ -338,24 +356,24 @@ merged commit. Other branch pushes, pull request updates, tags, and manual
 dispatch do not trigger the workflow.
 
 Rust, desktop, and plugin checks run on Linux for every update to `main`.
-The browser plugin tests install headless Chromium and use local fixtures; no
-provider API keys are required. **Windows x64 installer** runs only when all
-checks pass and `apps/desktop/package.json` has a different version than before
+**Windows checks** also runs on every update, independently of version changes.
+It tests native command permissions, sandbox enforcement and process lifecycle,
+API execution and shutdown, the Chrome host launcher and named-pipe transport,
+and desktop runtime discovery and Windows paths. These baseline checks do not
+download Chromium or package the app. The Linux browser plugin tests install
+headless Chromium and use local fixtures; no provider API keys are required.
+**Windows x64 installer** runs only when the Linux and Windows checks pass and
+`apps/desktop/package.json` has a different version than before
 the push. Ordinary code, documentation, and dependency updates keep running
 checks without creating an installer. Different main commits do not cancel each
 other's workflows, so a subsequent ordinary update cannot cancel a version build.
 
-When a version is ready to publish, update the desktop version and lockfile together:
-
-```bash
-cd apps/desktop
-npm version patch --no-git-tag-version
-```
-
-Use `minor`, `major`, or an explicit version when appropriate. Commit the two
-package files in a PR and merge it into `main` to build that version. The workflow
-compares the complete push's before/after commits, including multi-commit merges;
-an unreadable baseline or inconsistent lockfile fails the desktop check.
+When a version is ready to publish, edit `version` in `apps/desktop/package.json`
+and submit it through a PR to `main`. The pnpm lockfile tracks dependencies and
+does not repeat the application's version; update it only when dependencies change.
+The workflow compares the complete push's before/after versions, including
+multi-commit merges. An unreadable baseline fails the desktop check, and
+`pnpm install --frozen-lockfile` checks dependency/lockfile consistency.
 After the installer passes its smoke test, a separate publish job creates
 `v<version>` at the exact build commit and publishes a GitHub Release. Only this
 job has `contents: write`; build and test jobs keep read-only repository access.
@@ -379,9 +397,7 @@ The same installed-app run prepares and exercises the independent Chromium
 browser, then drives a temporary WinForms app through the packaged Windows
 Computer Use helper. It checks Unicode input, ref clicks, navigation, scrolling,
 window-only PNG capture, stale snapshot/password refusal, and owned process
-cleanup. API stdin closure is also tested on Windows to verify graceful backend
-shutdown before the forced-exit deadline. It then uninstalls the app before
-uploading the installer. This is a smoke test,
+cleanup. It then uninstalls the app before uploading the installer. This is a smoke test,
 not full coverage of every Windows feature or an upgrade test.
 
 Download `Open-Harness-<version>-windows-x64-setup.exe` directly from the
@@ -411,8 +427,8 @@ stable, and Visual Studio C++ Build Tools, then run:
 
 ```powershell
 cd apps/desktop
-npm ci
-npm run package:win
+pnpm install --frozen-lockfile
+pnpm run package:win
 # Optional (PowerShell 7): install, smoke-test, and uninstall with a temporary profile.
 pwsh -File scripts/test-windows-installer.ps1
 ```
@@ -433,19 +449,19 @@ plugins does not enable shell execution.
 ### Local checks and macOS packaging
 
 ```sh
-npm run typecheck
-npm run format:check
-npm test
-npm run test:packaging
-npm run build
-npm run test:e2e
-npm run test:e2e:models
-npm run test:e2e:workspace
-npm run test:e2e:files
-npm run test:e2e:rich
-npm run test:e2e:plugins
-npm run test:e2e:navigation
-npm run package:dir
+pnpm run typecheck
+pnpm run format:check
+pnpm test
+pnpm run test:packaging
+pnpm run build
+pnpm run test:e2e
+pnpm run test:e2e:models
+pnpm run test:e2e:workspace
+pnpm run test:e2e:files
+pnpm run test:e2e:rich
+pnpm run test:e2e:plugins
+pnpm run test:e2e:navigation
+pnpm run package:dir
 ```
 
 `build` compiles the desktop JavaScript and renderer. `package:dir` additionally
@@ -457,7 +473,7 @@ bundle, including its nested helpers. The post-sign hook verifies the bundle wit
 invalid signature fails packaging; resources must not be changed after signing.
 Other platforms do not receive the macOS signing override.
 
-`npm run package` creates the configured distributable and does not force ad-hoc
+`pnpm run package` creates the configured distributable and does not force ad-hoc
 signing. macOS distribution requires a configured signing certificate (for example,
 Developer ID through electron-builder's signing configuration); missing signing
 credentials fail the build. Public distribution also requires the appropriate
@@ -493,7 +509,7 @@ application shutdown while a command has child processes. Command
 execution coverage currently requires macOS with the system sandbox available.
 
 For a packaged-app check, set `OPENHARNESS_E2E_EXECUTABLE` to the packaged
-executable and run `npm run test:e2e:packaged` for the CI smoke test, or
+executable and run `pnpm run test:e2e:packaged` for the CI smoke test, or
 `node tests/e2e/desktop.mjs` for the broader desktop flow.
 
 `test:e2e:rich` verifies streamed Markdown, code copying, image enlargement,
@@ -604,10 +620,10 @@ platform limits and standalone setup. From this directory, after preparing the
 browser, run:
 
 ```sh
-npm run test:browser
-npm run test:chrome
-npm run test:computer
-npm run test:e2e:computer
+pnpm run test:browser
+pnpm run test:chrome
+pnpm run test:computer
+pnpm run test:e2e:computer
 ```
 
 The browser tests operate real Chromium against local fixtures. The Electron
@@ -629,9 +645,9 @@ WinForms fixture is compiled separately and is never shipped in the installer.
 The fixture checks actual input effects and cleanup, not just successful tool
 responses. Linux has no native desktop executor.
 
-To check permissions for normal use, first run `npm run package:dir`, open the
+To check permissions for normal use, first run `pnpm run package:dir`, open the
 packaged app through Finder or `open`, and check its Computer Use card. Authorize
-that app through its permission buttons if needed. `npm run test:e2e:native` from
+that app through its permission buttons if needed. `pnpm run test:e2e:native` from
 this directory separately starts an app instance with temporary data and launches
 the fixture through that app's main process. macOS can attribute a directly
 spawned test process to the launching terminal or Codex, so this test alone does
@@ -644,9 +660,10 @@ requests system permissions automatically.
 ## Tools and skills
 
 The default project tool surface is `list_files`, `read_file`, `search_files`,
-`apply_patch` and `run_command`. Read-only projects expose only the first three;
-patches require write permission. Commands are available only when the system
-sandbox is supported and require approval. Creating, editing and deleting files
+`apply_patch`, `run_command`, `manage_command`, and `load_workspace_dependencies`.
+Read-only projects omit `apply_patch` and permit only read-only commands.
+Commands are available on macOS and Windows under their OS sandboxes; execution
+needs one-time approval or a matching session grant. Creating, editing and deleting files
 share one patch interface, with review and undo preserved.
 
 Open **插件** in the left rail. Use **安装插件** to choose a plugin folder
@@ -741,20 +758,153 @@ Image-bearing browser/computer tool observations are supported separately as des
 The attachment picker still imports UTF-8 snapshots; use the project tools for
 these document formats.
 
-`npm run test:e2e:extensions` exercises real Electron IPC, the Rust API, document
+`pnpm run test:e2e:extensions` exercises real Electron IPC, the Rust API, document
 fixtures, local Skills and a stateful stdio MCP peer. It covers settings CRUD,
 discovery, lazy loading, permissions, approvals, cancellation and restart. MCP
 and Skill enable/disable checks also inspect the actual provider tool schema on
 the next turn of an existing conversation. MCP crate tests additionally cover
 Streamable HTTP JSON/SSE and failure cleanup.
 
-`npm run test:e2e:plugins` verifies native directory/ZIP import, package enable and
+`pnpm run test:e2e:plugins` verifies native directory/ZIP import, package enable and
 disable, namespaced Skills, explicit MCP connection checks, update failure
 preservation, restart, and uninstall without removing standalone extensions.
 It uses temporary packages and a loopback MCP fixture; no external services or
 model API calls are required.
 
-`npm run test:e2e:memory` uses a loopback model fixture and an isolated desktop
+`pnpm run test:e2e:memory` uses a loopback model fixture and an isolated desktop
 data directory. It verifies automatic Wiki generation, event provenance, read-only
 inspection, disable/re-enable behavior, and persistence through unrelated settings
 saves and an application restart. No real provider API or user configuration is used.
+
+### Local script runtimes
+
+Real-model chats without a project receive their own persistent **会话文件** directory.
+The model writes temporary scripts under `.openharness-tmp/` and links results
+under `outputs/`; the composer can open this directory and message links preview
+or save generated files. Existing selected project permissions are unchanged.
+
+`run_command` returns after an initial wait (default 10 seconds) with a command ID
+if still running. It no longer imposes a 120-second execution deadline. Use
+`manage_command` to read output or stop; an optional `timeout_seconds` is a total
+deadline. The UI shows running jobs between turns and exposes **查看输出** / **停止**.
+These are background processes with captured output, not interactive terminals;
+stdin is closed and later input/PTY sessions are not supported. Commands with
+`access: "read_only"` may run in parallel, including in child tasks. Their OS
+sandbox permits writes only to a private command temporary directory, removed
+after exit; it keeps project files read-only. The project remains live while the
+command reads it. Only one workspace-write command mutates a workspace at a
+time, and it serializes with other workspace mutations. Conflicting write
+requests return busy and must be retried after the active write. Root and child
+tasks share a limit of eight active commands; pending approvals consume no active slot.
+Stopping the task or quitting
+stops its processes; history survives restart without replaying commands.
+
+`test:e2e:scripts` verifies this entire flow against a local model fixture and
+real interpreters: CSV/image previews, DOCX/PDF generation and readback, shared
+Python/Node library imports, pnpm availability, and stopping a job with a child
+process. It also checks that no conversation dependency environment is created,
+writable temporary files and, on macOS, rejection of writes to the shared runtime.
+Set `OPENHARNESS_E2E_EXECUTABLE` to test the packaged executable.
+
+The desktop exposes standalone Node 24.22.1 to `load_workspace_dependencies`.
+Its executable is `workspace-runtime/node/bin/node` on macOS/Linux and
+`workspace-runtime/node/node.exe` on Windows. It runs independently of Electron;
+use the returned absolute path. The runtime includes pnpm, `csv-parse`,
+`csv-stringify` and `pngjs`, in addition to Node's standard libraries. The npm CLI
+is not shipped. Renderer dependencies and browser plugins are not general script
+dependencies. Use the reported pnpm invocation, which includes standalone Node
+and the pnpm entry point. Discovery does not add a conversation-specific directory
+or store, and a missing bundled Node does not silently fall back to Electron or
+the user's system Node. The command environment prepends verified interpreter
+directories to `PATH`, so subprocesses can resolve the bundled `node` executable.
+CommonJS uses the supplied `NODE_PATH`; ESM can use `createRequire` with one of
+the reported module directories. Explicit project dependency work still follows
+the project's own toolchain and lockfile.
+
+Desktop builds also include an independent CPython distribution and a modest set
+of preinstalled libraries: Pillow, python-docx, python-pptx, openpyxl, XlsxWriter,
+pypdf, reportlab, NumPy, pandas and Matplotlib. CSV/JSON and basic statistics can
+still use Python's standard library. Choose Python or Node based on the task,
+not a blanket language preference. Discovery probes the installed runtime with
+`-I -B`, reports actual versions and never downloads or installs packages at app
+startup. It does not borrow another application's runtime. System Python is an
+explicit fallback through `OPENHARNESS_PYTHON_BINARY` or
+`OPENHARNESS_ALLOW_SYSTEM_PYTHON=1`, rather than a silent dependency on the user.
+
+Build-time provisioning uses SHA-256-pinned official Node and
+python-build-standalone archives, hash-locked prebuilt PyPI wheels and a pnpm
+lockfile. Versions and hashes live in `scripts/workspace-runtime-node.mjs`,
+`scripts/workspace-runtime-bundle.mjs` and `scripts/workspace-runtime/`. Downloads
+and package caches stay in `resources/workspace-runtime-cache/`; only the staged
+`resources/workspace-runtime/` is shipped. Relocation and import probes run before
+atomic replacement. Licenses and a provenance notice accompany the runtime.
+Bundled Node dependencies use pnpm's hoisted layout with copied package files,
+so Windows junctions do not point back into the build cache. Packaging continues
+to reject absolute or escaping links instead of relaxing the runtime boundary.
+
+An offline distributor can instead set `OPENHARNESS_PYTHON_RUNTIME_DIR` to an
+absolute, relocatable Python payload before building. It must include the listed
+libraries, pip and venv, with `bin/python3` on macOS/Linux or `python.exe` on
+Windows. The source remains untouched; the build validates the staged copy and
+rejects escaping symlinks. Packaging never copies the builder's system Python.
+`OPENHARNESS_NODE_RUNTIME_DIR` similarly accepts an absolute, relocatable Node
+22+ distribution containing `bin/node` (macOS/Linux) or `node.exe` (Windows),
+plus `LICENSE`. Only the independent executable and license are copied; pnpm and
+JavaScript libraries come from the lockfile. The build checks version, platform
+and architecture after copying. Neither override modifies the supplied source.
+
+All conversations use the same application-managed Python, Node and preinstalled
+libraries. The loader only reports that shared inventory: it does not create a
+venv, install packages, change package-manager directories or automatically select
+a conversation-specific interpreter. The shared Python has an `EXTERNALLY-MANAGED`
+marker, and scripts must not modify the bundled libraries or install globally.
+
+Commands start with a cleared environment and retain allowlisted host environment
+values, including the user's home and application-data locations. They no longer
+allocate a home, pip cache, pnpm store or uv environment for each conversation.
+Workspace-write commands use a writable directory inside `.openharness-tmp/`.
+Read-only commands instead use a private OS temporary directory and remove it
+after process teardown; they do not create scratch files in the project.
+`TMPDIR`/`TMP`/`TEMP` and Matplotlib's cache point to writable command scratch
+space. These temporary directories hold working files, not copies of the shared
+Python/Node installations or per-conversation dependency environments.
+
+Prefer the shared libraries. If extra dependencies are necessary, create or use
+an explicit project or temporary environment through an approved command. The
+loader continues to report the shared base; invoke the explicitly chosen
+environment directly. Project dependency work follows the project's own toolchain
+and lockfile. Package-manager cache/store locations follow their normal settings
+unless the command explicitly overrides them; those locations do not receive
+additional filesystem permissions merely because a package manager uses them.
+
+Directories from the previous `.openharness-tmp/tasks/<stable-id>/` layout are
+preserved, but are no longer created or automatically loaded. Existing files and
+deliverables under `outputs/` are retained across turns and restarts.
+
+Runtime sharing and temporary directories are not a security sandbox. macOS
+commands use Seatbelt; Windows commands use AppContainer plus Job Objects. Both
+default to blocked networking. A command can request `network_access: "allowed"`
+for explicit approval, while retaining filesystem restrictions. A one-time grant
+covers that command and its subprocesses. The user can instead choose
+**本会话同范围允许** for subsequent commands within the same scope, shared by the
+root task and its children. The command panel shows those grants and
+**撤销会话授权** restores approval for future commands without stopping ones that
+were already approved. Grants are in memory only and disappear after restart.
+They never bypass a read-only project or a child's file ownership. Shared
+runtimes remain read-only; extra dependencies must use a writable project or
+workspace environment.
+
+Windows packages include `openharness-sandbox.exe` next to `api.exe`; the main
+process supplies its absolute path via `OPENHARNESS_WINDOWS_SANDBOX_HELPER`.
+If the helper is missing or isolation setup fails, execution stops rather than
+falling back to ordinary PowerShell. Existing protected objects receive ACL
+denials; Windows ACLs do not provide Seatbelt's future-filename pattern rules.
+AppContainer Internet/LAN capabilities also do not exempt localhost loopback
+isolation. These native behaviors are tested in the Windows CI job; a macOS
+cross-compile alone does not establish Windows runtime correctness.
+
+The host stores the discovered runtime manifest outside conversation workspaces
+and passes its path to the backend through `OPENHARNESS_WORKSPACE_RUNTIME_MANIFEST`.
+Only host-discovered executable/library directories extend the command sandbox's
+read access. Runtime discovery does not grant filesystem writes, network access,
+or execution permission by itself.

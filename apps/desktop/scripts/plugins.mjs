@@ -2,12 +2,17 @@ import { spawnSync } from 'node:child_process'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { stagePluginResources } from './plugin-resources.mjs'
+import { stageManagedWorkspaceRuntime } from './workspace-runtime.mjs'
 
 const desktop = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const source = resolve(desktop, '../../plugins')
+await stageManagedWorkspaceRuntime({
+  source: process.env.OPENHARNESS_PYTHON_RUNTIME_DIR,
+  destination: resolve(desktop, 'resources/workspace-runtime'),
+})
 if (process.platform === 'win32') {
   // Reuse the static-CRT build configuration. Cargo's incremental check keeps
-  // standalone `npm run build` and development launches current without building
+  // standalone `pnpm run build` and development launches current without building
   // the API or relying on a system Node.js installation in the shipped app.
   const build = spawnSync(
     process.execPath,

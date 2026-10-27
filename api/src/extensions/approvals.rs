@@ -18,6 +18,10 @@ pub struct ExtensionApproval {
     pub operation: String,
     pub arguments: Value,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_run_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task_title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub session_scope: Option<super::control::ControlScope>,
 }
 

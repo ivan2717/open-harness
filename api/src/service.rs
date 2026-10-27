@@ -89,7 +89,7 @@ struct RunEntry {
     workspace: Option<agent_local::LocalTools>,
     workspace_error: Option<String>,
     snapshot: Snapshot,
-    operations: Mutex<()>,
+    operations: Arc<Mutex<()>>,
 }
 
 impl AppState {
@@ -230,6 +230,10 @@ impl AppState {
                 || entry.runtime.is_executing(&detail.summary.id)
                 || detail.summary.compacting
                 || detail.summary.status == RunStatus::Running
+                || entry
+                    .workspace
+                    .as_ref()
+                    .is_some_and(|workspace| workspace.commands_running())
             {
                 return Err(ServiceError::Conflict(
                     "此模型仍有运行或压缩任务，请等待结束后更新配置".into(),
@@ -314,10 +318,54 @@ impl AppState {
         restore_saved_reasoning: bool,
     ) -> io::Result<Arc<RunEntry>> {
         let id = detail.summary.id.clone();
+        let operations = self
+            .inner
+            .runs
+            .read()
+            .expect("runs lock poisoned")
+            .get(&id)
+            .map_or_else(
+                || Arc::new(Mutex::new(())),
+                |entry| entry.operations.clone(),
+            );
         let child = detail.summary.delegation.is_some();
+        let authorization_scope = detail
+            .summary
+            .delegation
+            .as_ref()
+            .map_or_else(|| id.clone(), |delegation| delegation.root_run_id.clone());
         let max_steps = detail.summary.execution_policy.max_steps;
         let model_history_through = detail.summary.model_history_through;
         let demo = detail.summary.model_id == MODEL_ID;
+        if !demo && detail.summary.workspace_path.is_none() {
+            let owner = detail
+                .summary
+                .delegation
+                .as_ref()
+                .map_or(id.as_str(), |delegation| delegation.root_run_id.as_str());
+            if !valid_id(owner) {
+                return Err(io::Error::other("invalid conversation workspace owner"));
+            }
+            detail.summary.execution_directory.get_or_insert_with(|| {
+                self.inner
+                    .directory
+                    .join("session-files")
+                    .join(owner)
+                    .display()
+                    .to_string()
+            });
+            if !child {
+                detail.summary.permission_mode = agent_local::PermissionMode::WorkspaceWrite;
+            }
+            if let Some(snapshot) = &existing
+                && snapshot.get().summary.execution_directory != detail.summary.execution_directory
+            {
+                snapshot.update(|saved| {
+                    saved.summary.execution_directory = detail.summary.execution_directory.clone();
+                    saved.summary.permission_mode = detail.summary.permission_mode;
+                })?;
+            }
+        }
         let ask = detail.summary.prompt.trim_start().starts_with("/ask");
         let model = if demo {
             ServiceModel::Demo(Arc::new(DemoModel::new(round, ask, self.inner.delay)))
@@ -372,7 +420,7 @@ impl AppState {
         agent.instructions.push_str("\n\n");
         agent
             .instructions
-            .push_str(collaboration::instructions(child));
+            .push_str(&collaboration::instructions(&detail.summary));
         let project = detail.summary.workspace_path.as_ref().map(PathBuf::from);
         let snapshot = match existing {
             Some(snapshot) => snapshot,
@@ -412,7 +460,8 @@ impl AppState {
                         id.clone(),
                         project,
                         workspace.clone(),
-                    ),
+                    )
+                    .with_authorization_scope(&authorization_scope),
                     child,
                 )))
             },
@@ -437,7 +486,7 @@ impl AppState {
             workspace,
             workspace_error,
             snapshot,
-            operations: Mutex::new(()),
+            operations,
         }))
     }
     pub async fn create(&self, input: CreateRunInput) -> Result<RunDetail, ServiceError> {
@@ -467,6 +516,7 @@ impl AppState {
                 status: RunStatus::Running,
                 model_id: input.model_id,
                 workspace_path,
+                execution_directory: None,
                 permission_mode: input.permission_mode,
                 created_at: now.clone(),
                 updated_at: now,
@@ -541,7 +591,7 @@ impl AppState {
             ));
         }
         Self::require_workspace_available(&entry)?;
-        if let Some(path) = &entry.snapshot.get().summary.workspace_path {
+        if let Some(path) = entry.snapshot.get().summary.working_directory() {
             self.ensure_workspace_idle(path, Some(id))?;
         }
         if entry.snapshot.get().summary.compacting {
@@ -705,6 +755,9 @@ impl AppState {
             .cloned()
             .collect();
         futures_util::future::join_all(entries.iter().map(|entry| async move {
+            if let Some(workspace) = &entry.workspace {
+                workspace.cancel_commands();
+            }
             let _operation = entry.operations.lock().await;
             let detail = entry.snapshot.get();
             let id = &detail.summary.id;
@@ -738,6 +791,13 @@ impl AppState {
         }) {
             if changed.changed().await.is_err() {
                 break;
+            }
+        }
+        for entry in &entries {
+            if let Some(workspace) = &entry.workspace
+                && let Err(error) = workspace.cancel_commands_and_wait().await
+            {
+                tracing::error!(%error, "could not finish command cleanup during shutdown");
             }
         }
         self.inner.extensions.shutdown().await;

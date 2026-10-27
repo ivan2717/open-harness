@@ -159,6 +159,8 @@ async fn approval_cannot_cross_runs_or_upgrade_an_unscoped_operation() {
                     server_name: "Fixture".into(),
                     operation: "computer_status".into(),
                     arguments: json!({}),
+                    source_run_id: None,
+                    task_title: None,
                     session_scope: None,
                 },
             )
@@ -242,7 +244,11 @@ for line in sys.stdin:
     elif method=='tools/list':
         result={'tools':[{'name':'computer_select_app','description':'Fixture selection','inputSchema':{'type':'object'}}]}
     elif method=='tools/call':
-        pathlib.Path(marker).write_text('called')
+        if mode=='serialized':
+            with open(marker,'a') as output: output.write('start\n')
+            time.sleep(0.1)
+            with open(marker,'a') as output: output.write('end\n')
+        else: pathlib.Path(marker).write_text('called')
         if mode=='hang': time.sleep(30)
         result={'isError': mode=='error','content':[{'type':'text','text':'fixture app selection refused' if mode=='error' else 'selected'}]}
         if req['params']['name']=='chrome_open' and mode.startswith('open_'):
@@ -363,6 +369,13 @@ fn chrome_layout_identity_is_host_bound_and_never_saved_to_server_configuration(
     let installed = host.install_plugin(&source, None).unwrap();
     let original = &installed.plugins[0].mcp_servers[0];
     let first = host.connection_config("run-a", original);
+    ExtensionTools::new(host.clone(), "child-a".into(), None, None)
+        .with_authorization_scope("run-a");
+    let child = host.connection_config("child-a", original);
+    assert_eq!(
+        serde_json::to_value(&first).unwrap(),
+        serde_json::to_value(&child).unwrap()
+    );
     let second = host.connection_config("run-b", original);
     let McpTransport::Stdio { args, .. } = &first.transport else {
         panic!("stdio expected")
@@ -917,6 +930,152 @@ async fn abandoned_selection_cannot_revoke_a_replacement_grant() {
             .unwrap()
             .acquire_desktop("run-b")
             .is_ok()
+    );
+    host.shutdown().await;
+}
+
+#[tokio::test]
+async fn children_inherit_only_successful_session_grants_and_keep_independent_clients() {
+    let fixture = Fixture::new();
+    let bundled = fixture.0.join("bundled");
+    let source = control_package(&bundled, "computer-use", "ok", &fixture.0.join("called"));
+    let host = ExtensionHost::open_with_bundled(&fixture.0.join("state"), Some(bundled)).unwrap();
+    let installed = host.install_plugin(&source, None).unwrap();
+    let server = &installed.plugins[0].mcp_servers[0].id;
+    for run in ["child-a", "child-b"] {
+        ExtensionTools::new(host.clone(), run.into(), None, None).with_authorization_scope("root");
+    }
+
+    let parent = select_task(host.clone(), "root", server);
+    let approval = pending_control(&host, "root").await;
+    host.approvals.decide("root", &approval.id, true).unwrap();
+    complete_control(parent).await.unwrap();
+    // A one-shot selection does not propagate authority to another agent.
+    let child = select_task(host.clone(), "child-a", server);
+    let approval = pending_control(&host, "child-a").await;
+    host.approvals
+        .decide("child-a", &approval.id, false)
+        .unwrap();
+    assert!(complete_control(child).await.is_err());
+
+    let parent = select_task(host.clone(), "root", server);
+    let approval = pending_control(&host, "root").await;
+    host.approvals
+        .decide_scoped("root", &approval.id, true, true)
+        .unwrap();
+    complete_control(parent).await.unwrap();
+    for run in ["child-a", "child-b"] {
+        complete_control(select_task(host.clone(), run, server))
+            .await
+            .unwrap();
+        assert!(host.approvals.list(run).is_empty());
+    }
+    assert_eq!(host.clients.read().unwrap().len(), 3);
+    let config = host.server(server).unwrap();
+    let binding = serde_json::to_string(&config).unwrap();
+    let child_client = host.client("child-a", &config).unwrap();
+    host.revoke_run("child-a");
+    assert!(
+        host.controls
+            .lock()
+            .unwrap()
+            .permits("root", server, &binding, Some(&app_scope()))
+    );
+    assert!(
+        host.clients
+            .read()
+            .unwrap()
+            .contains_key(&("root".into(), server.clone()))
+    );
+    assert!(
+        child_client
+            .discover()
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("revoked")
+    );
+    // Other roots cannot reuse this permission.
+    let outside = select_task(host.clone(), "outside", server);
+    let approval = pending_control(&host, "outside").await;
+    host.approvals
+        .decide("outside", &approval.id, false)
+        .unwrap();
+    assert!(complete_control(outside).await.is_err());
+    let sibling = host.client("child-b", &config).unwrap();
+    let epoch = host.controls.lock().unwrap().epoch("child-b");
+    host.revoke_run("root");
+    assert!(
+        host.controls
+            .lock()
+            .unwrap()
+            .check_epoch("child-b", epoch)
+            .is_err()
+    );
+    assert!(!host.controls.lock().unwrap().permits(
+        "child-b",
+        server,
+        &binding,
+        Some(&app_scope())
+    ));
+    assert!(
+        sibling
+            .discover()
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("revoked")
+    );
+    assert!(host.clients.read().unwrap().is_empty());
+    host.shutdown().await;
+}
+
+#[tokio::test]
+async fn computer_actions_of_sibling_agents_are_serialized() {
+    let fixture = Fixture::new();
+    let marker = fixture.0.join("operations");
+    let bundled = fixture.0.join("bundled");
+    let source = control_package(&bundled, "computer-use", "serialized", &marker);
+    let host = ExtensionHost::open_with_bundled(&fixture.0.join("state"), Some(bundled)).unwrap();
+    let installed = host.install_plugin(&source, None).unwrap();
+    let server = &installed.plugins[0].mcp_servers[0].id;
+    for run in ["child-a", "child-b"] {
+        ExtensionTools::new(host.clone(), run.into(), None, None).with_authorization_scope("root");
+    }
+    grant(&host, "root", server, app_scope());
+    let first = select_task(host.clone(), "child-a", server);
+    let second = select_task(host.clone(), "child-b", server);
+    complete_control(first).await.unwrap();
+    complete_control(second).await.unwrap();
+    assert_eq!(
+        fs::read_to_string(marker).unwrap(),
+        "start\nend\nstart\nend\n"
+    );
+    host.shutdown().await;
+}
+
+#[tokio::test]
+async fn failed_child_selection_never_leaks_a_family_session_grant() {
+    let fixture = Fixture::new();
+    let bundled = fixture.0.join("bundled");
+    let source = control_package(&bundled, "computer-use", "error", &fixture.0.join("called"));
+    let host = ExtensionHost::open_with_bundled(&fixture.0.join("state"), Some(bundled)).unwrap();
+    let installed = host.install_plugin(&source, None).unwrap();
+    let server = &installed.plugins[0].mcp_servers[0].id;
+    ExtensionTools::new(host.clone(), "child".into(), None, None).with_authorization_scope("root");
+    let child = select_task(host.clone(), "child", server);
+    let approval = pending_control(&host, "child").await;
+    host.approvals
+        .decide_scoped("child", &approval.id, true, true)
+        .unwrap();
+    assert!(complete_control(child).await.is_err());
+    let binding = serde_json::to_string(&host.server(server).unwrap()).unwrap();
+    assert!(
+        !host
+            .controls
+            .lock()
+            .unwrap()
+            .permits("root", server, &binding, Some(&app_scope()))
     );
     host.shutdown().await;
 }

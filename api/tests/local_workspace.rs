@@ -178,6 +178,14 @@ async fn real_provider_transport_edits_reviews_restores_and_conditionally_revert
         "user's existing edit\nanswer = 42\n"
     );
     let review = state.workspace_review(&id).await.unwrap();
+    #[cfg(windows)]
+    {
+        assert!(
+            review.sandbox_available,
+            "Windows CI must exercise the sandbox helper"
+        );
+        assert_eq!(review.execution_mode, "sandboxed");
+    }
     assert_eq!(review.changes.len(), 1);
     assert!(review.changes[0].revertible);
     assert_eq!(
@@ -200,8 +208,10 @@ async fn real_provider_transport_edits_reviews_restores_and_conditionally_revert
         "session_memory",
         "spawn_agent",
     ];
-    if review.sandbox_available {
+    if review.execution_mode != "unavailable" {
         expected_tools.push("run_command");
+        expected_tools.push("manage_command");
+        expected_tools.push("load_workspace_dependencies");
     }
     expected_tools.sort();
     assert_eq!(tool_names, expected_tools);
@@ -423,4 +433,109 @@ async fn snapshot_failure_does_not_lose_the_authoritative_resume_event() {
         fs::read_to_string(fixture.project.join("answer.txt")).unwrap(),
         "user's existing edit\nanswer = 41\n"
     );
+}
+
+#[tokio::test]
+async fn ordinary_chats_get_distinct_persistent_workspaces_without_becoming_projects() {
+    let fixture = Fixture::new().await;
+    let state = fixture.state().await;
+    let model_id = fixture.configure(&state).await;
+    let mut input = fixture.input(model_id.clone(), PermissionMode::ReadOnly);
+    input.workspace_path = None;
+    let first = state.create(input).await.unwrap();
+    let id = first.summary.id;
+    let first = settled(&state, &id).await;
+    assert!(first.summary.workspace_path.is_none());
+    let directory = PathBuf::from(first.summary.execution_directory.as_ref().unwrap());
+    assert_eq!(directory.file_name().unwrap().to_str(), Some(id.as_str()));
+    assert!(directory.ends_with(PathBuf::from("session-files").join(&id)));
+    assert_eq!(
+        first.summary.permission_mode,
+        PermissionMode::WorkspaceWrite
+    );
+    assert_eq!(
+        state.workspace_review(&id).await.unwrap().root,
+        directory.display().to_string()
+    );
+    fs::create_dir(directory.join("outputs")).unwrap();
+    fs::write(directory.join("outputs/result.csv"), "count\n42\n").unwrap();
+
+    let mut input = fixture.input(model_id, PermissionMode::ReadOnly);
+    input.workspace_path = None;
+    let second = state.create(input).await.unwrap();
+    let second = settled(&state, &second.summary.id).await;
+    let second_directory = PathBuf::from(second.summary.execution_directory.unwrap());
+    assert_ne!(directory, second_directory);
+    assert!(!second_directory.join("outputs/result.csv").exists());
+    assert!(
+        state
+            .list()
+            .iter()
+            .all(|summary| summary.workspace_path.is_none())
+    );
+    state.shutdown().await;
+    drop(state);
+
+    // A legacy no-project snapshot is migrated using a host-selected path.
+    let snapshot = fixture
+        .directory
+        .join("state/runs")
+        .join(format!("{id}.json"));
+    let mut saved: Value = serde_json::from_slice(&fs::read(&snapshot).unwrap()).unwrap();
+    saved.as_object_mut().unwrap().remove("execution_directory");
+    saved["permission_mode"] = json!("read_only");
+    fs::write(&snapshot, serde_json::to_vec(&saved).unwrap()).unwrap();
+    let reopened = fixture.state().await;
+    assert_eq!(
+        reopened
+            .get(&id)
+            .unwrap()
+            .summary
+            .execution_directory
+            .as_deref(),
+        directory.to_str()
+    );
+    assert_eq!(
+        fs::read_to_string(directory.join("outputs/result.csv")).unwrap(),
+        "count\n42\n"
+    );
+    assert!(reopened.revert_file(&id, "../unrelated").await.is_err());
+    reopened.shutdown().await;
+}
+
+#[tokio::test]
+async fn managed_directory_is_host_owned_and_cannot_be_rebound_to_another_conversation() {
+    assert!(
+        serde_json::from_value::<CreateRunInput>(json!({
+            "prompt":"run a script", "model_id":"real", "execution_directory":"/arbitrary"
+        }))
+        .is_err()
+    );
+    let fixture = Fixture::new().await;
+    let state = fixture.state().await;
+    let model_id = fixture.configure(&state).await;
+    let mut input = fixture.input(model_id, PermissionMode::ReadOnly);
+    input.workspace_path = None;
+    let first = state.create(input).await.unwrap();
+    let id = first.summary.id;
+    settled(&state, &id).await;
+    state.shutdown().await;
+    drop(state);
+    let snapshot = fixture
+        .directory
+        .join("state/runs")
+        .join(format!("{id}.json"));
+    let mut saved: Value = serde_json::from_slice(&fs::read(&snapshot).unwrap()).unwrap();
+    saved["execution_directory"] = json!(fixture.project);
+    fs::write(&snapshot, serde_json::to_vec(&saved).unwrap()).unwrap();
+    let reopened = fixture.state().await;
+    fixture.configure(&reopened).await;
+    assert!(reopened.get(&id).is_ok());
+    assert!(reopened.workspace_review(&id).await.is_err());
+    assert!(reopened.resume(&id, None).await.is_err());
+    assert_eq!(
+        fs::read_to_string(fixture.project.join("answer.txt")).unwrap(),
+        "user's existing edit\nanswer = 41\n"
+    );
+    reopened.shutdown().await;
 }

@@ -64,6 +64,47 @@ fn write(path: &str, expected: Option<&str>, content: &str) -> ToolCall {
 }
 
 #[tokio::test]
+async fn inherited_workspace_permissions_allow_edits_but_respect_parent_ceiling_and_peer_leases() {
+    let fixture = Fixture::new();
+    let child = fixture.tools("inheriting-child", None, PermissionMode::WorkspaceWrite);
+    let reader = fixture.tools("read-only-parent-child", None, PermissionMode::ReadOnly);
+    child
+        .execute(write("result.txt", None, "first"))
+        .await
+        .unwrap();
+    assert_eq!(fixture.text("result.txt"), "first");
+    assert_eq!(child.review().unwrap().changes[0].path, "result.txt");
+    assert!(
+        reader
+            .execute(write("result.txt", Some("first"), "invalid"))
+            .await
+            .is_err()
+    );
+
+    fixture
+        .access
+        .acquire("peer", &strings(&["result.txt"]))
+        .await
+        .unwrap();
+    assert!(
+        child
+            .execute(write("result.txt", Some("first"), "invalid"))
+            .await
+            .is_err()
+    );
+    child
+        .execute(write("other.txt", None, "allowed"))
+        .await
+        .unwrap();
+    fixture.access.release("peer").await;
+    child
+        .execute(write("result.txt", Some("first"), "second"))
+        .await
+        .unwrap();
+    assert_eq!(fixture.text("result.txt"), "second");
+}
+
+#[tokio::test]
 async fn delegates_write_only_exact_leased_files_and_parent_respects_reservations() {
     let fixture = Fixture::new();
     fs::write(fixture.root.join("a.txt"), "a").unwrap();
@@ -118,6 +159,57 @@ async fn delegates_write_only_exact_leased_files_and_parent_respects_reservation
         .await
         .unwrap();
     assert_eq!(fixture.text("a.txt"), "parent");
+}
+
+#[tokio::test]
+async fn scope_errors_identify_exact_files_owner_and_recovery_without_widening_access() {
+    let fixture = Fixture::new();
+    // A not-yet-created extensionless path can be a valid filename. It must
+    // remain exact, and a mistaken directory scope must produce useful advice.
+    let child = fixture.tools(
+        "worker",
+        Some(&[".openharness-tmp"]),
+        PermissionMode::WorkspaceWrite,
+    );
+    fixture
+        .access
+        .acquire("worker", &strings(&[".openharness-tmp"]))
+        .await
+        .unwrap();
+    let error = child
+        .execute(write(".openharness-tmp/task.js", None, "run();"))
+        .await
+        .unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+    let message = error.to_string();
+    for fragment in [
+        "worker",
+        ".openharness-tmp",
+        "exact files",
+        "directory children",
+        "resume",
+        "null",
+    ] {
+        assert!(message.contains(fragment), "{message}");
+    }
+    assert!(!fixture.root.join(".openharness-tmp/task.js").exists());
+    assert!(child.review().unwrap().changes.is_empty());
+
+    let parent = fixture.tools("parent", None, PermissionMode::WorkspaceWrite);
+    let error = parent
+        .execute(write(".openharness-tmp/task.js", None, "run();"))
+        .await
+        .unwrap_err();
+    let message = error.to_string();
+    for fragment in ["reserved", "worker", ".openharness-tmp", "cleanup"] {
+        assert!(message.contains(fragment), "{message}");
+    }
+    fixture.access.release("worker").await;
+    parent
+        .execute(write(".openharness-tmp/task.js", None, "run();"))
+        .await
+        .unwrap();
+    assert_eq!(fixture.text(".openharness-tmp/task.js"), "run();");
 }
 
 #[tokio::test]
@@ -363,7 +455,7 @@ async fn restrictions_cover_legacy_tools_revert_and_original_permission_mode() {
         reader
             .definitions()
             .iter()
-            .all(|tool| !matches!(tool.name.as_str(), "apply_patch" | "run_command"))
+            .all(|tool| tool.name != "apply_patch")
     );
     assert!(
         reader
@@ -374,23 +466,26 @@ async fn restrictions_cover_legacy_tools_revert_and_original_permission_mode() {
 }
 
 #[tokio::test]
-async fn commands_are_never_allowed_for_delegates_or_while_a_write_lease_exists() {
+async fn workspace_write_commands_remain_forbidden_for_file_scoped_delegates_or_active_leases() {
     let fixture = Fixture::new();
     let parent = fixture.tools("parent", None, PermissionMode::WorkspaceWrite);
     let child = fixture.tools("child", Some(&["a.txt"]), PermissionMode::WorkspaceWrite);
-    assert!(
+    assert_eq!(
         child
             .definitions()
             .iter()
-            .all(|tool| tool.name != "run_command")
+            .any(|tool| tool.name == "run_command"),
+        child.review().unwrap().sandbox_available,
+        "file-scoped delegates may discover the tool, but only its read-only sandbox access"
     );
     assert!(
         child
-            .execute(call("run_command", json!({"command":"echo unsafe"})))
+            .execute(call(
+                "run_command",
+                json!({"command":"echo unsafe", "access":"workspace_write"})
+            ))
             .await
-            .unwrap_err()
-            .to_string()
-            .contains("delegated runs")
+            .is_err()
     );
     fixture
         .access
@@ -399,18 +494,19 @@ async fn commands_are_never_allowed_for_delegates_or_while_a_write_lease_exists(
         .unwrap();
     assert!(
         parent
-            .execute(call("run_command", json!({"command":"echo unsafe"})))
+            .execute(call(
+                "run_command",
+                json!({"command":"echo unsafe", "access":"workspace_write"})
+            ))
             .await
-            .unwrap_err()
-            .to_string()
-            .contains("delegated file writes")
+            .is_err()
     );
     assert!(parent.review().unwrap().approvals.is_empty());
     assert!(parent.review().unwrap().commands.is_empty());
 }
 
 #[tokio::test]
-async fn cancelling_a_waiting_lease_and_command_releases_coordination_without_deadlock() {
+async fn pending_command_approval_does_not_block_file_leases_or_leave_locks_after_cancel() {
     let fixture = Fixture::new();
     let parent = fixture.tools("parent", None, PermissionMode::WorkspaceWrite);
     if !parent.review().unwrap().sandbox_available {
@@ -432,27 +528,20 @@ async fn cancelling_a_waiting_lease_and_command_releases_coordination_without_de
     })
     .await
     .unwrap();
-    assert_eq!(
-        fixture
-            .access
-            .try_acquire("non-waiting-child", &strings(&["a.txt"]))
-            .unwrap_err()
-            .kind(),
-        io::ErrorKind::WouldBlock
+    fixture
+        .access
+        .try_acquire("early-child", &strings(&["a.txt"]))
+        .unwrap();
+    let early = fixture.tools(
+        "early-child",
+        Some(&["a.txt"]),
+        PermissionMode::WorkspaceWrite,
     );
-    let access = fixture.access.clone();
-    let lease = tokio::spawn(async move {
-        access
-            .acquire("cancelled-child", &strings(&["a.txt"]))
-            .await
-    });
-    tokio::time::sleep(Duration::from_millis(20)).await;
-    assert!(
-        !lease.is_finished(),
-        "a command must retain its workspace operation lock while awaiting approval"
-    );
-    lease.abort();
-    assert!(lease.await.unwrap_err().is_cancelled());
+    early
+        .execute(write("a.txt", None, "while awaiting approval"))
+        .await
+        .unwrap();
+    fixture.access.release("early-child").await;
     command.abort();
     assert!(command.await.unwrap_err().is_cancelled());
     assert!(parent.review().unwrap().approvals.is_empty());
@@ -469,7 +558,11 @@ async fn cancelling_a_waiting_lease_and_command_releases_coordination_without_de
         PermissionMode::WorkspaceWrite,
     );
     child
-        .execute(write("a.txt", None, "child result"))
+        .execute(write(
+            "a.txt",
+            Some("while awaiting approval"),
+            "child result",
+        ))
         .await
         .unwrap();
     fixture.access.release("next-child").await;

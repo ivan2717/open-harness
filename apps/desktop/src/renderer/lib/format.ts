@@ -41,11 +41,14 @@ export function toolOutcome(message: ChatMessage): { label: string; failed: bool
   if (message.status === 'pending' || message.status === 'streaming')
     return { label: '执行中', failed: false }
   if (message.is_error) return { label: '失败', failed: true }
-  if (message.tool_name === 'run_command') {
+  if (message.tool_name === 'run_command' || message.tool_name === 'manage_command') {
     try {
       const result: unknown = JSON.parse(message.text)
       if (result && typeof result === 'object' && !Array.isArray(result)) {
         const { status, exit_code } = result as { status?: unknown; exit_code?: unknown }
+        if (status === 'running') return { label: '执行中', failed: false }
+        if (status === 'awaiting_approval') return { label: '待批准', failed: false }
+        if (status === 'denied') return { label: '已拒绝', failed: true }
         if (status === 'timed_out') return { label: '已超时', failed: true }
         if (status === 'cancelled') return { label: '已停止', failed: true }
         if (status === 'failed' || (typeof exit_code === 'number' && exit_code !== 0))

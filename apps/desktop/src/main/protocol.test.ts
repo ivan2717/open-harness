@@ -65,6 +65,12 @@ describe('desktop bridge request boundary', () => {
     ).toThrow()
   })
   it('confines approval and revert requests to fixed routes and relative files', () => {
+    expect(apiRequest({ operation: 'stopCommand', id: 'run-1', commandId: 'cmd-2' })).toEqual({
+      path: '/api/runs/run-1/workspace/commands/cmd-2/stop',
+      method: 'POST',
+    })
+    for (const commandId of ['../cmd-2', '/cancel', '', null])
+      expect(() => apiRequest({ operation: 'stopCommand', id: 'run-1', commandId })).toThrow()
     expect(
       apiRequest({ operation: 'approveCommand', id: 'run-1', approvalId: 'cmd-2', allow: false }),
     ).toEqual({
@@ -103,6 +109,39 @@ describe('desktop bridge request boundary', () => {
         .body,
     ).toEqual({ message: 'Check current files first' })
     expect(() => apiRequest({ operation: 'resumeRun', id: 'run-1', message: '' })).toThrow()
+  })
+  it('validates command approval scope and exposes only the fixed revocation route', () => {
+    for (const scope of ['once', 'session']) {
+      expect(
+        apiRequest({
+          operation: 'approveCommand',
+          id: 'task',
+          approvalId: 'command',
+          allow: true,
+          scope,
+        }),
+      ).toEqual({
+        path: '/api/runs/task/approvals/command',
+        method: 'POST',
+        body: { allow: true, scope },
+      })
+    }
+    for (const scope of ['forever', '', true, null, {}, ['session']]) {
+      expect(() =>
+        apiRequest({
+          operation: 'approveCommand',
+          id: 'task',
+          approvalId: 'command',
+          allow: true,
+          scope,
+        }),
+      ).toThrow('Invalid approval scope')
+    }
+    expect(apiRequest({ operation: 'revokeCommandGrants', id: 'task' })).toEqual({
+      path: '/api/runs/task/workspace/command-grants/revoke',
+      method: 'POST',
+    })
+    expect(() => apiRequest({ operation: 'revokeCommandGrants', id: '../task' })).toThrow()
   })
   it('changes conversation model settings through a fixed validated route', () => {
     expect(

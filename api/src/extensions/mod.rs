@@ -100,6 +100,8 @@ pub struct ExtensionHost {
     clients: RwLock<HashMap<(String, String), CachedClient>>,
     pub approvals: Arc<approvals::ApprovalQueue>,
     controls: Mutex<control::ControlRegistry>,
+    /// UI input is a single shared device, even inside a delegated task family.
+    desktop_operation: tokio::sync::Mutex<()>,
     pub(crate) memory: crate::memory::MemoryStore,
     pub(crate) memory_errors: RwLock<HashMap<String, String>>,
 }
@@ -141,6 +143,7 @@ impl ExtensionHost {
             clients: RwLock::default(),
             approvals: Arc::default(),
             controls: Mutex::default(),
+            desktop_operation: tokio::sync::Mutex::new(()),
             memory,
             memory_errors: RwLock::default(),
         }))
@@ -410,7 +413,14 @@ impl ExtensionHost {
         if self.control_plugin(&server.id).as_deref() == Some("chrome-use")
             && let agent_mcp::McpTransport::Stdio { args, .. } = &mut connection.transport
         {
-            args.extend(["--task-id".into(), run.into()]);
+            args.extend([
+                "--task-id".into(),
+                self.controls
+                    .lock()
+                    .unwrap()
+                    .authorization_scope(run)
+                    .into(),
+            ]);
         }
         connection
     }
@@ -434,10 +444,17 @@ impl ExtensionHost {
     pub fn revoke_run(&self, run: &str) {
         // Same order as authorization: control registry -> client cache.
         let mut controls = self.controls.lock().unwrap();
+        let members = if controls.authorization_scope(run) == run {
+            controls.family_members(run)
+        } else {
+            vec![run.into()]
+        };
         controls.revoke_run(run);
-        self.approvals.clear_run(run);
+        for member in &members {
+            self.approvals.clear_run(member);
+        }
         self.clients.write().unwrap().retain(|(owner, _), cached| {
-            if owner == run {
+            if members.contains(owner) {
                 cached.client.revoke();
                 false
             } else {
@@ -507,11 +524,17 @@ impl ExtensionHost {
 
     pub fn run_state(&self, run: &str, project: Option<&Path>) -> RunExtensions {
         let catalog = self.catalog(project);
+        let controls = {
+            let registry = self.controls.lock().unwrap();
+            let mut controls = registry.list(run);
+            controls.extend(registry.retained_grants(run));
+            controls
+        };
         RunExtensions {
             skills: catalog.skills().to_vec(),
             diagnostics: catalog.diagnostics().to_vec(),
             approvals: self.approvals.list(run),
-            controls: self.controls.lock().unwrap().list(run),
+            controls,
         }
     }
 }

@@ -71,6 +71,7 @@ impl Fixture {
                 compacting: false,
                 model_id: self.old.id.clone(),
                 workspace_path: None,
+                execution_directory: None,
                 permission_mode: Default::default(),
                 created_at: time::now(),
                 updated_at: time::now(),

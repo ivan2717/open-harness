@@ -99,6 +99,24 @@ describe('message presentation resources', () => {
     ).rejects.toThrow('不存在')
   })
 
+  it('previews generated files in a managed conversation directory without making it a project', async () => {
+    run.execution_directory = workspace
+    run.workspace_path = null
+    const report = await mention('report.csv', 'name,total\nexample,42\n')
+    expect(report.kind).toBe('text')
+    expect(report.text).toContain('example,42')
+    expect(report.canOpen).toBe(true)
+    const image = await mention('plot.png', png)
+    expect(image.kind).toBe('image')
+    expect(Buffer.from(await (await store.response(new Request(image.url))).arrayBuffer())).toEqual(
+      png,
+    )
+    await writeFile(join(directory, 'other.txt'), 'outside this conversation')
+    run.messages[1].text += '\n[other](../other.txt)'
+    await expect(store.resolve(reference('../other.txt'))).rejects.toThrow('只能查看')
+    expect(run.workspace_path).toBeNull()
+  })
+
   it('caches an admitted tool screenshot without requiring a workspace and restores it after restart', async () => {
     run.workspace_path = undefined
     run.messages[1] = {
@@ -264,7 +282,7 @@ describe('message presentation resources', () => {
     await expect(store.resolve(reference('report.txt'))).rejects.toThrow('等待')
     run.messages[1].status = 'complete'
     run.workspace_path = undefined
-    await expect(store.resolve(reference('report.txt'))).rejects.toThrow('未关联项目')
+    await expect(store.resolve(reference('report.txt'))).rejects.toThrow('没有可访问的本地工作目录')
   })
 
   it('handles encoded names and source-code line anchors without changing file access', async () => {

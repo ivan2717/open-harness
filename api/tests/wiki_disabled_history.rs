@@ -173,12 +173,26 @@ async fn respond(
     } else {
         "stop"
     };
+    // This fixture's reported usage must grow with the supplied instructions,
+    // schemas and history. A constant 1200-token response makes the calibrated
+    // pre-compaction input smaller than its fixed tool header; a rewritten
+    // request correctly loses that exact-prefix measurement and cannot shrink
+    // below it. The rough count here models usage, not an exact tokenizer.
+    let prompt_tokens = json!({"messages":messages,"tools":request["tools"]})
+        .to_string()
+        .len()
+        .div_ceil(4)
+        + 16
+        + messages.len() * 8
+        + request["tools"]
+            .as_array()
+            .map_or(0, |tools| tools.len() * 16);
     let mut requests = requests.lock().unwrap();
     requests.push(request);
     Json(
         json!({"id":format!("response-{index}"), "model":"history-fixture",
             "choices":[{"index":0,"message":response,"finish_reason":finish}],
-            "usage":{"prompt_tokens":1200,"completion_tokens":100,"total_tokens":1300}
+            "usage":{"prompt_tokens":prompt_tokens,"completion_tokens":100,"total_tokens":prompt_tokens + 100}
         }),
     )
 }

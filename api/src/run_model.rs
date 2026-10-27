@@ -41,19 +41,38 @@ impl AppState {
         self.ensure_accepting_work()?;
         let entry = self.entry(id)?;
         let _operation = entry.operations.lock().await;
-        let mut detail = entry.snapshot.get();
-        if detail.summary.delegation.is_some() {
+        if entry.snapshot.get().summary.delegation.is_some() {
             return Err(ServiceError::Conflict(
                 "请在主任务中设置模型与思考强度".into(),
             ));
         }
+        let rebound = self.rebind_idle_model(&entry, input).await?;
+        Ok(rebound.snapshot.get())
+    }
+
+    /// Rebind an idle root or delegated run without changing its history or
+    /// subscriptions. The caller holds model_gate and entry.operations, so a
+    /// resume cannot race this transition. Build and validate the replacement
+    /// before committing its binding to the existing durable snapshot.
+    pub(super) async fn rebind_idle_model(
+        &self,
+        entry: &Arc<RunEntry>,
+        input: UpdateRunModelInput,
+    ) -> Result<Arc<RunEntry>, ServiceError> {
+        self.ensure_accepting_work()?;
+        let mut detail = entry.snapshot.get();
+        let id = detail.summary.id.clone();
         if entry.background.load(Ordering::Acquire)
-            || entry.runtime.is_executing(id)
+            || entry.runtime.is_executing(&id)
             || detail.summary.compacting
             || detail.summary.status == RunStatus::Running
+            || entry
+                .workspace
+                .as_ref()
+                .is_some_and(|workspace| workspace.commands_running())
         {
             return Err(ServiceError::Conflict(
-                "请等待当前回复或压缩完成，或停止运行后再切换模型".into(),
+                "请等待当前回复、压缩或命令完成，或停止运行后再切换模型".into(),
             ));
         }
         if (input.model_id == MODEL_ID) != (detail.summary.model_id == MODEL_ID) {
@@ -66,7 +85,7 @@ impl AppState {
             && detail.summary.reasoning_effort == input.reasoning_effort
             && detail.summary.reasoning_settings_version == 1
         {
-            return Ok(detail);
+            return Ok(entry.clone());
         }
         let configured = self
             .inner
@@ -86,7 +105,7 @@ impl AppState {
         {
             let run = entry
                 .runtime
-                .restore_run(id)
+                .restore_run(&id)
                 .await
                 .map_err(ServiceError::internal)?
                 .ok_or(ServiceError::NotFound)?;
@@ -128,13 +147,12 @@ impl AppState {
             }
             context.measurement = "estimated".into();
         })?;
-        let result = entry.snapshot.get();
         self.inner
             .runs
             .write()
             .expect("runs lock poisoned")
-            .insert(id.into(), restored);
-        Ok(result)
+            .insert(id, restored.clone());
+        Ok(restored)
     }
 }
 

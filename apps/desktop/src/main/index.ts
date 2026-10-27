@@ -15,6 +15,7 @@ import { fileURLToPath } from 'node:url'
 import { mkdir } from 'node:fs/promises'
 import { Backend } from './backend'
 import { initializeRuntime, watchInitializedRuntime } from './runtime-startup'
+import { prepareWorkspaceRuntime } from './workspace-runtime'
 import { BundledPlugins } from './bundled-plugins'
 import { ChromeConnection } from './chrome-connection'
 import { COMPUTER_APP_NAME, installComputerApp } from './computer-app'
@@ -23,6 +24,7 @@ import { promisify } from 'node:util'
 import { createRequire } from 'node:module'
 import { installPluginFromDialog } from './plugin-install'
 import { WorkspaceSelection } from './workspace-selection'
+import { revealRunWorkspace } from './run-workspace'
 import {
   apiRequest,
   channels,
@@ -223,6 +225,15 @@ function installBridge(): void {
     assertSender(event)
     return workspaces.open(path)
   })
+  ipcMain.handle(channels.revealWorkspace, async (event, id: unknown) => {
+    assertSender(event)
+    if (!backend) throw new Error('The local runtime is starting')
+    return revealRunWorkspace(
+      id,
+      (request) => backend!.request(request),
+      (path) => shell.openPath(path),
+    )
+  })
   ipcMain.handle(channels.invoke, async (event, request: unknown) => {
     assertSender(event)
     if (!backend) throw new Error('The local runtime is starting')
@@ -400,11 +411,16 @@ if (!app.requestSingleInstanceLock()) {
       computerAppPath,
       computerSetupError,
     })
-    backend = new Backend(
-      binary,
-      join(app.getPath('userData'), 'runtime'),
-      bundledPlugins.environment,
-    )
+    backend = new Backend(binary, join(app.getPath('userData'), 'runtime'), {
+      ...bundledPlugins.environment,
+      ...(await prepareWorkspaceRuntime({
+        directory: join(app.getPath('userData'), 'workspace-runtime'),
+        platform: process.platform,
+        resourcesDirectory: app.isPackaged
+          ? process.resourcesPath
+          : join(app.getAppPath(), 'resources'),
+      })),
+    })
     installMessageResourceBridge({
       directory: app.getPath('userData'),
       backend,

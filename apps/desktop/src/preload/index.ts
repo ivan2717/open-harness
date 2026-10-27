@@ -64,6 +64,7 @@ const bridge: DesktopBridge = {
   updateRunModel: (id, input) => invoke<RunDetail>({ operation: 'updateRunModel', id, input }),
   chooseWorkspace: () => ipcRenderer.invoke(channels.chooseWorkspace) as Promise<string | null>,
   openWorkspace: (path) => ipcRenderer.invoke(channels.openWorkspace, path) as Promise<string>,
+  revealWorkspace: (id) => ipcRenderer.invoke(channels.revealWorkspace, id) as Promise<void>,
   chooseFiles: () => ipcRenderer.invoke(channels.chooseFiles) as Promise<FileImportResult>,
   importFiles: (files) => {
     if (!Array.isArray(files) || files.length > MAX_REFERENCE_FILES)
@@ -75,8 +76,11 @@ const bridge: DesktopBridge = {
   },
   pasteFiles: () => ipcRenderer.invoke(channels.pasteFiles) as Promise<FileImportResult>,
   getWorkspace: (id) => invoke<WorkspaceReview>({ operation: 'getWorkspace', id }),
-  approveCommand: (id, approvalId, allow) =>
-    invoke<WorkspaceReview>({ operation: 'approveCommand', id, approvalId, allow }),
+  approveCommand: (id, approvalId, allow, scope) =>
+    invoke<WorkspaceReview>({ operation: 'approveCommand', id, approvalId, allow, scope }),
+  revokeCommandGrants: (id) => invoke<WorkspaceReview>({ operation: 'revokeCommandGrants', id }),
+  stopCommand: (id, commandId) =>
+    invoke<WorkspaceReview>({ operation: 'stopCommand', id, commandId }),
   revertFile: (id, path) => invoke<WorkspaceReview>({ operation: 'revertFile', id, path }),
   resumeRun: (id, message, files) =>
     invoke<RunDetail>({ operation: 'resumeRun', id, message, files }),

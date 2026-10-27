@@ -1,0 +1,21 @@
+{
+  "started_at": "2026-10-27T04:34:34.347Z",
+  "backend": "/Users/jiangtao/Desktop/open-harness/target/debug/api",
+  "backend_sha256": "440dcf620d4000f6e8436e4fda7fe081f1f4a80b099b331c92803fed7bb50fcd",
+  "model": "gpt-6-luna",
+  "protocol": "responses",
+  "context_window": 24576,
+  "max_output_tokens": 4096,
+  "limits": {
+    "wall_seconds": 480,
+    "observed_tokens": 220000
+  },
+  "evidence_version": 2,
+  "notes": [
+    "Real production API with an intentionally reduced 24,576-token window; NOT a 1M capacity test.",
+    "Original provider configuration is cloned in memory; neither configuration nor credentials are saved.",
+    "Recorded usage can omit failed requests, retries, Wiki and compactor calls; it is not a billing ceiling.",
+    "Only OS-sandboxed, network-denied commands inside the fixture are automatically approved once.",
+    "Final prompt repeats neither the corrected record ID nor any expected numeric answer."
+  ]
+}

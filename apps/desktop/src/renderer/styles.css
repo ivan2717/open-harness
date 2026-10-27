@@ -1934,6 +1934,7 @@ details[open] > summary .details-chevron {
 }
 .approval-actions {
   display: flex;
+  flex-wrap: wrap;
   justify-content: flex-end;
   gap: 9px;
   margin-top: 10px;
@@ -2004,6 +2005,76 @@ details[open] > summary .details-chevron {
   font-size: 11px;
   line-height: 1.8;
   margin: 0 0 17px;
+}
+.command-grants {
+  padding: 12px;
+  margin-bottom: 16px;
+  border: 1px solid #e1e6db;
+  border-radius: 7px;
+}
+.command-grants ul {
+  padding-left: 17px;
+  margin: 10px 0;
+  color: #52664d;
+  font-size: 12px;
+  line-height: 1.8;
+}
+.command-grants .review-note {
+  margin-bottom: 10px;
+}
+.command-record-scope {
+  padding: 0 10px 10px;
+  margin: 0;
+  color: #677267;
+  font-size: 11px;
+}
+.review-directory {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 14px;
+  color: #52664d;
+  font-size: 12px;
+}
+.review-directory:hover {
+  color: #303c34;
+}
+.running-commands {
+  margin-bottom: 12px;
+}
+.running-command {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 4px;
+  font-size: 12px;
+  color: #677267;
+}
+.running-command > svg {
+  flex-shrink: 0;
+}
+.running-command-inspect {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  flex: 1;
+  text-align: left;
+}
+.running-command-inspect small {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: #52664d;
+}
+.running-command-label {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 3px;
+}
+.command-task {
+  font-size: 11px;
+  color: #677267;
 }
 .review-empty {
   color: #677267;

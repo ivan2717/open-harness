@@ -23,14 +23,20 @@ impl AppState {
             }
         }
         if input.task_name.trim().is_empty()
+            || input.task_name.trim() != input.task_name
+            || input.task_name.contains('/')
+            || matches!(input.task_name.as_str(), "self" | "parent" | "root")
             || input.task_name.chars().count() > 80
             || input.task_name.chars().any(char::is_control)
             || input.task.trim().is_empty()
             || input.task.len() > 32 * 1024
-            || input.write_paths.len() > 32
+            || input
+                .write_paths
+                .as_ref()
+                .is_some_and(|paths| paths.len() > 32)
         {
             return Err(ServiceError::BadRequest(
-                "子任务需有简短名称、完整任务描述（最多 32 KiB）以及最多 32 个精确文件路径".into(),
+                "子任务名称须为 1–80 字符、无首尾空白和 /，不能使用 self、parent、root；任务描述最多 32 KiB，最多 32 个精确文件路径".into(),
             ));
         }
         if self.members(caller).iter().any(|entry| {
@@ -47,26 +53,48 @@ impl AppState {
             ));
         }
         self.require_capacity(&root)?;
-        if !input.write_paths.is_empty()
-            && (root.summary.workspace_path.is_none()
+        let write_paths = input.write_paths.as_deref().unwrap_or_default();
+        if !write_paths.is_empty()
+            && (root.summary.working_directory().is_none()
                 || root.summary.permission_mode != agent_local::PermissionMode::WorkspaceWrite)
         {
             return Err(ServiceError::BadRequest(
                 "当前主任务没有项目写入权限，不能委派文件修改".into(),
             ));
         }
+        let selection =
+            input
+                .model
+                .clone()
+                .unwrap_or_else(|| crate::contracts::UpdateRunModelInput {
+                    model_id: root.summary.model_id.clone(),
+                    reasoning_effort: root.summary.reasoning_effort.clone(),
+                });
+        if input.model.is_some() {
+            if (selection.model_id == MODEL_ID) != (root.summary.model_id == MODEL_ID) {
+                return Err(ServiceError::BadRequest(
+                    "子任务不能在离线演示和真实模型之间切换".into(),
+                ));
+            }
+            self.validate_run_model(&selection.model_id, selection.reasoning_effort.as_deref())?;
+        }
         let id = new_run_id();
         let now = time::now();
         let detail = RunDetail {
             summary: RunSummary {
-                reasoning_settings_version: root.summary.reasoning_settings_version,
-                reasoning_effort: root.summary.reasoning_effort.clone(),
+                reasoning_settings_version: if input.model.is_some() {
+                    1
+                } else {
+                    root.summary.reasoning_settings_version
+                },
+                reasoning_effort: selection.reasoning_effort,
                 model_history_through: None,
                 delegation: Some(Delegation {
                     parent_run_id: caller.into(),
                     root_run_id: caller.into(),
                     task_name: input.task_name.clone(),
                     write_paths: input.write_paths.clone(),
+                    model_override: input.model.clone(),
                     spawn_call_id: call_id.into(),
                 }),
                 execution_policy: root.summary.execution_policy.clone(),
@@ -76,9 +104,10 @@ impl AppState {
                 prompt: input.task.clone(),
                 status: RunStatus::Running,
                 compacting: false,
-                model_id: root.summary.model_id,
+                model_id: selection.model_id,
                 workspace_path: root.summary.workspace_path.clone(),
-                permission_mode: if input.write_paths.is_empty() {
+                execution_directory: root.summary.execution_directory.clone(),
+                permission_mode: if input.write_paths.as_ref().is_some_and(Vec::is_empty) {
                     agent_local::PermissionMode::ReadOnly
                 } else {
                     root.summary.permission_mode
@@ -96,21 +125,25 @@ impl AppState {
             0,
             None,
             None,
-            root.summary.reasoning_settings_version == 0,
+            input.model.is_none() && root.summary.reasoning_settings_version == 0,
         )?;
         Self::require_workspace_available(&entry)?;
         let access = root
             .summary
-            .workspace_path
-            .as_ref()
+            .working_directory()
             .map(|path| self.workspace_access(path))
             .transpose()?;
         if let Some(access) = &access {
-            access.try_acquire(&id, &input.write_paths)?;
+            access.try_acquire(&id, write_paths)?;
         }
-        let mut admission = AdmissionLease::new(access.clone(), &id, !input.write_paths.is_empty());
+        let mut admission = AdmissionLease::new(access.clone(), &id, !write_paths.is_empty());
         // From here until execute there are no unbounded waits. Roll back leases
         // on persistence failure; cancellation of a spawn is reconciled below.
+        // Queue before starting the persisted run: a failed handoff cannot
+        // leave an admitted child executing without the parent's constraints.
+        self.inner
+            .mailboxes
+            .send(&id, caller, handoff::context(&root))?;
         let run_result = entry.runtime.start_run(&entry.agent, &id, input.task).await;
         let run = match run_result {
             Ok(run) => run,
@@ -143,114 +176,26 @@ impl AppState {
         admission.commit();
         Ok(id)
     }
-
-    pub(super) async fn resume_child(
-        &self,
-        caller: &str,
-        id: &str,
-        message: String,
-    ) -> Result<(), ServiceError> {
-        if message.trim().is_empty() || message.len() > 32 * 1024 {
-            return Err(ServiceError::BadRequest(
-                "续派内容需为 1–32768 bytes".into(),
-            ));
-        }
-        let _gate = self.inner.model_gate.lock().await;
-        let parent = self.require_coordinator(caller)?;
-        let entry = self.entry(id)?;
-        let _operation = entry.operations.lock().await;
-        let detail = entry.snapshot.get();
-        let delegation = detail
-            .summary
-            .delegation
-            .as_ref()
-            .filter(|d| d.parent_run_id == caller)
-            .ok_or_else(|| ServiceError::BadRequest("只能续派直接子任务".into()))?;
-        if self.inner.mailboxes.was_stopped_by_user(id) {
-            return Err(ServiceError::Conflict(
-                "用户已停止此子任务，agent 不能自动重新启动它".into(),
-            ));
-        }
-        if Self::active(&entry) || detail.summary.compacting {
-            return Err(ServiceError::Conflict(
-                "子任务仍在执行，请发送消息调整方向".into(),
-            ));
-        }
-        if !entry.runtime.model().available() {
-            return Err(ServiceError::BadRequest("请重新配置此模型".into()));
-        }
-        Self::require_workspace_available(&entry)?;
-        self.require_capacity(&parent.snapshot.get())?;
-        let access = detail
-            .summary
-            .workspace_path
-            .as_ref()
-            .map(|path| self.workspace_access(path))
-            .transpose()?;
-        if let Some(access) = &access {
-            access.try_acquire(id, &delegation.write_paths)?;
-        }
-        let mut admission =
-            AdmissionLease::new(access.clone(), id, !delegation.write_paths.is_empty());
-        let outcome = async {
-            let mut run = entry
-                .runtime
-                .restore_run(id)
-                .await
-                .map_err(ServiceError::internal)?
-                .ok_or(ServiceError::NotFound)?;
-            if run.status() == CoreStatus::WaitingForInput {
-                entry
-                    .runtime
-                    .submit_input(&mut run, message)
-                    .await
-                    .map_err(ServiceError::internal)?;
-            } else {
-                entry
-                    .runtime
-                    .resume_run(&mut run, message)
-                    .await
-                    .map_err(ServiceError::internal)?;
-            }
-            for event in run.events() {
-                entry.snapshot.event(event)?;
-            }
-            Ok::<_, ServiceError>(run)
-        }
-        .await;
-        match outcome {
-            Ok(run) => {
-                execute(self.clone(), entry.clone(), run);
-                admission.commit();
-                self.inner.mailboxes.notify();
-                Ok(())
-            }
-            Err(error) => {
-                workspace::reconcile_admission_error(&entry, id, &error).await;
-                if let Some(access) = &access {
-                    access.release(id).await;
-                }
-                admission.commit();
-                Err(error)
-            }
-        }
-    }
 }
 
 /// Dropping a cancelled admission releases only its reserved files; it never
 /// starts or repeats a model/tool operation. Once scheduled, execution owns it.
-struct AdmissionLease {
+pub(super) struct AdmissionLease {
     access: Option<agent_local::WorkspaceAccess>,
     owner: String,
 }
 impl AdmissionLease {
-    fn new(access: Option<agent_local::WorkspaceAccess>, owner: &str, writes: bool) -> Self {
+    pub(super) fn new(
+        access: Option<agent_local::WorkspaceAccess>,
+        owner: &str,
+        writes: bool,
+    ) -> Self {
         Self {
             access: access.filter(|_| writes),
             owner: owner.into(),
         }
     }
-    fn commit(&mut self) {
+    pub(super) fn commit(&mut self) {
         self.access = None;
     }
 }
@@ -264,3 +209,7 @@ impl Drop for AdmissionLease {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "scope_tests.rs"]
+mod scope_tests;

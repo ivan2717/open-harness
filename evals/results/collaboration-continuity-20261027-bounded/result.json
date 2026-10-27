@@ -1,0 +1,101 @@
+{
+  "passed": false,
+  "failure": "Continuity evaluation stopped: observed_token_budget",
+  "stopped_reason": "observed_token_budget",
+  "duration_ms": 96602,
+  "run_id": "run-18e2499bcbbec778-bee1-1",
+  "checks": [
+    {
+      "name": "valid_result_json",
+      "passed": false,
+      "detail": "Result file missing"
+    },
+    {
+      "name": "correct_refund_ids",
+      "passed": false
+    },
+    {
+      "name": "applied_refund",
+      "passed": false,
+      "detail": {
+        "actual": null,
+        "expected": 60
+      }
+    },
+    {
+      "name": "net_received",
+      "passed": false,
+      "detail": {
+        "actual": null,
+        "expected": 415
+      }
+    },
+    {
+      "name": "unpaid_before_refunds",
+      "passed": false,
+      "detail": {
+        "actual": null,
+        "expected": 225
+      }
+    },
+    {
+      "name": "correction_cited",
+      "passed": false
+    },
+    {
+      "name": "source_files_cited",
+      "passed": false
+    },
+    {
+      "name": "unchanged:orders.csv",
+      "passed": true
+    },
+    {
+      "name": "unchanged:payments.csv",
+      "passed": true
+    },
+    {
+      "name": "unchanged:refunds.csv",
+      "passed": true
+    },
+    {
+      "name": "unchanged:rules.md",
+      "passed": true
+    },
+    {
+      "name": "actual_compaction_covers_correction_before_delivery",
+      "passed": true
+    },
+    {
+      "name": "one_child_agent",
+      "passed": true
+    },
+    {
+      "name": "child_read_parent_history",
+      "passed": true
+    },
+    {
+      "name": "child_executed_command",
+      "passed": false,
+      "detail": {
+        "passed": false,
+        "reason": "No child-owned completed command and matching tool result for an existing temporary script"
+      }
+    },
+    {
+      "name": "all_agents_successful",
+      "passed": false
+    }
+  ],
+  "passed_checks": 7,
+  "total_checks": 16,
+  "observed_usage": {
+    "input_tokens": 221123,
+    "output_tokens": 5526,
+    "responses": 24
+  },
+  "child_count": 1,
+  "evidence_version": 2,
+  "correction_sequence": 4,
+  "caveat": "Evidence checks establish traceable identifiers, not full prose entailment; inspect the public transcript. This is a reduced-window continuity test, not a 1M stress test."
+}

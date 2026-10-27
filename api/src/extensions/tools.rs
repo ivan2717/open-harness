@@ -50,6 +50,17 @@ impl ExtensionTools {
         tools
     }
 
+    /// Bind shared, user-approved scopes without sharing agent-local MCP state.
+    /// The execution host supplies this persisted parent relationship.
+    pub fn with_authorization_scope(self, root_run_id: &str) -> Self {
+        self.host
+            .controls
+            .lock()
+            .unwrap()
+            .bind_scope(&self.run, root_run_id);
+        self
+    }
+
     /// Refresh once at a run/input boundary. The runtime retains the returned
     /// snapshot through its model/tool loop; configuration changes still revoke
     /// execution permissions immediately.
@@ -238,6 +249,7 @@ impl ToolExecutor for ExtensionTools {
             );
         let mut new_grant_id = None;
         let mut new_tab_approval = None;
+        let mut remember_on_success = false;
         if matches!(
             call.name.as_str(),
             "call_mcp_tool" | "read_mcp_resource" | "get_mcp_prompt"
@@ -263,6 +275,8 @@ impl ToolExecutor for ExtensionTools {
                                 .unwrap_or("")
                         ),
                         arguments: arguments.clone(),
+                        source_run_id: None,
+                        task_title: None,
                         session_scope: scope.clone(),
                     },
                 )
@@ -281,13 +295,14 @@ impl ToolExecutor for ExtensionTools {
                     new_tab_approval = Some((origin, remembered));
                     controls.clear_active_tab(&self.run, server_id);
                 } else {
+                    remember_on_success = remembered;
                     new_grant_id = Some(controls.grant(
                         &self.run,
                         server_id,
                         server.name.as_deref().unwrap_or(server_id),
                         &binding,
                         scope,
-                        remembered,
+                        false,
                     )?);
                 }
             }
@@ -310,6 +325,9 @@ impl ToolExecutor for ExtensionTools {
             grant_id: new_grant_id,
         };
         let result = async {
+        let _desktop_operation = if control_call && plugin.as_deref() == Some("computer-use") {
+            Some(self.host.desktop_operation.lock().await)
+        } else { None };
         if control_call && plugin.as_deref() == Some("computer-use") {
             let mut controls = self.host.controls.lock().unwrap();
             controls.check_epoch(&self.run, epoch)?;
@@ -399,8 +417,9 @@ impl ToolExecutor for ExtensionTools {
             controls.check_epoch(&self.run, epoch)?;
             pending_control.grant_id = Some(controls.grant(
                 &self.run, server_id, server.name.as_deref().unwrap_or(server_id),
-                &binding, created_scope, *remembered,
+                &binding, created_scope, false,
             )?);
+            remember_on_success = *remembered;
         }
         let output = model_output(result).map_err(|error| io::Error::other(format!(
             "The tool returned, but its observation could not be delivered: {error}. The action may have executed; observe again before taking further action. Never blindly repeat it."
@@ -415,6 +434,13 @@ impl ToolExecutor for ExtensionTools {
         }
         }.await;
         if result.is_ok() {
+            if remember_on_success && let Some(grant_id) = pending_control.grant_id {
+                self.host
+                    .controls
+                    .lock()
+                    .unwrap()
+                    .remember_grant(&self.run, server_id, grant_id)?;
+            }
             pending_control.grant_id = None;
         }
         result

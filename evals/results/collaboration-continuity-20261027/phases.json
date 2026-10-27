@@ -1,0 +1,79 @@
+[
+  {
+    "phase": "initial",
+    "elapsed_ms": 5720,
+    "status": "waiting_for_input",
+    "compaction_count": 0,
+    "observed_usage": {
+      "input_tokens": 3333,
+      "output_tokens": 65,
+      "responses": 1
+    }
+  },
+  {
+    "phase": "correction",
+    "elapsed_ms": 9794,
+    "status": "waiting_for_input",
+    "compaction_count": 0,
+    "observed_usage": {
+      "input_tokens": 6855,
+      "output_tokens": 142,
+      "responses": 2
+    }
+  },
+  {
+    "phase": "filler-1",
+    "elapsed_ms": 13376,
+    "status": "waiting_for_input",
+    "compaction_count": 0,
+    "observed_usage": {
+      "input_tokens": 12390,
+      "output_tokens": 147,
+      "responses": 3
+    }
+  },
+  {
+    "phase": "filler-2",
+    "elapsed_ms": 16449,
+    "status": "waiting_for_input",
+    "compaction_count": 0,
+    "observed_usage": {
+      "input_tokens": 19866,
+      "output_tokens": 152,
+      "responses": 4
+    }
+  },
+  {
+    "phase": "filler-3",
+    "elapsed_ms": 21580,
+    "status": "waiting_for_input",
+    "compaction_count": 0,
+    "observed_usage": {
+      "input_tokens": 29283,
+      "output_tokens": 157,
+      "responses": 5
+    }
+  },
+  {
+    "phase": "filler-4",
+    "elapsed_ms": 24674,
+    "status": "waiting_for_input",
+    "compaction_count": 0,
+    "observed_usage": {
+      "input_tokens": 40641,
+      "output_tokens": 173,
+      "responses": 6
+    }
+  },
+  {
+    "phase": "manual_compaction",
+    "elapsed_ms": 50742,
+    "status": "waiting_for_input",
+    "compaction_count": 1,
+    "observed_usage": {
+      "input_tokens": 40641,
+      "output_tokens": 173,
+      "responses": 6
+    }
+  }
+]

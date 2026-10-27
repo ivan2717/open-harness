@@ -1,4 +1,5 @@
 import type {
+  CommandApprovalScope,
   ConfigureModelInput,
   CreateRunInput,
   ResolvedModelConfiguration,
@@ -31,6 +32,7 @@ export const channels = {
   invoke: 'openharness:invoke',
   chooseWorkspace: 'openharness:workspace:choose',
   openWorkspace: 'openharness:workspace:open',
+  revealWorkspace: 'openharness:workspace:reveal',
   chooseFiles: 'openharness:files:choose',
   importFiles: 'openharness:files:import',
   pasteFiles: 'openharness:files:paste',
@@ -59,7 +61,15 @@ export type BridgeRequest =
       operation: 'getRun' | 'getWorkspace' | 'cancelRun' | 'compactRun' | 'cancelCompaction'
       id: string
     }
-  | { operation: 'approveCommand'; id: string; approvalId: string; allow: boolean }
+  | {
+      operation: 'approveCommand'
+      id: string
+      approvalId: string
+      allow: boolean
+      scope?: CommandApprovalScope
+    }
+  | { operation: 'revokeCommandGrants'; id: string }
+  | { operation: 'stopCommand'; id: string; commandId: string }
   | { operation: 'revertFile'; id: string; path: string }
   | { operation: 'resumeRun'; id: string; message?: string; files?: TextFileReference[] }
   | { operation: 'configureModel'; input: ConfigureModelInput }
@@ -80,7 +90,7 @@ export interface ApiRequest {
     | UpdateRunModelInput
     | { message?: string; files?: TextFileReference[] }
     | { path: string }
-    | { allow: boolean }
+    | { allow: boolean; scope?: CommandApprovalScope }
     | { enabled: boolean }
     | { source_path: string; expected_id?: string }
     | { replacement_model_id: string }
@@ -318,12 +328,24 @@ export function apiRequest(value: unknown): ApiRequest {
       return { path: `/api/runs/${identifier(request.id)}`, method: 'GET' }
     case 'getWorkspace':
       return { path: `/api/runs/${identifier(request.id)}/workspace`, method: 'GET' }
+    case 'stopCommand':
+      return {
+        path: `/api/runs/${identifier(request.id)}/workspace/commands/${identifier(request.commandId)}/stop`,
+        method: 'POST',
+      }
     case 'approveCommand':
       if (typeof request.allow !== 'boolean') throw new Error('Invalid approval decision')
+      if (request.scope !== undefined && request.scope !== 'once' && request.scope !== 'session')
+        throw new Error('Invalid approval scope')
       return {
         path: `/api/runs/${identifier(request.id)}/approvals/${identifier(request.approvalId)}`,
         method: 'POST',
-        body: { allow: request.allow },
+        body: { allow: request.allow, ...(request.scope ? { scope: request.scope } : {}) },
+      }
+    case 'revokeCommandGrants':
+      return {
+        path: `/api/runs/${identifier(request.id)}/workspace/command-grants/revoke`,
+        method: 'POST',
       }
     case 'revertFile': {
       const path = boundedText(request.path, 4096, 'file path')
