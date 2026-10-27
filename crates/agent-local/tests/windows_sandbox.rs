@@ -6,6 +6,7 @@ use std::{
     io::Write,
     path::PathBuf,
     process::{Command, Stdio},
+    sync::atomic::{AtomicU64, Ordering},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use windows_sys::Win32::{
@@ -19,13 +20,15 @@ use windows_sys::Win32::{
 struct Fixture(PathBuf);
 impl Fixture {
     fn new() -> Self {
+        static NEXT_ID: AtomicU64 = AtomicU64::new(0);
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
         let root = std::env::temp_dir().join(format!(
-            "openharness-native-sandbox-{}-{nonce}",
-            std::process::id()
+            "openharness-native-sandbox-{}-{nonce}-{}",
+            std::process::id(),
+            NEXT_ID.fetch_add(1, Ordering::Relaxed)
         ));
         fs::create_dir_all(root.join("workspace/.git")).unwrap();
         fs::create_dir_all(root.join("outside")).unwrap();
@@ -457,7 +460,11 @@ fn killed_helper_leases_are_recovered_on_the_next_command() {
     );
     assert!(
         !journal.exists(),
-        "stale per-command ACL/profile cleanup was not completed"
+        "stale per-command ACL/profile cleanup was not completed: {}",
+        String::from_utf8_lossy(&output.stderr)
     );
+    // Recovery must work while the host still holds the terminated helper's
+    // process handle, which keeps its PID and creation time queryable.
+    drop(child);
     fs::write(fixture.0.join("workspace/output.txt"), "after recovery").unwrap();
 }
