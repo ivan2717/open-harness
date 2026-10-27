@@ -50,14 +50,25 @@ impl Fixture {
         )
         .unwrap();
         // Junction creation does not require the symlink privilege/admin mode.
-        let status = Command::new("cmd.exe")
-            .args(["/d", "/c", "mklink", "/j"])
-            .arg(root.join("workspace/junction"))
-            .arg(root.join("outside"))
-            .stdout(Stdio::null())
-            .status()
+        // Pass the dynamic root as the process cwd, not through cmd's parser:
+        // PathBuf preserves embedded '/', which mklink interprets as switches,
+        // and the host temp path may contain spaces or shell metacharacters.
+        let output = Command::new("cmd.exe")
+            .current_dir(root.join("workspace"))
+            .args(["/d", "/c", "mklink", "/j", "junction", r"..\outside"])
+            .output()
             .unwrap();
-        assert!(status.success(), "native junction fixture creation failed");
+        assert!(
+            output.status.success(),
+            "native junction fixture creation failed:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+        assert_eq!(
+            fs::canonicalize(root.join("workspace/junction")).unwrap(),
+            fs::canonicalize(root.join("outside")).unwrap(),
+            "native junction fixture must resolve to the outside directory",
+        );
         Self(fs::canonicalize(root).unwrap())
     }
     fn run(&self, allowed: bool) -> std::process::Output {
