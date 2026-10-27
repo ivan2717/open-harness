@@ -8,7 +8,10 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 use windows_sys::Win32::{
-    Foundation::{CloseHandle, FILETIME, HANDLE, WAIT_ABANDONED, WAIT_OBJECT_0},
+    Foundation::{
+        CloseHandle, ERROR_INVALID_PARAMETER, FILETIME, HANDLE, WAIT_ABANDONED, WAIT_FAILED,
+        WAIT_OBJECT_0, WAIT_TIMEOUT,
+    },
     Security::{
         Authorization::{DENY_ACCESS, GRANT_ACCESS, REVOKE_ACCESS},
         FreeSid,
@@ -24,7 +27,7 @@ use windows_sys::Win32::{
     },
     System::Threading::{
         CreateMutexW, GetCurrentProcess, GetProcessTimes, OpenProcess,
-        PROCESS_QUERY_LIMITED_INFORMATION, ReleaseMutex, WaitForSingleObject,
+        PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, ReleaseMutex, WaitForSingleObject,
     },
 };
 
@@ -376,13 +379,14 @@ fn recover(state: &Path) -> io::Result<()> {
         if !journal.profile.starts_with("OpenHarness.Command.") {
             continue;
         }
-        let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, journal.pid) };
-        if !process.is_null() {
-            let alive = creation_time(process).is_ok_and(|created| created == journal.created);
-            unsafe {
-                CloseHandle(process);
-            }
-            if alive {
+        match owner_is_running(journal.pid, journal.created) {
+            Ok(false) => {}
+            Ok(true) => continue,
+            Err(error) => {
+                eprintln!(
+                    "Windows sandbox recovery could not confirm owner termination for {}: {error}",
+                    journal.profile
+                );
                 continue;
             }
         }
@@ -395,11 +399,49 @@ fn recover(state: &Path) -> io::Result<()> {
         unsafe {
             FreeSid(sid);
         }
-        if result.is_ok() {
-            let _ = fs::remove_file(path);
+        if let Err(error) = result.and_then(|()| fs::remove_file(path)) {
+            eprintln!(
+                "Windows sandbox recovery will be retried for {}: {error}",
+                journal.profile
+            );
         }
     }
     Ok(())
+}
+
+fn owner_is_running(pid: u32, created: u64) -> io::Result<bool> {
+    let process = unsafe {
+        OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,
+            0,
+            pid,
+        )
+    };
+    if process.is_null() {
+        let error = io::Error::last_os_error();
+        return if error.raw_os_error() == Some(ERROR_INVALID_PARAMETER as i32) {
+            Ok(false)
+        } else {
+            Err(error)
+        };
+    }
+    let result = (|| {
+        if creation_time(process)? != created {
+            return Ok(false);
+        }
+        // A terminated process remains queryable while the host retains its
+        // Child handle. Creation time establishes identity, not liveness.
+        match unsafe { WaitForSingleObject(process, 0) } {
+            WAIT_OBJECT_0 => Ok(false),
+            WAIT_TIMEOUT => Ok(true),
+            WAIT_FAILED => Err(io::Error::last_os_error()),
+            _ => Err(io::Error::other("unexpected sandbox process wait status")),
+        }
+    })();
+    unsafe {
+        CloseHandle(process);
+    }
+    result
 }
 
 fn creation_time(process: windows_sys::Win32::Foundation::HANDLE) -> io::Result<u64> {
@@ -475,4 +517,27 @@ fn walk(root: &Path) -> io::Result<Vec<PathBuf>> {
         }
     }
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{os::windows::io::AsRawHandle, process::Command};
+
+    #[test]
+    fn recovery_distinguishes_live_owners_from_retained_terminated_processes() {
+        let created = creation_time(unsafe { GetCurrentProcess() }).unwrap();
+        assert!(owner_is_running(std::process::id(), created).unwrap());
+        assert!(!owner_is_running(std::process::id(), created.wrapping_add(1)).unwrap());
+
+        let mut child = Command::new("cmd.exe")
+            .args(["/d", "/c", "exit", "0"])
+            .spawn()
+            .unwrap();
+        let created = creation_time(child.as_raw_handle()).unwrap();
+        assert!(child.wait().unwrap().success());
+        assert!(!owner_is_running(child.id(), created).unwrap());
+        // Keep the native process object alive through the liveness check.
+        drop(child);
+    }
 }

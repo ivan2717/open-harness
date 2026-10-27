@@ -469,6 +469,7 @@ mod tests {
     use super::*;
     use std::{
         fs,
+        sync::atomic::{AtomicU64, Ordering},
         time::{SystemTime, UNIX_EPOCH},
     };
     use windows_sys::Win32::{
@@ -486,13 +487,15 @@ mod tests {
     }
     impl Fixture {
         fn new() -> Self {
+            static NEXT_ID: AtomicU64 = AtomicU64::new(0);
             let name = format!(
-                "OpenHarness.AclTest.{}.{}",
+                "OpenHarness.AclTest.{}.{}.{}",
                 std::process::id(),
                 SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .unwrap()
-                    .as_nanos()
+                    .as_nanos(),
+                NEXT_ID.fetch_add(1, Ordering::Relaxed)
             );
             let root = std::env::temp_dir().join(&name);
             fs::create_dir(&root).unwrap();

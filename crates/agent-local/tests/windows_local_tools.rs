@@ -363,23 +363,43 @@ async fn windows_commands_reuse_runtime_inventory_without_per_conversation_packa
     assert!(!fixture.root.join(".openharness-tmp").exists());
     let result = approved(
         &tools,
-        json!({"command":r#"$probe = Join-Path $env:TEMP 'probe.txt'; [IO.File]::WriteAllText($probe,'scratch'); @{temporary=$env:TEMP; probe=[IO.File]::ReadAllText($probe); cache=$env:PIP_CACHE_DIR; store=$env:pnpm_config_store_dir; requireVenv=$env:PIP_REQUIRE_VIRTUALENV} | ConvertTo-Json -Compress"#, "yield_time_ms":30000}),
+        json!({"command":r#"$probe = Join-Path $env:TEMP 'probe.txt'; [IO.File]::WriteAllText($probe,'scratch'); @{temporary=$env:TEMP; tmp=$env:TMP; localAppData=$env:LOCALAPPDATA; hostScratch=$env:TMPDIR; probe=[IO.File]::ReadAllText($probe); cache=$env:PIP_CACHE_DIR; store=$env:pnpm_config_store_dir; requireVenv=$env:PIP_REQUIRE_VIRTUALENV} | ConvertTo-Json -Compress"#, "access":"workspace_write", "yield_time_ms":30000}),
     )
     .await;
     assert_eq!(result["status"], "completed", "{result}");
     let environment: Value = serde_json::from_str(result["output"].as_str().unwrap()).unwrap();
+    // Windows redirects TEMP/TMP into the per-command AppContainer profile;
+    // TMPDIR still names the host's workspace scratch. Neither is a package
+    // environment. Profile cleanup removes TEMP after the command exits.
+    let expected_tmp = fs::canonicalize(&fixture.root)
+        .unwrap()
+        .join(".openharness-tmp/tmp");
+    assert_eq!(
+        fs::canonicalize(environment["hostScratch"].as_str().unwrap()).unwrap(),
+        expected_tmp
+    );
     let temporary = PathBuf::from(environment["temporary"].as_str().unwrap());
     assert!(temporary.is_absolute());
+    assert_eq!(environment["temporary"], environment["tmp"]);
+    assert_eq!(
+        temporary,
+        PathBuf::from(environment["localAppData"].as_str().unwrap()).join("Temp")
+    );
     assert!(!temporary.starts_with(fs::canonicalize(&fixture.root).unwrap()));
     assert_eq!(environment["probe"], "scratch");
     assert!(
         !temporary.exists(),
-        "completed read-only command retained its scratch directory"
+        "completed command retained its AppContainer scratch directory"
     );
     assert!(environment["cache"].is_null());
     assert!(environment["store"].is_null());
     assert!(environment["requireVenv"].is_null());
-    for path in [".openharness-tmp", "node_modules", "package.json", ".venv"] {
+    for path in [
+        ".openharness-tmp/tasks",
+        "node_modules",
+        "package.json",
+        ".venv",
+    ] {
         assert!(
             !fixture.root.join(path).exists(),
             "unexpected dependency environment: {path}"
