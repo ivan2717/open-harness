@@ -104,9 +104,10 @@ describe('workspace runtime discovery', () => {
   test('does not discover arbitrary PATH Python without explicit opt-in', async () => {
     const root = await mkdtemp(join(tmpdir(), 'openharness-runtime-'))
     try {
-      await writeFile(join(root, 'python3'), '')
+      const executable = join(root, process.platform === 'win32' ? 'python.exe' : 'python3')
+      await writeFile(executable, '')
       const options = {
-        platform: 'darwin' as const,
+        platform: process.platform,
         resourcesDirectory: root,
         environment: { PATH: root },
       }
@@ -116,7 +117,7 @@ describe('workspace runtime discovery', () => {
           ...options,
           environment: { PATH: root, OPENHARNESS_ALLOW_SYSTEM_PYTHON: '1' },
         }),
-      ).toContainEqual({ executable: join(root, 'python3'), args: [], source: 'system' })
+      ).toContainEqual({ executable, args: [], source: 'system' })
     } finally {
       await rm(root, { recursive: true, force: true })
     }

@@ -473,9 +473,22 @@ fn validate_root_reference(root: &Path, value: &str, command: bool) -> io::Resul
 }
 
 fn replace_root(value: &str, root: &str) -> String {
-    ROOT_MARKERS
+    let resolved = ROOT_MARKERS
         .iter()
-        .fold(value.to_owned(), |text, marker| text.replace(marker, root))
+        .fold(value.to_owned(), |text, marker| text.replace(marker, root));
+    if root.starts_with(r"\\?\")
+        && let Some(start) = ROOT_MARKERS
+            .iter()
+            .filter_map(|marker| value.find(marker))
+            .min()
+    {
+        // Canonical Windows roots use the verbatim \\?\ prefix, which disables
+        // slash conversion. Normalize the expanded path, keeping any literal
+        // flag prefix intact (for example --config=${PLUGIN_ROOT}/file).
+        let (prefix, path) = resolved.split_at(start);
+        return format!("{prefix}{}", path.replace('/', "\\"));
+    }
+    resolved
 }
 
 fn string_array(value: Option<&Value>, field: &str) -> io::Result<Vec<String>> {
@@ -527,4 +540,47 @@ fn optional_text(object: &Map<String, Value>, key: &str, max: usize) -> io::Resu
                 })
         })
         .transpose()
+}
+
+#[cfg(test)]
+mod root_resolution_tests {
+    use super::*;
+
+    #[test]
+    fn verbatim_roots_normalize_only_placeholder_paths_and_preserve_literal_prefixes() {
+        for root in [
+            r"\\?\C:\Plugin Store\package",
+            r"\\?\UNC\server\share\package",
+        ] {
+            for marker in ROOT_MARKERS {
+                assert_eq!(replace_root(marker, root), root);
+                assert_eq!(
+                    replace_root(&format!("{marker}/bin/fixture.py"), root),
+                    format!(r"{root}\bin\fixture.py"),
+                );
+                assert_eq!(
+                    replace_root(&format!("--config/file={marker}/data/settings.json"), root),
+                    format!(r"--config/file={root}\data\settings.json"),
+                );
+            }
+            for literal in [
+                "https://example.com/api/v1",
+                "--mode=read/write",
+                "data/input.json",
+            ] {
+                assert_eq!(replace_root(literal, root), literal);
+            }
+        }
+    }
+
+    #[test]
+    fn unix_roots_keep_their_original_separator_and_argument_behavior() {
+        let root = "/tmp/Plugin Store/package";
+        for marker in ROOT_MARKERS {
+            assert_eq!(
+                replace_root(&format!("--config={marker}/data/settings.json"), root),
+                format!("--config={root}/data/settings.json"),
+            );
+        }
+    }
 }

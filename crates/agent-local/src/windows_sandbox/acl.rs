@@ -7,26 +7,32 @@ use std::{
     ptr,
 };
 use windows_sys::{
-    Wdk::Storage::FileSystem::NtSetSecurityObject,
+    Wdk::Storage::FileSystem::{NtQuerySecurityObject, NtSetSecurityObject},
     Win32::{
-        Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE, LocalFree, RtlNtStatusToDosError},
+        Foundation::{
+            CloseHandle, HANDLE, INVALID_HANDLE_VALUE, LocalFree, RtlNtStatusToDosError,
+            STATUS_BUFFER_TOO_SMALL,
+        },
         Security::{
             ACCESS_ALLOWED_ACE, ACL,
             Authorization::{
-                ACCESS_MODE, DENY_ACCESS, EXPLICIT_ACCESS_W, GRANT_ACCESS, GetSecurityInfo,
-                NO_MULTIPLE_TRUSTEE, REVOKE_ACCESS, SE_FILE_OBJECT, SetEntriesInAclW,
-                TRUSTEE_IS_SID, TRUSTEE_IS_UNKNOWN, TRUSTEE_W,
+                ACCESS_MODE, DENY_ACCESS, EXPLICIT_ACCESS_W, GRANT_ACCESS, NO_MULTIPLE_TRUSTEE,
+                REVOKE_ACCESS, SetEntriesInAclW, TRUSTEE_IS_SID, TRUSTEE_IS_UNKNOWN, TRUSTEE_W,
             },
-            DACL_SECURITY_INFORMATION, DeleteAce, EqualSid, GetAce, GetSecurityDescriptorControl,
-            InitializeSecurityDescriptor, PSECURITY_DESCRIPTOR, PSID, SE_DACL_AUTO_INHERIT_REQ,
+            DACL_SECURITY_INFORMATION, DeleteAce, EqualSid, GENERIC_MAPPING, GetAce,
+            GetSecurityDescriptorControl, GetSecurityDescriptorDacl, GetSidIdentifierAuthority,
+            GetSidSubAuthority, GetSidSubAuthorityCount, InitializeSecurityDescriptor,
+            IsWellKnownSid, MapGenericMask, PSECURITY_DESCRIPTOR, PSID, SE_DACL_AUTO_INHERIT_REQ,
             SE_DACL_AUTO_INHERITED, SE_DACL_DEFAULTED, SE_DACL_PROTECTED, SECURITY_DESCRIPTOR,
             SUB_CONTAINERS_AND_OBJECTS_INHERIT, SetSecurityDescriptorControl,
-            SetSecurityDescriptorDacl,
+            SetSecurityDescriptorDacl, WinCapabilityInternetClientSid,
+            WinCapabilityPrivateNetworkClientServerSid,
         },
         Storage::FileSystem::{
-            BY_HANDLE_FILE_INFORMATION, CreateFileW, DELETE, FILE_APPEND_DATA,
+            BY_HANDLE_FILE_INFORMATION, CreateFileW, DELETE, FILE_ALL_ACCESS, FILE_APPEND_DATA,
             FILE_ATTRIBUTE_REPARSE_POINT, FILE_DELETE_CHILD, FILE_FLAG_BACKUP_SEMANTICS,
-            FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+            FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_EXECUTE, FILE_GENERIC_READ,
+            FILE_GENERIC_WRITE, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
             FILE_WRITE_ATTRIBUTES, FILE_WRITE_DATA, FILE_WRITE_EA, GetFileInformationByHandle,
             GetFinalPathNameByHandleW, OPEN_EXISTING, READ_CONTROL, WRITE_DAC, WRITE_OWNER,
         },
@@ -75,21 +81,8 @@ fn change_inheritance(
             "sandbox ACL target became a reparse point",
         ));
     }
-    let mut descriptor = ptr::null_mut();
-    let mut original: *mut ACL = ptr::null_mut();
-    check(unsafe {
-        GetSecurityInfo(
-            handle.0,
-            SE_FILE_OBJECT,
-            DACL_SECURITY_INFORMATION,
-            ptr::null_mut(),
-            ptr::null_mut(),
-            &mut original,
-            ptr::null_mut(),
-            &mut descriptor,
-        )
-    })?;
-    let _descriptor = Allocation(descriptor);
+    let descriptor = NativeDescriptor::read(handle.0)?;
+    let original = descriptor.dacl()?;
     if original.is_null() {
         return Err(io::Error::other(format!(
             "sandbox requires a filesystem ACL: {}",
@@ -143,8 +136,97 @@ fn change_inheritance(
         handle = writable;
         acl
     } else {
+        // Package/capability SID access checks do not use DENY ACEs to subtract
+        // existing ALLOW rights. Keep denies as command-owned policy markers,
+        // but enforce them by removing the bits from every matching ALLOW ACE.
+        // The markers also prevent a later overlapping grant from restoring them.
+        let mut forbidden = if mode == DENY_ACCESS {
+            file_mask(rights)
+        } else {
+            0
+        };
+        for index in 0..unsafe { (*original).AceCount as u32 } {
+            let mut ace = ptr::null_mut();
+            bool_check(unsafe { GetAce(original, index, &mut ace) })?;
+            let entry = ace.cast::<ACCESS_ALLOWED_ACE>();
+            if unsafe {
+                (*entry).Header.AceType == 1
+                    && EqualSid(ptr::addr_of_mut!((*entry).SidStart).cast(), sid) != 0
+            } {
+                forbidden |= file_mask(unsafe { (*entry).Mask });
+            }
+        }
+        let hardlink_deny = if mode == GRANT_ACCESS && info.nNumberOfLinks > 1 {
+            Some(if file_mask(rights) & FILE_WRITE_DATA != 0 {
+                windows_sys::Win32::Storage::FileSystem::FILE_ALL_ACCESS
+            } else {
+                WRITE_RIGHTS
+            })
+        } else {
+            None
+        };
+        forbidden |= hardlink_deny.unwrap_or_default();
+        // Package DENY entries cannot revoke grants to ambient AppContainer or
+        // capability SIDs. Reject conflicts without modifying other trustees.
+        for index in 0..unsafe { (*original).AceCount as u32 } {
+            let mut ace = ptr::null_mut();
+            bool_check(unsafe { GetAce(original, index, &mut ace) })?;
+            let entry = ace.cast::<ACCESS_ALLOWED_ACE>();
+            if unsafe {
+                matches!((*entry).Header.AceType, 4 | 5 | 9 | 11)
+                    && file_mask((*entry).Mask) & forbidden != 0
+            } {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "conditional or object-specific allow ACL cannot be safely restricted for this command",
+                ));
+            }
+            if unsafe { (*entry).Header.AceType == 0 && file_mask((*entry).Mask) & forbidden != 0 }
+            {
+                let trustee = unsafe { ptr::addr_of_mut!((*entry).SidStart).cast() };
+                if ambient_package_sid(trustee)
+                    || [
+                        WinCapabilityInternetClientSid,
+                        WinCapabilityPrivateNetworkClientServerSid,
+                    ]
+                    .into_iter()
+                    .any(|kind| unsafe { IsWellKnownSid(trustee, kind) } != 0)
+                {
+                    return Err(io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        "pre-existing AppContainer or network-capability grant conflicts with sandbox restrictions",
+                    ));
+                }
+            }
+        }
+        let bytes = unsafe { (*original).AclSize as usize };
+        filtered = vec![0u32; bytes.div_ceil(4)];
+        unsafe {
+            ptr::copy_nonoverlapping(original.cast::<u8>(), filtered.as_mut_ptr().cast(), bytes);
+        }
+        let reduced = filtered.as_mut_ptr().cast::<ACL>();
+        for index in (0..unsafe { (*reduced).AceCount as u32 }).rev() {
+            let mut ace = ptr::null_mut();
+            bool_check(unsafe { GetAce(reduced, index, &mut ace) })?;
+            let entry = ace.cast::<ACCESS_ALLOWED_ACE>();
+            if unsafe {
+                (*entry).Header.AceType == 0
+                    && EqualSid(ptr::addr_of_mut!((*entry).SidStart).cast(), sid) != 0
+            } {
+                unsafe {
+                    (*entry).Mask = file_mask((*entry).Mask) & !forbidden;
+                }
+                if unsafe { (*entry).Mask } == 0 {
+                    bool_check(unsafe { DeleteAce(reduced, index) })?;
+                }
+            }
+        }
         let entry = EXPLICIT_ACCESS_W {
-            grfAccessPermissions: rights,
+            grfAccessPermissions: if mode == GRANT_ACCESS {
+                file_mask(rights) & !forbidden
+            } else {
+                rights
+            },
             grfAccessMode: mode,
             grfInheritance: if inherit && std::fs::symlink_metadata(path)?.is_dir() {
                 SUB_CONTAINERS_AND_OBJECTS_INHERIT
@@ -162,12 +244,7 @@ fn change_inheritance(
         let mut entries = vec![entry];
         // Check link count on the same handle we mutate, not an earlier path
         // lookup. A workspace hardlink must not make an external file writable.
-        if mode == GRANT_ACCESS && info.nNumberOfLinks > 1 {
-            let deny = if rights & FILE_WRITE_DATA != 0 {
-                windows_sys::Win32::Storage::FileSystem::FILE_ALL_ACCESS
-            } else {
-                WRITE_RIGHTS
-            };
+        if let Some(deny) = hardlink_deny {
             entries.push(EXPLICIT_ACCESS_W {
                 grfAccessPermissions: deny,
                 grfAccessMode: DENY_ACCESS,
@@ -179,14 +256,89 @@ fn change_inheritance(
             SetEntriesInAclW(
                 entries.len() as u32,
                 entries.as_ptr(),
-                original,
+                reduced,
                 &mut updated,
             )
         })?;
         allocated = Allocation(updated.cast());
         allocated.0.cast::<ACL>()
     };
-    set_dacl(handle.0, descriptor, updated)
+    set_dacl(handle.0, descriptor.pointer(), updated)
+}
+
+fn file_mask(mut mask: u32) -> u32 {
+    let mapping = GENERIC_MAPPING {
+        GenericRead: FILE_GENERIC_READ,
+        GenericWrite: FILE_GENERIC_WRITE,
+        GenericExecute: FILE_GENERIC_EXECUTE,
+        GenericAll: FILE_ALL_ACCESS,
+    };
+    unsafe {
+        MapGenericMask(&mut mask, &mapping);
+    }
+    mask
+}
+
+fn ambient_package_sid(sid: PSID) -> bool {
+    // Regular AppContainers match both catch-all package SIDs. The restricted
+    // package SID (S-1-15-2-2) has no WELL_KNOWN_SID_TYPE in this SDK.
+    unsafe {
+        (*GetSidIdentifierAuthority(sid)).Value == [0, 0, 0, 0, 0, 15]
+            && *GetSidSubAuthorityCount(sid) == 2
+            && *GetSidSubAuthority(sid, 0) == 2
+            && matches!(*GetSidSubAuthority(sid, 1), 1 | 2)
+    }
+}
+
+// GetSecurityInfo interprets legacy inheritance against the current parent and
+// can return synthesized protection flags/ACE flags. Read the stored descriptor
+// directly so a per-object update never persists that reconstructed state.
+struct NativeDescriptor(Vec<u32>);
+impl NativeDescriptor {
+    fn read(handle: HANDLE) -> io::Result<Self> {
+        let mut needed = 0;
+        let status = unsafe {
+            NtQuerySecurityObject(
+                handle,
+                DACL_SECURITY_INFORMATION,
+                ptr::null_mut(),
+                0,
+                &mut needed,
+            )
+        };
+        if status != STATUS_BUFFER_TOO_SMALL {
+            nt_check(status)?;
+        }
+        // NTFS security descriptors have a documented 64 KiB maximum.
+        if needed == 0 || needed > 64 * 1024 {
+            return Err(io::Error::other(
+                "invalid filesystem security descriptor size",
+            ));
+        }
+        let mut result = Self(vec![0u32; (needed as usize).div_ceil(4)]);
+        nt_check(unsafe {
+            NtQuerySecurityObject(
+                handle,
+                DACL_SECURITY_INFORMATION,
+                result.0.as_mut_ptr().cast(),
+                (result.0.len() * 4) as u32,
+                &mut needed,
+            )
+        })?;
+        Ok(result)
+    }
+    fn pointer(&self) -> PSECURITY_DESCRIPTOR {
+        self.0.as_ptr().cast_mut().cast()
+    }
+    fn dacl(&self) -> io::Result<*mut ACL> {
+        let mut present = 0;
+        let mut defaulted = 0;
+        let mut acl = ptr::null_mut();
+        bool_check(unsafe {
+            GetSecurityDescriptorDacl(self.pointer(), &mut present, &mut acl, &mut defaulted)
+        })?;
+        Ok(if present == 0 { ptr::null_mut() } else { acl })
+    }
 }
 
 fn set_dacl(handle: HANDLE, original: PSECURITY_DESCRIPTOR, acl: *const ACL) -> io::Result<()> {
@@ -213,7 +365,10 @@ fn set_dacl(handle: HANDLE, original: PSECURITY_DESCRIPTOR, acl: *const ACL) -> 
     // only, preserving our explicit traversal and per-object protection checks.
     // Microsoft documents this user-mode entry point and its WRITE_DAC access:
     // https://learn.microsoft.com/windows-hardware/drivers/ddi/ntifs/nf-ntifs-zwsetsecurityobject
-    let status = unsafe { NtSetSecurityObject(handle, DACL_SECURITY_INFORMATION, descriptor) };
+    nt_check(unsafe { NtSetSecurityObject(handle, DACL_SECURITY_INFORMATION, descriptor) })
+}
+
+fn nt_check(status: i32) -> io::Result<()> {
     if status < 0 {
         Err(io::Error::from_raw_os_error(
             unsafe { RtlNtStatusToDosError(status) } as i32,
@@ -318,7 +473,10 @@ mod tests {
     };
     use windows_sys::Win32::{
         Foundation::GENERIC_READ,
-        Security::{FreeSid, Isolation::DeriveAppContainerSidFromAppContainerName},
+        Security::{
+            Authorization::ConvertStringSidToSidW, FreeSid,
+            Isolation::DeriveAppContainerSidFromAppContainerName,
+        },
         Storage::FileSystem::FILE_GENERIC_READ,
     };
 
@@ -364,27 +522,13 @@ mod tests {
 
     fn inspect(path: &Path, sid: PSID) -> (u16, Vec<Vec<u8>>, bool) {
         let handle = open(path, READ_CONTROL).unwrap();
-        let mut descriptor = ptr::null_mut();
-        let mut acl = ptr::null_mut();
-        check(unsafe {
-            GetSecurityInfo(
-                handle.0,
-                SE_FILE_OBJECT,
-                DACL_SECURITY_INFORMATION,
-                ptr::null_mut(),
-                ptr::null_mut(),
-                &mut acl,
-                ptr::null_mut(),
-                &mut descriptor,
-            )
-        })
-        .unwrap();
-        let _descriptor = Allocation(descriptor);
+        let descriptor = NativeDescriptor::read(handle.0).unwrap();
+        let acl = descriptor.dacl().unwrap();
         assert!(!acl.is_null());
         let mut control = 0;
         let mut revision = 0;
         bool_check(unsafe {
-            GetSecurityDescriptorControl(descriptor, &mut control, &mut revision)
+            GetSecurityDescriptorControl(descriptor.pointer(), &mut control, &mut revision)
         })
         .unwrap();
         let mut entries = Vec::new();
@@ -403,6 +547,78 @@ mod tests {
             }
         }
         (control, entries, present)
+    }
+
+    fn allowed_mask(path: &Path, sid: PSID) -> u32 {
+        let handle = open(path, READ_CONTROL).unwrap();
+        let descriptor = NativeDescriptor::read(handle.0).unwrap();
+        let acl = descriptor.dacl().unwrap();
+        let mut rights = 0;
+        for index in 0..unsafe { (*acl).AceCount as u32 } {
+            let mut ace = ptr::null_mut();
+            bool_check(unsafe { GetAce(acl, index, &mut ace) }).unwrap();
+            let entry = ace.cast::<ACCESS_ALLOWED_ACE>();
+            if unsafe {
+                (*entry).Header.AceType == 0
+                    && EqualSid(ptr::addr_of_mut!((*entry).SidStart).cast(), sid) != 0
+            } {
+                rights |= file_mask(unsafe { (*entry).Mask });
+            }
+        }
+        rights
+    }
+
+    #[test]
+    fn restrictions_remove_package_allow_bits_and_later_grants_cannot_restore_them() {
+        let fixture = Fixture::new();
+        let peer = Fixture::new();
+        let file = fixture.root.join("config");
+        fs::write(&file, "original").unwrap();
+        let read_write = FILE_GENERIC_READ | FILE_GENERIC_WRITE;
+        change(&file, peer.sid, read_write, GRANT_ACCESS).unwrap();
+        change(&file, fixture.sid, read_write, GRANT_ACCESS).unwrap();
+        change(&file, fixture.sid, WRITE_RIGHTS, DENY_ACCESS).unwrap();
+        assert_eq!(allowed_mask(&file, fixture.sid) & WRITE_RIGHTS, 0);
+        assert_eq!(
+            allowed_mask(&file, fixture.sid) & FILE_GENERIC_READ,
+            FILE_GENERIC_READ
+        );
+        change(&file, fixture.sid, read_write, GRANT_ACCESS).unwrap();
+        assert_eq!(allowed_mask(&file, fixture.sid) & WRITE_RIGHTS, 0);
+        assert_eq!(allowed_mask(&file, peer.sid), read_write);
+        change(&file, fixture.sid, FILE_ALL_ACCESS, DENY_ACCESS).unwrap();
+        assert_eq!(allowed_mask(&file, fixture.sid), 0);
+        change(&file, fixture.sid, 0, REVOKE_ACCESS).unwrap();
+        assert!(!inspect(&file, fixture.sid).2);
+        assert_eq!(allowed_mask(&file, peer.sid), read_write);
+    }
+
+    #[test]
+    fn conflicting_ambient_package_grants_fail_closed_without_changing_them() {
+        let fixture = Fixture::new();
+        let file = fixture.root.join("input.txt");
+        fs::write(&file, "original").unwrap();
+        for text in ["S-1-15-2-1", "S-1-15-2-2"] {
+            let mut packages = ptr::null_mut();
+            bool_check(unsafe {
+                ConvertStringSidToSidW(wide(text).unwrap().as_ptr(), &mut packages)
+            })
+            .unwrap();
+            let _packages = Allocation(packages);
+            for (path, grant, restriction) in [
+                (&fixture.root, FILE_DELETE_CHILD, FILE_DELETE_CHILD),
+                (&file, FILE_GENERIC_READ | FILE_GENERIC_WRITE, WRITE_RIGHTS),
+            ] {
+                // A non-inheritable parent DELETE_CHILD grant is not visible in
+                // a protected child's ACL, but still authorizes its deletion.
+                change_without_inheritance(path, packages, grant, GRANT_ACCESS).unwrap();
+                let before = inspect(path, fixture.sid);
+                let error = change(path, fixture.sid, restriction, DENY_ACCESS).unwrap_err();
+                assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+                assert_eq!(inspect(path, fixture.sid), before);
+                change(path, packages, 0, REVOKE_ACCESS).unwrap();
+            }
+        }
     }
 
     #[test]
