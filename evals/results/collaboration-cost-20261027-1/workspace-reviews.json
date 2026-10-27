@@ -1,0 +1,68 @@
+[
+  {
+    "run_id": "run-18e2505b36af16a8-19d8-1",
+    "review": {
+      "root": "/private/var/folders/rv/ghrq1zqn405dtldv_2vymry80000gn/T/openharness-continuity-zD0N4m/workspace",
+      "permission_mode": "workspace_write",
+      "changes": [
+        {
+          "path": "outputs/continuity.json",
+          "status": "added",
+          "before": null,
+          "after": "{\n  \"refund_ids\": [\n    \"R301\",\n    \"R302\",\n    \"R303\"\n  ],\n  \"applied_refund\": 60,\n  \"net_received\": 415,\n  \"unpaid_before_refunds\": 225,\n  \"evidence\": [\n    \"orders.csv: O101=120, O102=80, O103=200, O104=60, O105=150, O106=90; rules.md rules 1 and 7.\",\n    \"payments.csv: P201=120 paid, P202=80 paid (duplicate identical row counted once), P203=200 paid, P204=75 paid; effective payments total 475; rules.md rules 2-4.\",\n    \"payments.csv: P205=50 paid for nonexistent order O999 (orphan, excluded), P206=failed (excluded), P207=cancelled (excluded); rules.md rules 3-4.\",\n    \"refunds.csv: R301=30 settled against P203/O103, R302=20 settled against P201/O101, and R303=10 against P204/O105; R301-R303 are applied for a total of 60; rules.md rule 5.\",\n    \"refunds.csv: R303 is pending in the source but is included only under correction CORRECTION-ORCHID (event-4): \\\"R303 已经人工核实为 settled\\\".\",\n    \"refunds.csv: R304=5 settled references unmatched payment P999 (orphan refund, excluded); rules.md rule 5.\",\n    \"Calculation from the cited source records: net_received = 475 effective payments - 60 applied refunds = 415; unpaid_before_refunds = O104(60) + O105(150-75=75) + O106(90) = 225; rules.md rules 6-7.\"\n  ]\n}\n",
+          "revertible": true
+        }
+      ],
+      "approvals": [],
+      "commands": [
+        {
+          "id": "command-1793084124397592000-1",
+          "command": "\"/Users/jiangtao/Desktop/open-harness/apps/desktop/resources/workspace-runtime/node/bin/node\" -e 'const fs=require(\"node:fs\"); const assert=require(\"node:assert/strict\"); const p=\"outputs/continuity.json\"; const d=JSON.parse(fs.readFileSync(p,\"utf8\")); assert.deepEqual(d.refund_ids,[\"R301\",\"R302\",\"R303\"]); assert.equal(d.applied_refund,60); assert.equal(d.net_received,415); assert.equal(d.unpaid_before_refunds,225); assert.ok(Array.isArray(d.evidence)); const ev=d.evidence.join(\"\\n\"); for (const s of [\"orders.csv\",\"payments.csv\",\"refunds.csv\",\"rules.md\",\"CORRECTION-ORCHID\",\"event-4\",\"R301\",\"R302\",\"R303\",\"R304\",\"475\",\"60\",\"415\",\"225\"]) assert.ok(ev.includes(s),\"missing evidence: \"+s); console.log(\"JSON parse and field/evidence assertions passed\"); console.log(JSON.stringify({refund_ids:d.refund_ids,applied_refund:d.applied_refund,net_received:d.net_received,unpaid_before_refunds:d.unpaid_before_refunds},null,2));'",
+          "status": "completed",
+          "output": "JSON parse and field/evidence assertions passed\n{\n  \"refund_ids\": [\n    \"R301\",\n    \"R302\",\n    \"R303\"\n  ],\n  \"applied_refund\": 60,\n  \"net_received\": 415,\n  \"unpaid_before_refunds\": 225\n}\n",
+          "exit_code": 0,
+          "network_access": "denied",
+          "access": "read_only"
+        }
+      ],
+      "busy": false,
+      "sandbox_available": true,
+      "execution_mode": "sandboxed",
+      "review_incomplete": false,
+      "command_grants": []
+    }
+  },
+  {
+    "run_id": "run-18e25068e9787060-19d8-2",
+    "review": {
+      "root": "/private/var/folders/rv/ghrq1zqn405dtldv_2vymry80000gn/T/openharness-continuity-zD0N4m/workspace",
+      "permission_mode": "workspace_write",
+      "changes": [
+        {
+          "path": ".openharness-tmp/reconcile.py",
+          "status": "added",
+          "before": null,
+          "after": "#!/usr/bin/env python3\n\"\"\"Reconcile the supplied order records without modifying source files.\"\"\"\n\nimport csv\nimport json\nfrom collections import Counter\nfrom decimal import Decimal\nfrom pathlib import Path\n\n\nROOT = Path(__file__).resolve().parent.parent\nCORRECTED_REFUND_ID = \"R303\"\nCORRECTION_EVIDENCE = {\n    \"message_id\": \"event-4\",\n    \"correction_id\": \"CORRECTION-ORCHID\",\n    \"quote\": \"R303 已经人工核实为 settled\",\n}\n\n\ndef read_csv(name):\n    with (ROOT / name).open(\"r\", encoding=\"utf-8-sig\", newline=\"\") as source:\n        return list(csv.DictReader(source))\n\n\ndef money(value):\n    return Decimal(value)\n\n\norders_rows = read_csv(\"orders.csv\")\npayments_rows = read_csv(\"payments.csv\")\nrefunds = read_csv(\"refunds.csv\")\norders = {row[\"order_id\"]: money(row[\"amount\"]) for row in orders_rows}\nif len(orders) != len(orders_rows):\n    raise ValueError(\"orders.csv contains duplicate order IDs\")\n\n# Keep first row per payment_id, as instructed; verify duplicates agree.\npayment_groups = {}\nfor row in payments_rows:\n    payment_groups.setdefault(row[\"payment_id\"], []).append(row)\npayments = {}\nfor payment_id, rows in payment_groups.items():\n    if any(row != rows[0] for row in rows[1:]):\n        raise ValueError(f\"Conflicting duplicate payment rows: {payment_id}\")\n    payments[payment_id] = rows[0]\n\neffective_payments = {}\nexcluded_status_payments = []\norphan_payments = []\nfor payment_id, row in payments.items():\n    if row[\"status\"] != \"paid\":\n        excluded_status_payments.append(payment_id)\n    elif row[\"order_id\"] not in orders:\n        orphan_payments.append(payment_id)\n    else:\n        effective_payments[payment_id] = row\n\npaid_by_order = {order_id: Decimal(\"0\") for order_id in orders}\nfor row in effective_payments.values():\n    paid_by_order[row[\"order_id\"]] += money(row[\"amount\"])\n\nrefund_ids = []\napplied_refund = Decimal(\"0\")\norphan_refunds = []\nfor refund in refunds:\n    corrected_to_settled = refund[\"refund_id\"] == CORRECTED_REFUND_ID\n    status_is_settled = refund[\"status\"] == \"settled\" or corrected_to_settled\n    payment = effective_payments.get(refund[\"payment_id\"])\n    matches = payment is not None and payment[\"order_id\"] == refund[\"order_id\"]\n    if status_is_settled and matches:\n        refund_ids.append(refund[\"refund_id\"])\n        applied_refund += money(refund[\"amount\"])\n    elif refund[\"status\"] == \"settled\" and not matches:\n        orphan_refunds.append(refund[\"refund_id\"])\n\nunpaid_by_order = {\n    order_id: max(amount - paid_by_order[order_id], Decimal(\"0\"))\n    for order_id, amount in orders.items()\n}\nunpaid_before_refunds = sum(unpaid_by_order.values(), Decimal(\"0\"))\neffective_payment_total = sum(\n    (money(row[\"amount\"]) for row in effective_payments.values()), Decimal(\"0\")\n)\nnet_received = effective_payment_total - applied_refund\n\n\ndef output_decimal(value):\n    return int(value) if value == value.to_integral_value() else float(value)\n\n\nreport = {\n    \"orders\": [\n        {\"order_id\": order_id, \"amount\": output_decimal(amount)}\n        for order_id, amount in orders.items()\n    ],\n    \"duplicate_payment_ids\": [\n        payment_id for payment_id, rows in payment_groups.items() if len(rows) > 1\n    ],\n    \"effective_payments\": [\n        {\"payment_id\": payment_id, \"order_id\": row[\"order_id\"], \"amount\": output_decimal(money(row[\"amount\"]))}\n        for payment_id, row in effective_payments.items()\n    ],\n    \"excluded_status_payment_ids\": excluded_status_payments,\n    \"orphan_payment_ids\": orphan_payments,\n    \"refunds_applied\": [\n        {\n            \"refund_id\": refund_id,\n            \"amount\": output_decimal(money(next(r[\"amount\"] for r in refunds if r[\"refund_id\"] == refund_id))),\n            \"status_in_source\": next(r[\"status\"] for r in refunds if r[\"refund_id\"] == refund_id),\n            \"manual_status_correction\": refund_id == CORRECTED_REFUND_ID,\n        }\n        for refund_id in refund_ids\n    ],\n    \"orphan_refund_ids\": orphan_refunds,\n    \"effective_payment_total\": output_decimal(effective_payment_total),\n    \"refund_ids\": refund_ids,\n    \"applied_refund\": output_decimal(applied_refund),\n    \"net_received\": output_decimal(net_received),\n    \"unpaid_before_refunds_by_order\": {\n        order_id: output_decimal(amount) for order_id, amount in unpaid_by_order.items()\n    },\n    \"unpaid_before_refunds\": output_decimal(unpaid_before_refunds),\n    \"evidence\": [\n        \"orders.csv: O101–O106 and amounts; rules.md rules 1 and 7.\",\n        \"payments.csv: P201–P207; P202 occurs twice with identical contents (deduplicated); rules.md rules 2–4.\",\n        \"refunds.csv: R301–R304; R301/R302 are settled; R303 is pending in source; R304 references unmatched P999; rules.md rule 5.\",\n        f\"User correction {CORRECTION_EVIDENCE['correction_id']} ({CORRECTION_EVIDENCE['message_id']}): “{CORRECTION_EVIDENCE['quote']}”; applies only to R303.\",\n    ],\n}\nprint(json.dumps(report, ensure_ascii=False, indent=2))\n",
+          "revertible": true
+        }
+      ],
+      "approvals": [],
+      "commands": [
+        {
+          "id": "command-1793084037734820000-1",
+          "command": "\"/Users/jiangtao/Desktop/open-harness/apps/desktop/resources/workspace-runtime/python/bin/python3\" -I -B .openharness-tmp/reconcile.py",
+          "status": "completed",
+          "output": "{\n  \"orders\": [\n    {\n      \"order_id\": \"O101\",\n      \"amount\": 120\n    },\n    {\n      \"order_id\": \"O102\",\n      \"amount\": 80\n    },\n    {\n      \"order_id\": \"O103\",\n      \"amount\": 200\n    },\n    {\n      \"order_id\": \"O104\",\n      \"amount\": 60\n    },\n    {\n      \"order_id\": \"O105\",\n      \"amount\": 150\n    },\n    {\n      \"order_id\": \"O106\",\n      \"amount\": 90\n    }\n  ],\n  \"duplicate_payment_ids\": [\n    \"P202\"\n  ],\n  \"effective_payments\": [\n    {\n      \"payment_id\": \"P201\",\n      \"order_id\": \"O101\",\n      \"amount\": 120\n    },\n    {\n      \"payment_id\": \"P202\",\n      \"order_id\": \"O102\",\n      \"amount\": 80\n    },\n    {\n      \"payment_id\": \"P203\",\n      \"order_id\": \"O103\",\n      \"amount\": 200\n    },\n    {\n      \"payment_id\": \"P204\",\n      \"order_id\": \"O105\",\n      \"amount\": 75\n    }\n  ],\n  \"excluded_status_payment_ids\": [\n    \"P206\",\n    \"P207\"\n  ],\n  \"orphan_payment_ids\": [\n    \"P205\"\n  ],\n  \"refunds_applied\": [\n    {\n      \"refund_id\": \"R301\",\n      \"amount\": 30,\n      \"status_in_source\": \"settled\",\n      \"manual_status_correction\": false\n    },\n    {\n      \"refund_id\": \"R302\",\n      \"amount\": 20,\n      \"status_in_source\": \"settled\",\n      \"manual_status_correction\": false\n    },\n    {\n      \"refund_id\": \"R303\",\n      \"amount\": 10,\n      \"status_in_source\": \"pending\",\n      \"manual_status_correction\": true\n    }\n  ],\n  \"orphan_refund_ids\": [\n    \"R304\"\n  ],\n  \"effective_payment_total\": 475,\n  \"refund_ids\": [\n    \"R301\",\n    \"R302\",\n    \"R303\"\n  ],\n  \"applied_refund\": 60,\n  \"net_received\": 415,\n  \"unpaid_before_refunds_by_order\": {\n    \"O101\": 0,\n    \"O102\": 0,\n    \"O103\": 0,\n    \"O104\": 60,\n    \"O105\": 75,\n    \"O106\": 90\n  },\n  \"unpaid_before_refunds\": 225,\n  \"evidence\": [\n    \"orders.csv: O101–O106 and amounts; rules.md rules 1 and 7.\",\n    \"payments.csv: P201–P207; P202 occurs twice with identical contents (deduplicated); rules.md rules 2–4.\",\n    \"refunds.csv: R301–R304; R301/R302 are settled; R303 is pending in source; R304 references unmatched P999; rules.md rule 5.\",\n    \"User correction CORRECTION-ORCHID (event-4): “R303 已经人工核实为 settled”; applies only to R303.\"\n  ]\n}\n",
+          "exit_code": 0,
+          "network_access": "denied",
+          "access": "read_only"
+        }
+      ],
+      "busy": false,
+      "sandbox_available": true,
+      "execution_mode": "sandboxed",
+      "review_incomplete": false,
+      "command_grants": []
+    }
+  }
+]

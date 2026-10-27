@@ -1,0 +1,103 @@
+{
+  "passed": true,
+  "failure": null,
+  "stopped_reason": null,
+  "duration_ms": 266815,
+  "run_id": "run-18e251bd7339d348-46b6-1",
+  "checks": [
+    {
+      "name": "valid_result_json",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "correct_refund_ids",
+      "passed": true
+    },
+    {
+      "name": "applied_refund",
+      "passed": true,
+      "detail": {
+        "actual": 60,
+        "expected": 60
+      }
+    },
+    {
+      "name": "net_received",
+      "passed": true,
+      "detail": {
+        "actual": 415,
+        "expected": 415
+      }
+    },
+    {
+      "name": "unpaid_before_refunds",
+      "passed": true,
+      "detail": {
+        "actual": 225,
+        "expected": 225
+      }
+    },
+    {
+      "name": "correction_cited",
+      "passed": true
+    },
+    {
+      "name": "source_files_cited",
+      "passed": true
+    },
+    {
+      "name": "unchanged:orders.csv",
+      "passed": true
+    },
+    {
+      "name": "unchanged:payments.csv",
+      "passed": true
+    },
+    {
+      "name": "unchanged:refunds.csv",
+      "passed": true
+    },
+    {
+      "name": "unchanged:rules.md",
+      "passed": true
+    },
+    {
+      "name": "actual_compaction_covers_correction_before_delivery",
+      "passed": true
+    },
+    {
+      "name": "one_child_agent",
+      "passed": true
+    },
+    {
+      "name": "child_read_parent_history",
+      "passed": true
+    },
+    {
+      "name": "child_executed_command",
+      "passed": true,
+      "detail": {
+        "passed": true,
+        "run_id": "run-18e251ce4600f760-46b6-2",
+        "command_id": "command-1793085574673759000-1",
+        "script": ".openharness-tmp/reconcile_independent.py"
+      }
+    },
+    {
+      "name": "all_agents_successful",
+      "passed": true
+    }
+  ],
+  "passed_checks": 16,
+  "total_checks": 16,
+  "observed_usage": {
+    "input_tokens": 367943,
+    "output_tokens": 9331,
+    "responses": 32
+  },
+  "child_count": 1,
+  "evidence_version": 2,
+  "correction_sequence": 4,
+  "caveat": "Evidence checks establish traceable identifiers, not full prose entailment; inspect the public transcript. This is a reduced-window continuity test, not a 1M stress test."
+}

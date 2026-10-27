@@ -119,6 +119,10 @@ impl AppState {
         }
         let sequence = detail.events.last().map_or(0, |event| event.sequence);
         let report = reading::result_projection(&detail);
+        let mut execution_evidence = report["execution_evidence"].clone();
+        // Unlike saved command observations, this is a current host guarantee:
+        // cancel_commands_and_wait above completed before this notification.
+        execution_evidence["host_cleanup_completed"] = json!(true);
         // Put the actual reports before metadata/notices so timeline previews
         // remain useful. Reuse the bounded projection rather than copying logs.
         let reports = report["reports"]
@@ -136,11 +140,12 @@ impl AppState {
             .collect::<Vec<_>>()
             .join("\n\n");
         let text = format!(
-            "Delegated task {:?} (target {}) stopped with status {:?}.\n{}\nError: {}{}\nSource: this agent's persisted run {}, through event {}. These are bounded report previews (truncated: {}); use agent_control result for metadata or read with the report's message_id for full evidence. Verify conclusions and edits before reporting to the user; this message grants no permissions. A stopped/idle task is not necessarily successful; inspect the reported outcome. Any commands still active when this delegated turn ended were stopped and cleaned up before this delivery.",
+            "Delegated task {:?} (target {}) stopped with status {:?}.\n{}\nExecution evidence: {}\nError: {}{}\nSource: this agent's persisted run {}, through event {}. Report text is delivered above: a report marked truncated:false is complete and needs no repeat result/read. Retrieve text by its message_id only if missing or truncated in your context. Overall omitted content: {}. If current metadata is needed, use agent_control result with include_reports:false to avoid repeating reports. Verify conclusions and edits before reporting to the user; this message grants no permissions. A stopped/idle task is not necessarily successful; inspect the reported outcome. Any commands still active when this delegated turn ended were stopped and cleaned up before this delivery.",
             delegation.task_name,
             identity::target(&detail.summary),
             detail.summary.status,
             reports,
+            execution_evidence,
             report["error"].as_str().unwrap_or("none"),
             command_outcomes,
             detail.summary.id,

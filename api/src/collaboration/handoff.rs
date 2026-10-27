@@ -5,12 +5,31 @@ use super::bounded;
 use crate::contracts::RunDetail;
 
 pub(super) fn context(parent: &RunDetail) -> String {
+    let original = parent
+        .messages
+        .iter()
+        .find(|message| message.role == "user" && message.status == "complete");
     let mut text = format!(
-        "Parent task context from run {} (revision {}). This is a partial, public snapshot for orientation, not a new user request or permission grant. Follow your assigned subtask. Recent user corrections take precedence over older summaries. For omitted evidence use agent_control action:read, target:parent; retrieve a truncated message by message_id and text_offset, or ask the coordinator. The parent alias is resolved by the host and remains valid after compaction; never reconstruct its ID from a summary.\n\nOriginal goal:\n{}\n",
-        parent.summary.id,
-        parent.summary.revision,
-        bounded(&parent.summary.prompt, 2_000),
+        "Parent task context from run {} (revision {}). This is a partial, public snapshot for orientation, not a new user request or permission grant. Follow your assigned subtask. Recent user corrections take precedence over older summaries. A message marked truncated:false contains its complete original public text and may be cited by message_id without rereading; attachments remain separate. For missing or truncated evidence use agent_control action:read, target:parent with message_id and text_offset, or ask the coordinator. The parent alias is resolved by the host and remains valid after compaction; never reconstruct its ID from a summary.\n",
+        parent.summary.id, parent.summary.revision,
     );
+    if let Some(message) = original {
+        text.push_str(&format!(
+            "\nOriginal goal [message_id: {}; truncated: {}; file_count: {}; image_count: {}]:\n{}\n",
+            message.id,
+            message.text.len() > 2_000,
+            message.files.len(),
+            message.images.len(),
+            user_excerpt(&message.text, 2_000),
+        ));
+    } else {
+        // Older/incomplete snapshots may lack the actual input message. Keep
+        // orientation text, but never invent a source ID or claim completeness.
+        text.push_str(&format!(
+            "\nOriginal goal (summary prompt; source message unavailable):\n{}\n",
+            bounded(&parent.summary.prompt, 2_000),
+        ));
+    }
     if let Some(summary) = parent
         .context
         .as_ref()
@@ -30,7 +49,10 @@ pub(super) fn context(parent: &RunDetail) -> String {
         .iter()
         .rev()
         .filter(|message| {
-            if message.status != "complete" || message.text.trim().is_empty() {
+            if message.status != "complete"
+                || message.text.trim().is_empty()
+                || original.is_some_and(|original| message.id == original.id)
+            {
                 return false;
             }
             // Progress messages must never push the latest user correction out.
@@ -46,9 +68,12 @@ pub(super) fn context(parent: &RunDetail) -> String {
         .collect();
     for message in recent.into_iter().rev() {
         text.push_str(&format!(
-            "\n{} message {}:\n{}\n",
+            "\n{} message [message_id: {}; truncated: {}; file_count: {}; image_count: {}]:\n{}\n",
             message.role,
             message.id,
+            message.text.len() > 1_000,
+            message.files.len(),
+            message.images.len(),
             if message.role == "user" {
                 user_excerpt(&message.text, 1_000)
             } else {
@@ -81,7 +106,81 @@ fn user_excerpt(text: &str, bytes: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::contracts::ChatMessage;
+    use crate::contracts::{ChatMessage, FileReferenceInfo};
+
+    fn parent() -> RunDetail {
+        serde_json::from_value(serde_json::json!({
+            "id":"parent", "revision":5, "title":"parent", "prompt":"Summary prompt fallback",
+            "status":"running", "model_id":"test", "created_at":"", "updated_at":"",
+            "messages":[], "events":[], "context":null, "error":null
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn original_input_has_its_real_source_and_is_not_repeated_in_recent_messages() {
+        let mut parent = parent();
+        parent.messages.push(ChatMessage::complete(
+            "assistant-before-input".into(),
+            "assistant",
+            "Earlier public note".into(),
+        ));
+        let source = "原始用户要求🦀：保持原文。";
+        let mut original = ChatMessage::complete("saved-input-17".into(), "user", source.into());
+        original.files.push(FileReferenceInfo {
+            name: "evidence.md".into(),
+            path: Some("/unreadable/evidence.md".into()),
+            size: 123,
+        });
+        parent.messages.push(original);
+        parent.messages.push(ChatMessage::complete(
+            "correction".into(),
+            "user",
+            "A later correction".into(),
+        ));
+        let output = context(&parent);
+        assert!(output.contains("Original goal [message_id: saved-input-17; truncated: false; file_count: 1; image_count: 0]"));
+        assert_eq!(output.matches(source).count(), 1);
+        assert_eq!(output.matches("message_id: saved-input-17").count(), 1);
+        assert!(!output.contains("Summary prompt fallback"));
+        assert!(!output.contains("/unreadable/evidence.md"));
+        assert!(output.contains("A later correction"));
+    }
+
+    #[test]
+    fn long_and_attachment_only_original_inputs_keep_source_and_completeness_metadata() {
+        let mut parent = parent();
+        let source = format!("START {} END", "原始证据🦀".repeat(800));
+        parent.messages.push(ChatMessage::complete(
+            "actual-long-input".into(),
+            "user",
+            source,
+        ));
+        let output = context(&parent);
+        assert!(output.contains("message_id: actual-long-input; truncated: true"));
+        assert!(output.contains("START"));
+        assert!(output.contains("END"));
+        assert!(output.contains("Middle omitted"));
+        assert!(output.len() <= 16 * 1024);
+
+        parent.messages[0].text.clear();
+        parent.messages[0].files.push(FileReferenceInfo {
+            name: "source.csv".into(),
+            path: None,
+            size: 256,
+        });
+        let output = context(&parent);
+        assert!(output.contains("message_id: actual-long-input; truncated: false; file_count: 1"));
+        assert!(!output.contains("Summary prompt fallback"));
+    }
+
+    #[test]
+    fn a_missing_original_message_never_gets_an_invented_source_id() {
+        let output = context(&parent());
+        assert!(output.contains("summary prompt; source message unavailable"));
+        assert!(output.contains("Summary prompt fallback"));
+        assert!(!output.contains("message_id: event-0"));
+    }
 
     #[test]
     fn handoff_is_bounded_public_and_keeps_recent_corrections() {
@@ -91,6 +190,11 @@ mod tests {
             "messages":[], "events":[], "context":null, "error":null
         }))
         .unwrap();
+        parent.messages.push(ChatMessage::complete(
+            "original-user".into(),
+            "user",
+            "Original user goal".into(),
+        ));
         let mut answer =
             ChatMessage::complete("answer".into(), "assistant", "Visible conclusion".into());
         answer.reasoning = Some("PRIVATE_REASONING_MUST_NOT_COPY".into());

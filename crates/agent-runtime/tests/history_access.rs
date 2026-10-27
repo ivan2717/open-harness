@@ -342,9 +342,9 @@ async fn history_search_matches_original_text_without_json_escaping() {
             "query: {query:?}"
         );
         if expected_sequence == success_sequence {
-            let preview: serde_json::Value =
-                serde_json::from_str(response["hits"][0]["preview"].as_str().unwrap()).unwrap();
-            assert_eq!(preview["output"], output);
+            assert_eq!(response["hits"][0]["preview"], output);
+            assert_eq!(response["hits"][0]["field"], "/output");
+            assert_eq!(response["hits"][0]["preview_truncated"], false);
         }
     }
 

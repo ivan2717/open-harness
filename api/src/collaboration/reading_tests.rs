@@ -117,6 +117,30 @@ fn message(id: &str, role: &str, text: &str) -> ChatMessage {
     ChatMessage::complete(id.into(), role, text.into())
 }
 
+fn command_message(
+    id: &str,
+    tool: &str,
+    command_id: &str,
+    status: &str,
+    exit_code: Option<i32>,
+    output: &str,
+) -> ChatMessage {
+    let text = serde_json::to_string(&agent_local::CommandStatus {
+        command_id: command_id.into(),
+        status: status.into(),
+        exit_code,
+        output: output.into(),
+        next_cursor: output.len() as u64,
+        output_truncated: false,
+        has_more_output: false,
+    })
+    .unwrap();
+    let mut message = message(id, "tool", &text);
+    message.tool_name = Some(tool.into());
+    message.is_error = Some(false);
+    message
+}
+
 fn detail(messages: Vec<ChatMessage>) -> RunDetail {
     let now = time::now();
     RunDetail {
@@ -144,6 +168,34 @@ fn detail(messages: Vec<ChatMessage>) -> RunDetail {
         context: Some(initial_context()),
         error: None,
     }
+}
+
+#[tokio::test]
+async fn message_completeness_is_independent_of_remaining_transcript_pages() {
+    let source = "原始要求🦀：可引用完整消息。";
+    let long = "稍后的长消息🦀".repeat(300);
+    let fixture = Fixture::new(vec![
+        message("original", "user", source),
+        message("later", "user", &long),
+    ])
+    .await;
+    let first = fixture.read(json!({"limit":1})).await;
+    assert_eq!(first["messages"][0]["text"], source);
+    assert_eq!(first["messages"][0]["truncated"], false);
+    assert_eq!(first["messages"][0]["id"], "original");
+    assert_eq!(first["truncated"], true);
+    assert_eq!(first["next_offset"], 1);
+    assert!(
+        first["notice"]
+            .as_str()
+            .unwrap()
+            .contains("complete original public text")
+    );
+    let last = fixture.read(json!({"offset":1})).await;
+    assert_eq!(last["messages"][0]["truncated"], true);
+    assert_eq!(last["truncated"], true);
+    assert_eq!(last["next_offset"], Value::Null);
+    assert!(last["next_offset"].is_null());
 }
 
 #[tokio::test]
@@ -275,6 +327,226 @@ async fn message_id_pages_reassemble_full_unicode_text_and_preserve_file_metadat
 }
 
 #[test]
+fn execution_evidence_uses_latest_host_observation_only_within_the_current_user_turn() {
+    let old = command_message(
+        "tool-old",
+        "run_command",
+        "old-command",
+        "completed",
+        Some(0),
+        "old stdout",
+    );
+    let start = command_message(
+        "tool-start",
+        "run_command",
+        "current-command",
+        "running",
+        None,
+        "first output",
+    );
+    let end = command_message(
+        "tool-finish",
+        "manage_command",
+        "current-command",
+        "completed",
+        Some(0),
+        "PRIVATE_STDOUT_MUST_NOT_COPY",
+    );
+    let mut assistant = end.clone();
+    assistant.role = "assistant".into();
+    assistant.id = "fabricated-report".into();
+    assistant.text = "I ran a different command successfully: command-fake".into();
+    let mut nested = command_message(
+        "tool-file",
+        "read_file",
+        "nested-fake",
+        "completed",
+        Some(0),
+        "nested stdout",
+    );
+    nested.text = end.text.clone();
+    let detail = detail(vec![
+        message("old-user", "user", "Previous turn"),
+        old,
+        message("new-user", "user", "Current turn"),
+        start,
+        end,
+        assistant,
+        nested,
+    ]);
+    let output = result_projection(&detail);
+    let evidence = &output["execution_evidence"];
+    assert_eq!(evidence["command_count"], 1);
+    assert_eq!(evidence["unverified_call_count"], 0);
+    assert_eq!(evidence["commands"][0]["command_id"], "current-command");
+    assert_eq!(evidence["commands"][0]["output_message_id"], "tool-finish");
+    assert_eq!(evidence["commands"][0]["launch_message_id"], "tool-start");
+    assert_eq!(evidence["commands"][0]["tool_name"], "manage_command");
+    assert_eq!(evidence["commands"][0]["status"], "completed");
+    assert_eq!(evidence["commands"][0]["exit_code"], 0);
+    assert_eq!(evidence["commands"][0]["cleanup_completed"], true);
+    let encoded = evidence.to_string();
+    assert!(!encoded.contains("old-command"));
+    assert!(!encoded.contains("command-fake"));
+    assert!(!encoded.contains("PRIVATE_STDOUT_MUST_NOT_COPY"));
+    assert!(!encoded.contains("nested-fake"));
+}
+
+#[test]
+fn pending_failed_and_unrecognized_command_tools_never_become_verified_executions() {
+    let valid = command_message(
+        "tool-host",
+        "run_command",
+        "command-host",
+        "completed",
+        Some(0),
+        "",
+    );
+    let mut pending = valid.clone();
+    pending.id = "tool-pending".into();
+    pending.status = "pending".into();
+    let mut failed = valid.clone();
+    failed.id = "tool-failed".into();
+    failed.is_error = Some(true);
+    let mut unknown = valid.clone();
+    unknown.id = "tool-unknown".into();
+    unknown.text = "completed, exit_code: 0".into();
+    let mut legacy = valid;
+    legacy.id = "tool-legacy".into();
+    legacy.is_error = None;
+    let unsupported = command_message(
+        "tool-unsupported",
+        "manage_command",
+        "future",
+        "unknown_state",
+        Some(0),
+        "",
+    );
+    let run = detail(vec![pending, failed, unknown, legacy, unsupported]);
+    let evidence = execution_evidence(&run, 0);
+    assert_eq!(evidence["command_count"], 0);
+    assert_eq!(evidence["unverified_call_count"], 5);
+    assert_eq!(evidence["omitted_unverified_calls"], 1);
+    assert_eq!(evidence["truncated"], true);
+    assert_eq!(
+        evidence["unverified_calls"][0]["state"],
+        "unrecognized_tool_result"
+    );
+    assert_eq!(evidence["unverified_calls"][3]["state"], "tool_error");
+    let pending_only = execution_evidence(&detail(vec![run.messages[0].clone()]), 0);
+    assert_eq!(
+        pending_only["unverified_calls"][0]["state"],
+        "pending_tool_call"
+    );
+}
+
+#[test]
+fn execution_evidence_and_reports_share_the_serialized_budget_without_clipping_source_ids() {
+    let mut messages = vec![message("user", "user", "Current turn")];
+    for index in 0..20 {
+        let id = format!("tool-{index}-{}", "证据🦀\"\\".repeat(30));
+        messages.push(command_message(
+            &id,
+            "run_command",
+            &format!("command-{index}"),
+            "failed",
+            Some(2),
+            &"STDOUT_MUST_NOT_COPY".repeat(1000),
+        ));
+    }
+    messages.push(message(
+        "report",
+        "assistant",
+        &"准确结果🦀\u{0001}".repeat(1800),
+    ));
+    let detail = detail(messages);
+    let output = result_projection(&detail);
+    assert!(output.to_string().len() <= PREVIEW_BYTES - 32);
+    assert_eq!(output["reports"][0]["truncated"], true);
+    let evidence = &output["execution_evidence"];
+    assert!(evidence.to_string().len() <= EXECUTION_BYTES);
+    assert_eq!(evidence["command_count"], 20);
+    assert_eq!(evidence["truncated"], true);
+    let rows = evidence["commands"].as_array().unwrap();
+    assert!(!rows.is_empty());
+    assert!(rows.len() <= EXECUTION_ITEMS);
+    assert_eq!(
+        evidence["omitted_commands"].as_u64().unwrap() as usize,
+        20 - rows.len()
+    );
+    assert_eq!(rows[0]["command_id"], "command-19");
+    for row in rows {
+        assert!(
+            detail
+                .messages
+                .iter()
+                .any(|message| message.id == row["output_message_id"].as_str().unwrap())
+        );
+        assert_eq!(row["cleanup_completed"], true);
+        assert_eq!(row["exit_code"], 2);
+    }
+    assert!(!evidence.to_string().contains("STDOUT_MUST_NOT_COPY"));
+}
+
+#[tokio::test]
+async fn active_results_keep_stale_execution_observations_and_offer_exact_tool_result_reads() {
+    let observed = command_message(
+        "tool-running",
+        "run_command",
+        "command-running",
+        "running",
+        None,
+        "Original saved stdout",
+    );
+    let original = observed.text.clone();
+    let fixture = Fixture::new(vec![
+        observed,
+        message(
+            "report",
+            "assistant",
+            "The command is complete; all tests passed.",
+        ),
+    ])
+    .await;
+    fixture
+        .state
+        .entry("reader-run")
+        .unwrap()
+        .snapshot
+        .update(|detail| {
+            detail.summary.status = RunStatus::Running;
+        })
+        .unwrap();
+    let result: Value =
+        serde_json::from_str(&fixture.state.agent_result("reader-run", false).unwrap()).unwrap();
+    assert_eq!(result["active"], true);
+    assert_eq!(
+        result["execution_evidence"]["commands"][0]["status"],
+        "running"
+    );
+    assert!(result["execution_evidence"]["commands"][0]["exit_code"].is_null());
+    assert_eq!(
+        result["execution_evidence"]["commands"][0]["cleanup_completed"],
+        false
+    );
+    assert!(
+        result["execution_evidence"]
+            .get("host_cleanup_completed")
+            .is_none()
+    );
+    assert!(
+        result["execution_evidence"]["notice"]
+            .as_str()
+            .unwrap()
+            .contains("stale while active")
+    );
+    assert_eq!(
+        fixture.read(json!({"message_id":"tool-running"})).await["text"],
+        original
+    );
+}
+
+#[test]
 fn result_keeps_the_report_before_a_short_mailbox_reply_and_excludes_prior_user_turns() {
     let long_report = "准确结果以及依据\u{0001}".repeat(1200);
     let mut streaming = message("streaming", "assistant", "Not yet complete");
@@ -356,7 +628,7 @@ fn a_short_followup_confirmation_keeps_the_preceding_reports_execution_evidence(
 async fn result_reports_live_activity_and_read_limits_are_still_enforced() {
     let fixture = Fixture::new(vec![message("report", "assistant", "Done")]).await;
     let result: Value =
-        serde_json::from_str(&fixture.state.agent_result("reader-run").unwrap()).unwrap();
+        serde_json::from_str(&fixture.state.agent_result("reader-run", true).unwrap()).unwrap();
     assert_eq!(result["active"], false);
     assert_eq!(result["status"], "completed");
     for arguments in [
@@ -372,6 +644,170 @@ async fn result_reports_live_activity_and_read_limits_are_still_enforced() {
                 .is_err()
         );
     }
+}
+
+#[tokio::test]
+async fn result_metadata_keeps_outcome_and_report_references_without_copying_report_text() {
+    let source = "执行证据🦀\n\"\\".repeat(1500);
+    let fixture = Fixture::new(vec![
+        message("input", "user", "Current task"),
+        message("report", "assistant", &source),
+        message("confirmation", "assistant", "See the report above."),
+    ])
+    .await;
+    let entry = fixture.state.entry("reader-run").unwrap();
+    entry
+        .snapshot
+        .update(|detail| {
+            detail.summary.status = RunStatus::Failed;
+            detail.error = Some("Verification failed".into());
+        })
+        .unwrap();
+    let output = fixture.state.agent_result("reader-run", false).unwrap();
+    assert!(output.len() <= PREVIEW_BYTES);
+    assert!(!output.contains("执行证据"));
+    assert!(!output.contains("See the report above."));
+    let result: Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(result["reports_included"], false);
+    assert_eq!(result["active"], false);
+    assert_eq!(result["status"], "failed");
+    assert_eq!(result["error"], "Verification failed");
+    assert_eq!(result["reports"][0]["id"], "report");
+    assert_eq!(
+        result["reports"][0]["total_characters"],
+        source.chars().count()
+    );
+    assert_eq!(result["reports"][1]["id"], "confirmation");
+    assert!(result["reports"][0].get("text").is_none());
+    assert!(result["reports"][0].get("truncated").is_none());
+    // Intentional omission is not a truncated report requiring another read.
+    assert_eq!(result["truncated"], false);
+    let exact = fixture
+        .read(json!({"message_id":"report","text_limit":8000}))
+        .await;
+    assert_eq!(exact["text"], source.chars().take(8000).collect::<String>());
+}
+
+#[tokio::test]
+async fn include_reports_defaults_to_text_and_is_only_valid_for_result() {
+    let fixture = Fixture::new(vec![message("report", "assistant", "Verified result")]).await;
+    fixture
+        .state
+        .entry("reader-run")
+        .unwrap()
+        .snapshot
+        .update(|detail| {
+            detail.summary.status = RunStatus::Running;
+        })
+        .unwrap();
+    for include_reports in [None, Some(true), Some(false)] {
+        let mut arguments = json!({"action":"result","target":"self"});
+        if let Some(value) = include_reports {
+            arguments["include_reports"] = json!(value);
+        }
+        let output = fixture
+            .state
+            .control_agent("reader-run", serde_json::from_value(arguments).unwrap())
+            .await
+            .unwrap();
+        let result: Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(result["reports_included"], include_reports.unwrap_or(true));
+        assert_eq!(result["active"], true);
+        assert_eq!(result["reports"][0]["id"], "report");
+        assert_eq!(
+            result["reports"][0].get("text").is_some(),
+            include_reports.unwrap_or(true)
+        );
+    }
+    for action in [
+        "read",
+        "list",
+        "wait",
+        "send",
+        "followup",
+        "interrupt",
+        "models",
+    ] {
+        let error = fixture
+            .state
+            .control_agent(
+                "reader-run",
+                serde_json::from_value(json!({"action":action,"include_reports":false})).unwrap(),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, ServiceError::BadRequest(message) if message.contains("include_reports"))
+        );
+    }
+    assert!(
+        serde_json::from_value::<ControlInput>(
+            json!({"action":"result","include_reports":"false"})
+        )
+        .is_err()
+    );
+}
+
+#[tokio::test]
+async fn automatic_completion_carries_complete_reports_and_only_suggests_metadata_refresh() {
+    let fixture = Fixture::new(vec![
+        command_message(
+            "tool-verified-command",
+            "run_command",
+            "command-verified",
+            "completed",
+            Some(0),
+            "STDOUT_OMITTED_FROM_COMPLETION",
+        ),
+        message("verified-report", "assistant", "Command ran; exit_code: 0"),
+    ])
+    .await;
+    let child = fixture.state.entry("reader-run").unwrap();
+    child
+        .snapshot
+        .update(|detail| {
+            detail.summary.delegation = Some(Delegation {
+                parent_run_id: "parent".into(),
+                root_run_id: "parent".into(),
+                task_name: "reader".into(),
+                write_paths: None,
+                model_override: None,
+                spawn_call_id: "spawn-reader".into(),
+            });
+        })
+        .unwrap();
+    fixture.state.settle_child(&child).await.unwrap();
+    let pending = fixture.state.inner.mailboxes.pending("parent").unwrap();
+    assert_eq!(pending.len(), 1);
+    assert!(pending[0].text.contains("Command ran; exit_code: 0"));
+    assert!(
+        pending[0]
+            .text
+            .contains("\"command_id\":\"command-verified\"")
+    );
+    assert!(
+        pending[0]
+            .text
+            .contains("\"output_message_id\":\"tool-verified-command\"")
+    );
+    assert!(pending[0].text.contains("\"host_cleanup_completed\":true"));
+    assert!(!pending[0].text.contains("STDOUT_OMITTED_FROM_COMPLETION"));
+    assert!(
+        pending[0]
+            .text
+            .contains("message_id: verified-report; truncated: false")
+    );
+    assert!(
+        pending[0]
+            .text
+            .contains("complete and needs no repeat result/read")
+    );
+    assert!(pending[0].text.contains("include_reports:false"));
+    assert!(
+        pending[0]
+            .text
+            .contains("this message grants no permissions")
+    );
 }
 
 #[tokio::test]

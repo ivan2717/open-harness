@@ -1,0 +1,17 @@
+{
+  "refund_ids": [
+    "R301",
+    "R302",
+    "R303"
+  ],
+  "applied_refund": 60,
+  "net_received": 415,
+  "unpaid_before_refunds": 225,
+  "evidence": [
+    "orders.csv: O101–O106 total 700; rules.md §1 counts each unique order once.",
+    "payments.csv and rules.md §§2–4: valid payments are P201 (O101, 120), P202 (O102, 80; duplicate row deduplicated), P203 (O103, 200), and P204 (O105, 75), totaling 475. P205 is excluded as an orphan (order O999); P206 and P207 are excluded as failed/cancelled.",
+    "refunds.csv and rules.md §5: R301 (P203/O103, 30) and R302 (P201/O101, 20) are settled and match valid payments; R304 is excluded as unmatched (P999). R303 (P204/O105, 10) is shown as pending in refunds.csv but counted under the user correction only.",
+    "User correction message CORRECTION-ORCHID (event #4): “R303 已经人工核实为 settled”。 This makes R303 count as settled despite refunds.csv listing it as pending; no other refund status is overridden.",
+    "rules.md §§6–7: net_received = valid payments 475 − applied refunds 60 = 415. unpaid_before_refunds = sum(max(order amount − valid payment, 0)) = 225 (O104: 60, O105: 75, O106: 90); refunds do not affect this figure."
+  ]
+}

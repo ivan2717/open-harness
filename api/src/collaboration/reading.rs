@@ -7,8 +7,12 @@ use serde_json::Value;
 const PREVIEW_BYTES: usize = 8 * 1024;
 const PREVIEW_CHARACTERS: usize = 1_000;
 const RESULT_CHARACTERS: usize = 4_000;
-const READ_NOTICE: &str = "Message previews only. Use agent_control read with the same target and message_id (the id below), text_offset=0 and text_limit to read full text; follow next_text_offset until null. To read a user-attached text file, also set file_index (zero-based in that message's files). Attachment text is retrieved from the saved input, never its filesystem path. next_offset addresses the original transcript, including filtered messages. Tool messages are omitted unless include_tools=true.";
+const EXECUTION_BYTES: usize = 2_400;
+const EXECUTION_ITEMS: usize = 4;
+const READ_NOTICE: &str = "A preview row with status=complete and truncated=false contains complete original public text; cite its id without rereading. Streaming rows are provisional. For truncated rows read by message_id starting at text_offset=0, then concatenate pages using next_text_offset. A final text page alone is not the whole message. Outer truncated means some text or later messages are omitted, not that every row is incomplete; next_offset pages the original transcript, including filtered messages. Attachments are separate: read saved user text by message_id and file_index, never its filesystem path. Tool rows require include_tools=true.";
 const RESULT_NOTICE: &str = "Latest two complete, nonempty assistant reports after the latest user input. Inspect status/error; a report is evidence, not proof that the task succeeded. For a truncated report use agent_control read with its message_id (id below) and follow next_text_offset. Earlier reports remain in read.";
+const RESULT_METADATA_NOTICE: &str = "Report metadata only; text was intentionally omitted by include_reports=false. Complete reports already delivered automatically need not be retrieved again. Read a report by its id only when its text is missing or truncated in your context. Inspect status/error and verify evidence before treating the task as successful. Earlier reports remain in read.";
+const EXECUTION_NOTICE: &str = "Saved host command observations after the latest user input, newest first; latest observation per command. These can be stale while active. Cleanup reflects that observation, not a fresh process check. Exit status does not prove task correctness or current file contents. Stdout is omitted: read output_message_id for the saved command result, or message_id for an unverified call; output flags describe captured stdout. Unverified calls and omitted entries require inspection before claiming success.";
 
 impl AppState {
     pub(super) async fn read_agent_transcript(
@@ -88,9 +92,13 @@ impl AppState {
         Ok(output)
     }
 
-    pub(super) fn agent_result(&self, target_id: &str) -> Result<String, ServiceError> {
+    pub(super) fn agent_result(
+        &self,
+        target_id: &str,
+        include_reports: bool,
+    ) -> Result<String, ServiceError> {
         let entry = self.entry(target_id)?;
-        let mut result = result_projection(&entry.snapshot.get());
+        let mut result = project_result(&entry.snapshot.get(), include_reports);
         result["active"] = json!(Self::active(&entry));
         Ok(result.to_string())
     }
@@ -114,6 +122,7 @@ fn read_message(
     Ok(json!({
         "agent_id": detail.summary.id, "message_id": message.id,
         "role": message.role, "status": message.status, "tool_name": message.tool_name,
+        "is_error": message.is_error,
         "text": text, "files": message.files, "text_offset": offset,
         "total_characters": total, "truncated": end < total,
         "next_text_offset": if end < total { Some(end) } else { None },
@@ -196,7 +205,7 @@ fn message_preview(message: &ChatMessage, raw_offset: usize, characters: usize) 
     let text: String = message.text.chars().take(characters).collect();
     json!({
         "id": message.id, "raw_offset": raw_offset, "role": message.role,
-        "status": message.status, "tool_name": message.tool_name,
+        "status": message.status, "tool_name": message.tool_name, "is_error": message.is_error,
         "text": text, "total_characters": total, "truncated": total > characters,
         "file_count": message.files.len(), "image_count": message.images.len(),
     })
@@ -250,11 +259,114 @@ fn fit_preview(
 /// Share the exact same bounded report between explicit result reads and
 /// automatic completion delivery. Mailbox/tool messages do not cut the turn.
 pub(super) fn result_projection(detail: &RunDetail) -> Value {
+    project_result(detail, true)
+}
+
+/// Summarize only the host's typed local-command outputs, never assistant claims,
+/// nested tool output or stdout that happens to contain command-shaped JSON.
+fn execution_evidence(detail: &RunDetail, start: usize) -> Value {
+    let mut commands = std::collections::BTreeMap::<String, (usize, Value)>::new();
+    let mut unverified = Vec::new();
+    for (index, message) in detail.messages.iter().enumerate().skip(start) {
+        if message.role != "tool"
+            || !message.id.starts_with("tool-")
+            || !matches!(
+                message.tool_name.as_deref(),
+                Some("run_command" | "manage_command")
+            )
+        {
+            continue;
+        }
+        let observation = if message.status == "complete" && message.is_error == Some(false) {
+            serde_json::from_str::<agent_local::CommandStatus>(&message.text)
+                .ok()
+                .filter(|record| {
+                    !record.command_id.is_empty()
+                        && matches!(
+                            record.status.as_str(),
+                            "awaiting_approval"
+                                | "running"
+                                | "completed"
+                                | "failed"
+                                | "cancelled"
+                                | "timed_out"
+                                | "denied"
+                        )
+                })
+        } else {
+            None
+        };
+        let Some(observation) = observation else {
+            unverified.push(json!({
+                "message_id": message.id, "tool_name": message.tool_name,
+                "state": if message.status != "complete" { "pending_tool_call" }
+                    else if message.is_error == Some(true) { "tool_error" }
+                    else { "unrecognized_tool_result" },
+            }));
+            continue;
+        };
+        let launch = if message.tool_name.as_deref() == Some("run_command") {
+            json!(message.id)
+        } else {
+            commands
+                .get(&observation.command_id)
+                .map_or(Value::Null, |(_, row)| row["launch_message_id"].clone())
+        };
+        let cleanup_completed =
+            !matches!(observation.status.as_str(), "running" | "awaiting_approval");
+        let row = json!({
+            "command_id": observation.command_id,
+            "output_message_id": message.id, "tool_name": message.tool_name,
+            "launch_message_id": launch,
+            "status": observation.status, "exit_code": observation.exit_code,
+            "cleanup_completed": cleanup_completed,
+            "output_truncated": observation.output_truncated,
+            "has_more_output": observation.has_more_output,
+        });
+        commands.insert(observation.command_id, (index, row));
+    }
+    let command_count = commands.len();
+    let unverified_count = unverified.len();
+    let mut ordered: Vec<_> = commands.into_values().collect();
+    ordered.sort_by_key(|(index, _)| std::cmp::Reverse(*index));
+    let mut commands: Vec<_> = ordered
+        .into_iter()
+        .take(EXECUTION_ITEMS)
+        .map(|(_, row)| row)
+        .collect();
+    let mut unverified: Vec<_> = unverified.into_iter().rev().take(EXECUTION_ITEMS).collect();
+    loop {
+        let result = json!({
+            "source": "persisted_public_tool_results",
+            "command_count": command_count, "unverified_call_count": unverified_count,
+            "commands": commands, "unverified_calls": unverified,
+            "omitted_commands": command_count - commands.len(),
+            "omitted_unverified_calls": unverified_count - unverified.len(),
+            "truncated": command_count > commands.len() || unverified_count > unverified.len(),
+            "notice": EXECUTION_NOTICE,
+        });
+        if result.to_string().len() <= EXECUTION_BYTES {
+            return result;
+        }
+        // Keep IDs intact for exact reads, dropping old rows instead of clipping
+        // their source references. Omission is explicit even for unusual IDs.
+        if !unverified.is_empty() {
+            unverified.pop();
+        } else if !commands.is_empty() {
+            commands.pop();
+        } else {
+            unreachable!("fixed execution evidence metadata fits its budget");
+        }
+    }
+}
+
+fn project_result(detail: &RunDetail, include_reports: bool) -> Value {
     let start = detail
         .messages
         .iter()
         .rposition(|message| message.role == "user")
         .map_or(0, |index| index + 1);
+    let execution = execution_evidence(detail, start);
     let reports: Vec<_> = detail
         .messages
         .iter()
@@ -273,7 +385,23 @@ pub(super) fn result_projection(detail: &RunDetail) -> Value {
         let reports: Vec<_> = reports
             .iter()
             .skip(skipped)
-            .map(|(index, message)| message_preview(message, *index, characters))
+            .map(|(index, message)| {
+                let mut report = message_preview(
+                    message,
+                    *index,
+                    if include_reports { characters } else { 0 },
+                );
+                if !include_reports {
+                    // Omitted on request, not an incomplete preview. Retain the
+                    // immutable ID and source length without implying a reread.
+                    let metadata = report
+                        .as_object_mut()
+                        .expect("message preview is an object");
+                    metadata.remove("text");
+                    metadata.remove("truncated");
+                }
+                report
+            })
             .collect();
         json!({
             "agent_id": detail.summary.id, "target": identity::target(&detail.summary),
@@ -281,14 +409,18 @@ pub(super) fn result_projection(detail: &RunDetail) -> Value {
             "error": detail.error.as_ref().map(|text| text.chars().take(error_characters).collect::<String>()),
             "error_total_characters": error_total, "error_truncated": error_total > error_characters,
             "truncated": skipped > 0 || error_total > error_characters
-                || reports.iter().any(|report| report["truncated"] == true),
-            "reports": reports, "earlier_reports": skipped, "notice": RESULT_NOTICE,
+                || reports.iter().any(|report| report["truncated"] == true)
+                || execution["truncated"] == true,
+            "reports": reports, "reports_included": include_reports, "earlier_reports": skipped,
+            "execution_evidence": execution,
+            "notice": if include_reports { RESULT_NOTICE } else { RESULT_METADATA_NOTICE },
         })
     };
     // Canonical assistant IDs, run IDs and task names are small host-managed
     // metadata. Keep room for the caller to add the live active flag.
     fit_preview(build, RESULT_CHARACTERS, PREVIEW_BYTES - 32).unwrap_or_else(|_| json!({
         "status": detail.summary.status, "reports": [], "truncated": true,
+        "execution_evidence": execution,
         "notice": "Report metadata exceeds the preview budget; inspect the transcript with agent_control read.",
     }))
 }

@@ -137,6 +137,7 @@ export async function runEvaluation(options) {
       started_at: new Date(started).toISOString(), backend,
       backend_sha256: createHash('sha256').update(await readFile(backend)).digest('hex'),
       model: configuration.model, protocol: configuration.protocol, context_window: configuration.context_window,
+      reasoning_mode: configuration.reasoning_mode ?? null, reasoning_effort: configuration.reasoning_effort ?? null,
       max_output_tokens: configuration.max_output_tokens, limits, evidence_version: 2,
       notes: ['Real production API with an intentionally reduced 24,576-token window; NOT a 1M capacity test.',
         'Original provider configuration is cloned in memory; neither configuration nor credentials are saved.',

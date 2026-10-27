@@ -1,0 +1,128 @@
+{
+  "version": 2,
+  "metadata_delivery_count": 2,
+  "metadata": [
+    {
+      "message_id": "event-53",
+      "delivery": "automatic",
+      "command_count": 1,
+      "commands": [
+        {
+          "cleanup_completed": true,
+          "command_id": "command-1793085574673759000-1",
+          "exit_code": 0,
+          "has_more_output": false,
+          "launch_message_id": "tool-call_Em3uHmga7zYj2y0I5oILoBVy",
+          "output_message_id": "tool-call_Em3uHmga7zYj2y0I5oILoBVy",
+          "output_truncated": false,
+          "status": "completed",
+          "tool_name": "run_command"
+        }
+      ],
+      "host_cleanup_completed": true,
+      "notice": "Saved host command observations after the latest user input, newest first; latest observation per command. These can be stale while active. Cleanup reflects that observation, not a fresh process check. Exit status does not prove task correctness or current file contents. Stdout is omitted: read output_message_id for the saved command result, or message_id for an unverified call; output flags describe captured stdout. Unverified calls and omitted entries require inspection before claiming success.",
+      "omitted_commands": 0,
+      "omitted_unverified_calls": 0,
+      "source": "persisted_public_tool_results",
+      "truncated": false,
+      "unverified_call_count": 0,
+      "unverified_calls": []
+    },
+    {
+      "message_id": "tool-call_YVYkJSyqRLg4O5R5Hnk7c9ko",
+      "delivery": "result",
+      "command_count": 1,
+      "commands": [
+        {
+          "cleanup_completed": true,
+          "command_id": "command-1793085574673759000-1",
+          "exit_code": 0,
+          "has_more_output": false,
+          "launch_message_id": "tool-call_Em3uHmga7zYj2y0I5oILoBVy",
+          "output_message_id": "tool-call_Em3uHmga7zYj2y0I5oILoBVy",
+          "output_truncated": false,
+          "status": "completed",
+          "tool_name": "run_command"
+        }
+      ],
+      "notice": "Saved host command observations after the latest user input, newest first; latest observation per command. These can be stale while active. Cleanup reflects that observation, not a fresh process check. Exit status does not prove task correctness or current file contents. Stdout is omitted: read output_message_id for the saved command result, or message_id for an unverified call; output flags describe captured stdout. Unverified calls and omitted entries require inspection before claiming success.",
+      "omitted_commands": 0,
+      "omitted_unverified_calls": 0,
+      "source": "persisted_public_tool_results",
+      "truncated": false,
+      "unverified_call_count": 0,
+      "unverified_calls": []
+    }
+  ],
+  "read_requests": [
+    {
+      "sequence": 84,
+      "action": "read",
+      "target": "reconcile_independent",
+      "offset": 0,
+      "limit": 15,
+      "include_tools": true
+    },
+    {
+      "sequence": 88,
+      "action": "read",
+      "target": "reconcile_independent",
+      "offset": 8,
+      "limit": 15,
+      "include_tools": true
+    },
+    {
+      "sequence": 92,
+      "action": "read",
+      "target": "reconcile_independent",
+      "offset": 0,
+      "limit": 8,
+      "include_tools": true
+    },
+    {
+      "sequence": 96,
+      "action": "read",
+      "target": "reconcile_independent",
+      "offset": 2,
+      "limit": 4,
+      "include_tools": true
+    },
+    {
+      "sequence": 122,
+      "action": "read",
+      "target": "reconcile_independent",
+      "message_id": "event-27",
+      "text_offset": 0,
+      "text_limit": 8000,
+      "include_tools": false
+    },
+    {
+      "sequence": 126,
+      "action": "read",
+      "target": "reconcile_independent",
+      "message_id": "tool-call_sgQxQNura66Y1fe2Z50kKERI",
+      "text_offset": 0,
+      "text_limit": 8000,
+      "include_tools": false
+    }
+  ],
+  "broad_child_history_read_count": 4,
+  "exact_host_command_output_read_count": 0,
+  "metadata_only_results": 1,
+  "full_report_results": 0,
+  "parent_source_read_counts": {
+    "orders.csv": 2,
+    "payments.csv": 2,
+    "refunds.csv": 2,
+    "rules.md": 2
+  },
+  "child_parent_history_calls": [
+    {
+      "action": "read",
+      "target": "parent",
+      "offset": 0,
+      "limit": 20,
+      "include_tools": false
+    }
+  ]
+}

@@ -15,7 +15,7 @@
 `score.mjs` 检查数字、订单集合、记录依据、异常集合、源文件最终哈希以及报告基本存在性。报告语义、主任务是否核验、工具操作是否合理，必须另读公开记录复核。`result.passed` 仅表示自动验收通过，不能解释成所有行为和报告都没有问题。
 
 ```sh
-node --test evals/collaboration/score.test.mjs evals/collaboration/continuity-evidence.test.mjs
+node --test evals/collaboration/score.test.mjs evals/collaboration/continuity-evidence.test.mjs evals/collaboration/continuity-audit.test.mjs
 cargo test -p api --test collaboration --test collaboration_undo
 cargo test -p api --lib extensions::
 ```
@@ -65,6 +65,24 @@ OPENHARNESS_EVAL_USER_DATA=/absolute/path/test-electron \
 本轮协作优化的最终真实复验保存在 `evals/results/collaboration-continuity-20261027-functional-450k/`：16/16 通过，独立检查了子任务脚本退出码、父任务复算、JSON 读回、来源引用和源文件哈希。耗时 182 秒，已观测 377,225 tokens。这是 450,000 测试预算内的功能完成性证据；同轮此前两次 220,000 预算测试均未完成，保存在 `collaboration-continuity-20261027-collaboration-fix/` 和 `collaboration-continuity-20261027-bounded/`。不能把预算提高后的通过解释为协作效率达标，也不能据单个样本宣称稳定成功率。
 
 连续性测试结束会先导出公开记录和实际工作区，再删除自己创建的临时 API 状态。基础九例测试的临时状态由验收结束后的清理操作删除，清理回执保存在对应结果目录的 `cleanup.json` 中。
+
+## 2026-10-27 成本优化复验
+
+保持原业务提示、来源、更正、归档轮次、gpt-6-luna / Responses / medium、24,576 窗口、4,096 输出和 450k 测试护栏不变。第一版澄清完整原文预览、提供用户来源过滤和命中原文定位、避免重复报告；第二版再为自动完成和 `agent_control result` 加入宿主持久工具回执的命令状态、退出码和精确输出消息 ID。没有降低模型、思考强度或验收要求。读取历史和独立核验依然保留。
+
+| 版本 / 运行 | 已观测 tokens | 原检查 | 追加审计 | 耗时 |
+| --- | ---: | ---: | ---: | ---: |
+| 旧功能基线 | 377,225 | 16/16 | 26/26 | 182.0 s |
+| 第一版 / 1 | 252,697 | 16/16 | 26/26 | 180.0 s |
+| 第一版 / 2 | 428,674 | 16/16 | 25/26 | 260.1 s |
+| 第二版 / 3 | 377,274 | 16/16 | 26/26 | 266.8 s |
+| 第二版 / 4 | 305,144 | 16/16 | 26/26 | 183.4 s |
+
+最终版本两次均值 341,209 tokens，比旧基线减少 9.55%；耗时均值 225.1 秒，未体现提速。一轮基本持平、一轮减少 19.11%，不能宣称稳定节省或达到 220k 目标。第 4 轮通过精确工具消息 ID 取得子命令结果，没有全史分页扫描；第 3 轮仍扫描四次，说明模型采用新路径仍有波动。
+
+四轮来源均未改，子脚本实际读取 CSV 计算，父核对来源、脚本及最终产物。第 2 轮最后用命令读取并解析验证最终 JSON，但保守审计只接受完整匹配的 `read_file`，故保留 25/26，不事后改分。其余三轮全部追加检查通过；人工复核仍独立于自动分数。全部原始运行保留在 `../results/collaboration-cost-20261027-{1,2,3,4}/`，版本及局限详见 [完整报告](../results/collaboration-cost-20261027-all-runs-review.md)。
+
+复核方法见 [同条件质量验证](continuity-cost-validation.md)。审计单测使用合成证据，可在没有本地实测结果的干净 checkout 运行；真实结果由 `continuity-audit.mjs` / `continuity-compare.mjs` 只读复核。旧基线未保存 reasoning 元数据，机器比较保留未验证标记；历史 review 与新 launcher 确认 medium。所有用量为记录值，可能遗漏失败请求、重试、压缩与 Wiki 调用，不能直接当作账单节省。
 
 ## 阅读结果
 

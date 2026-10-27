@@ -9,16 +9,32 @@ const successful = run => (run.messages ?? []).filter(message => message.role ==
 // alias is equivalent to a raw ID; a plausible quote from another run is not.
 export function childReadCorrection(children, rootId, sequence, correction) {
   if (!rootId || !Number.isInteger(sequence)) return false
-  return children.some(run => successful(run).some(message => {
-    if (message.tool_name !== 'agent_control') return false
-    const output = parsed(message.text)
-    if (output?.agent_id !== rootId) return false
-    const messages = Array.isArray(output.messages) ? output.messages : [{
-      id: output.message_id, role: output.role, text: output.text,
-    }]
-    return messages.some(source => source.id === `event-${sequence}` && source.role === 'user'
-      && source.truncated !== true && source.text === correction)
-  }))
+  return children.some(run => {
+    const expected = [...correction], covered = new Set()
+    for (const message of successful(run)) {
+      const output = parsed(message.text)
+      if (message.tool_name === 'search_run_history' && output?.checkpoint_id?.startsWith(`context:${rootId}:`)
+        && output.hits?.some(hit => hit.sequence === sequence && hit.preview_truncated === false
+          && hit.preview_offset === 0 && hit.total_characters === expected.length
+          && ['run_started', 'input_received'].includes(hit.event_type)
+          && ['/instruction', '/content'].includes(hit.field) && hit.preview === correction)) return true
+      if (message.tool_name !== 'agent_control' || output?.agent_id !== rootId) continue
+      if (Array.isArray(output.messages)) {
+        if (output.messages.some(source => source.id === `event-${sequence}` && source.role === 'user'
+          && source.status === 'complete' && source.truncated === false && source.text === correction)) return true
+        continue
+      }
+      if (output.message_id !== `event-${sequence}` || output.role !== 'user' || output.status !== 'complete') continue
+      const offset = output.text_offset ?? 0, text = [...(output.text ?? '')]
+      if (!Number.isSafeInteger(offset) || offset < 0 || output.total_characters !== expected.length
+        || offset + text.length > expected.length || text.some((value, index) => value !== expected[offset + index])) continue
+      const end = offset + text.length
+      if (end === expected.length ? output.truncated !== false || output.next_text_offset != null
+        : output.truncated !== true || output.next_text_offset !== end) continue
+      text.forEach((_, index) => covered.add(offset + index))
+    }
+    return expected.length > 0 && covered.size === expected.length
+  })
 }
 
 export function correctionCited(evidence, sequence) {
@@ -61,6 +77,10 @@ export async function childExecutedScript(children, reviews, workspace) {
   workspace = await realpath(workspace)
   const scratch = await realpath(join(workspace, '.openharness-tmp')).catch(() => null)
   if (!scratch) return { passed: false, reason: 'No temporary script directory' }
+  const scratchPath = relative(workspace, scratch)
+  if (!scratchPath || scratchPath === '..' || scratchPath.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`) || isAbsolute(scratchPath)) {
+    return { passed: false, reason: 'Temporary script directory is outside the workspace' }
+  }
   for (const child of children) {
     const review = reviews.find(item => item.run_id === child.id)?.review
     if (!review || review.review_incomplete) continue

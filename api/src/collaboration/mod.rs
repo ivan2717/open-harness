@@ -56,6 +56,7 @@ struct ControlInput {
     text_offset: Option<usize>,
     text_limit: Option<usize>,
     include_tools: Option<bool>,
+    include_reports: Option<bool>,
     #[serde(default, deserialize_with = "deserialize_write_paths")]
     write_paths: Option<Option<Vec<String>>>,
 }

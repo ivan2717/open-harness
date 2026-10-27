@@ -15,6 +15,11 @@ impl AppState {
                 "只有续派可以调整 write_paths；运行中的任务需先停止".into(),
             ));
         }
+        if input.include_reports.is_some() && input.action != "result" {
+            return Err(ServiceError::BadRequest(
+                "include_reports 仅适用于 result".into(),
+            ));
+        }
         if input.action == "models" {
             self.require_coordinator(caller)?;
             let models: Vec<_> = self
@@ -82,7 +87,7 @@ impl AppState {
                 )
             }
             "read" => self.read_agent_transcript(target_id, &input).await,
-            "result" => self.agent_result(target_id),
+            "result" => self.agent_result(target_id, input.include_reports.unwrap_or(true)),
             "resume" | "followup" => {
                 let message = input
                     .message

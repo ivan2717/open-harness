@@ -1,0 +1,8 @@
+{
+  "api_launcher_exit_code": 0,
+  "temporary_private_state_removed": true,
+  "electron_temporary_profile_removed": true,
+  "public_files_scanned": 17,
+  "credential_like_file_count": 0,
+  "notes": "Counts only; original encrypted vault was not modified or printed. API state was removed by continuity.mjs after process exit."
+}
