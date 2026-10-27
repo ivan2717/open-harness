@@ -1,0 +1,74 @@
+{
+  "summary": {
+    "order_total": 700,
+    "matched_paid": 475,
+    "applied_refund": 50,
+    "net_received": 425,
+    "unpaid_before_refunds": 225
+  },
+  "orders": [
+    {
+      "order_id": "O101",
+      "paid": 120,
+      "refund": 20,
+      "net": 100,
+      "unpaid_before_refunds": 0,
+      "payment_ids": ["P201"],
+      "refund_ids": ["R302"]
+    },
+    {
+      "order_id": "O102",
+      "paid": 80,
+      "refund": 0,
+      "net": 80,
+      "unpaid_before_refunds": 0,
+      "payment_ids": ["P202"],
+      "refund_ids": []
+    },
+    {
+      "order_id": "O103",
+      "paid": 200,
+      "refund": 30,
+      "net": 170,
+      "unpaid_before_refunds": 0,
+      "payment_ids": ["P203"],
+      "refund_ids": ["R301"]
+    },
+    {
+      "order_id": "O104",
+      "paid": 0,
+      "refund": 0,
+      "net": 0,
+      "unpaid_before_refunds": 60,
+      "payment_ids": [],
+      "refund_ids": []
+    },
+    {
+      "order_id": "O105",
+      "paid": 75,
+      "refund": 0,
+      "net": 75,
+      "unpaid_before_refunds": 75,
+      "payment_ids": ["P204"],
+      "refund_ids": []
+    },
+    {
+      "order_id": "O106",
+      "paid": 0,
+      "refund": 0,
+      "net": 0,
+      "unpaid_before_refunds": 90,
+      "payment_ids": [],
+      "refund_ids": []
+    }
+  ],
+  "anomalies": {
+    "duplicate_payment_ids": ["P202"],
+    "orphan_payment_ids": ["P205"],
+    "orphan_refund_ids": ["R304"],
+    "unpaid_order_ids": ["O104", "O106"],
+    "partial_order_ids": ["O105"],
+    "excluded_payment_ids": ["P206", "P207"],
+    "pending_refund_ids": ["R303"]
+  }
+}

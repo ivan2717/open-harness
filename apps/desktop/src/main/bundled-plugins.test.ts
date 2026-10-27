@@ -15,6 +15,8 @@ describe('host-owned browser and computer plugin setup', () => {
 
   async function computerHelper(source: string, statusTimeoutMs?: number) {
     const path = join(root, 'computer-use', 'host.mjs')
+    const computerAppPath = join(directory, 'data', 'computer-use', 'Open Harness Computer Use.app')
+    await mkdir(computerAppPath, { recursive: true })
     await mkdir(join(root, 'computer-use', 'bin', 'Open Harness Computer Use.app'), {
       recursive: true,
     })
@@ -22,7 +24,7 @@ describe('host-owned browser and computer plugin setup', () => {
       path,
       `import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);
       if (process.argv[2] !== '--request') process.exit(2);
-      if (!process.env.OPENHARNESS_COMPUTER_APP?.endsWith('Open Harness Computer Use.app')) process.exit(3);
+      if (process.env.OPENHARNESS_COMPUTER_APP !== ${JSON.stringify(computerAppPath)}) process.exit(3);
       const request = {id:1, method:process.argv[3]}; ${source}\n`,
       { mode: 0o755 },
     )
@@ -33,6 +35,7 @@ describe('host-owned browser and computer plugin setup', () => {
       browsers: join(directory, 'browsers'),
       platform: 'darwin',
       statusTimeoutMs,
+      computerAppPath,
     })
     return path
   }
@@ -85,6 +88,7 @@ describe('host-owned browser and computer plugin setup', () => {
       `
       if (process.argv.slice(2).join(' ') !== 'install chromium') process.exit(9);
       require('node:fs').appendFileSync(${JSON.stringify(setupMarker)}, ${JSON.stringify('prepared\n')});
+      require('node:fs').writeFileSync(${JSON.stringify(browser)}, 'download completed fixture');
       setTimeout(() => process.exit(0), 50);
     `,
     )
@@ -225,6 +229,15 @@ describe('host-owned browser and computer plugin setup', () => {
     expect(await readFile(setupMarker, 'utf8')).toBe('prepared\n')
   })
 
+  it('does not report successful preparation if the required executable is still missing', async () => {
+    await rm(browser)
+    await writeFile(join(directory, 'runtime', 'cli.js'), 'process.exit(0)')
+    await expect(plugins.prepareBrowser()).rejects.toThrow('所需浏览器仍不可用')
+    expect((await plugins.list()).find((item) => item.id === 'browser-use')?.browserReady).toBe(
+      false,
+    )
+  })
+
   it('prepares the bundled browser on Windows and requires its native MCP launcher', async () => {
     await windowsHelper({ platform: 'windows', desktop_available: true })
     await rm(browser)
@@ -233,7 +246,6 @@ describe('host-owned browser and computer plugin setup', () => {
     expect(await state()).toMatchObject({ available: true, browserReady: false })
     await plugins.prepareBrowser()
     expect(await readFile(setupMarker, 'utf8')).toBe('prepared\n')
-    await writeFile(browser, 'download completed fixture')
     expect(await state()).toMatchObject({ available: true, browserReady: true })
     await rm(join(root, 'browser-use', 'launch.exe'))
     expect(await state()).toMatchObject({ available: false, browserReady: false })
@@ -322,10 +334,44 @@ describe('host-owned browser and computer plugin setup', () => {
       expect(await computerPermissions()).toEqual({
         accessibility,
         screenRecording,
-        helperPath: join(root, 'computer-use', 'bin', 'Open Harness Computer Use.app'),
+        helperPath: join(directory, 'data', 'computer-use', 'Open Harness Computer Use.app'),
       })
     },
   )
+
+  it('does not fall back to the nested bundle when the independently installed app is missing', async () => {
+    await computerHelper('process.exit(99);')
+    await rm(plugins.environment.OPENHARNESS_COMPUTER_APP!, { recursive: true })
+    expect((await plugins.list()).find((item) => item.id === 'computer-use')).toMatchObject({
+      available: false,
+      reason: '请重新构建桌面控制组件。',
+    })
+    await expect(plugins.requestComputerPermission('accessibility')).rejects.toThrow('请重新构建')
+  })
+
+  it('keeps other components available when computer deployment fails', async () => {
+    await computerHelper('process.exit(99);')
+    const failure = '电脑组件安装失败，请重启 Open Harness 或重新安装应用。'
+    plugins = new BundledPlugins({
+      root,
+      runtime,
+      executable: process.execPath,
+      browsers: join(directory, 'browsers'),
+      platform: 'darwin',
+      computerAppPath: join(directory, 'data', 'computer-use', '.unavailable'),
+      computerSetupError: failure,
+    })
+    const items = await plugins.list()
+    expect(items.find((item) => item.id === 'computer-use')).toMatchObject({
+      available: false,
+      reason: failure,
+    })
+    expect(items.find((item) => item.id === 'browser-use')).toMatchObject({
+      available: true,
+      browserReady: true,
+    })
+    await expect(plugins.requestComputerPermission('screen-recording')).rejects.toThrow(failure)
+  })
 
   it('reports native errors without presenting unknown permissions as denied', async () => {
     await computerHelper(`

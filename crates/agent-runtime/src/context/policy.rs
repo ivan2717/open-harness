@@ -219,7 +219,7 @@ impl ContextPolicyBuilder {
         self
     }
 
-    /// Build against the conservative fallback when model metadata is absent.
+    /// Build against the default fallback when model metadata is absent.
     /// Context managers resolve this policy again for the selected model.
     pub fn build(self) -> Result<ContextPolicy, ContextPolicyError> {
         resolve_policy(self.overrides, self.max_tool_output_chars, None)

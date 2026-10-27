@@ -1,0 +1,19 @@
+{
+  "refund_ids": [
+    "R301",
+    "R302",
+    "R303"
+  ],
+  "applied_refund": 60,
+  "net_received": 415,
+  "unpaid_before_refunds": 225,
+  "evidence": [
+    "orders.csv: O101=120, O102=80, O103=200, O104=60, O105=150, O106=90; rules.md rules 1 and 7.",
+    "payments.csv: P201=120 paid, P202=80 paid (duplicate identical row counted once), P203=200 paid, P204=75 paid; effective payments total 475; rules.md rules 2-4.",
+    "payments.csv: P205=50 paid for nonexistent order O999 (orphan, excluded), P206=failed (excluded), P207=cancelled (excluded); rules.md rules 3-4.",
+    "refunds.csv: R301=30 settled against P203/O103, R302=20 settled against P201/O101, and R303=10 against P204/O105; R301-R303 are applied for a total of 60; rules.md rule 5.",
+    "refunds.csv: R303 is pending in the source but is included only under correction CORRECTION-ORCHID (event-4): \"R303 已经人工核实为 settled\".",
+    "refunds.csv: R304=5 settled references unmatched payment P999 (orphan refund, excluded); rules.md rule 5.",
+    "Calculation from the cited source records: net_received = 475 effective payments - 60 applied refunds = 415; unpaid_before_refunds = O104(60) + O105(150-75=75) + O106(90) = 225; rules.md rules 6-7."
+  ]
+}

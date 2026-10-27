@@ -6,6 +6,7 @@ $installers = @(Get-ChildItem (Join-Path $desktop 'release/Open-Harness-*-window
 if ($installers.Count -ne 1) { throw 'Expected exactly one Windows installer' }
 $installDirectory = Join-Path ([System.IO.Path]::GetTempPath()) ("Open Harness Smoke " + [guid]::NewGuid())
 $previousExecutable = $env:OPENHARNESS_E2E_EXECUTABLE
+$previousArtifacts = $env:OPENHARNESS_E2E_ARTIFACTS
 
 function Wait-Installer($process) {
     if (-not $process.WaitForExit(120000)) {
@@ -30,7 +31,7 @@ function Assert-BackendDependencies {
         [System.IO.Path]::GetFullPath($env:OPENHARNESS_E2E_ARTIFACTS)
     } else { Join-Path $desktop 'test-results/packaged' }
     New-Item -ItemType Directory -Path $artifacts -Force | Out-Null
-    foreach ($binary in @('api', 'openharness-chrome-host')) {
+    foreach ($binary in @('api', 'openharness-chrome-host', 'openharness-sandbox')) {
         $executable = Join-Path $installDirectory "resources/bin/$binary.exe"
         if (-not (Test-Path $executable)) { throw "Installed binary missing: $binary" }
         $dependencies = (& $dumpbin.FullName /DEPENDENTS $executable 2>&1 | Out-String)
@@ -45,6 +46,31 @@ function Assert-BackendDependencies {
     }
 }
 
+function Assert-ManagedPython {
+    # Exercise the installed copy, not the runner's preinstalled Python. Import
+    # checks cover the native wheels and DLLs that a developer machine can hide.
+    $runtimeDirectory = Join-Path $installDirectory 'resources/workspace-runtime/python'
+    $python = Join-Path $runtimeDirectory 'python.exe'
+    if (-not (Test-Path $python)) { throw 'Installed managed Python is missing' }
+    $probe = @'
+import importlib,json,pathlib,sys,sysconfig
+for name in ['ssl','sqlite3','venv','PIL','docx','pptx','openpyxl','pypdf','reportlab']:
+    importlib.import_module(name)
+assert sys.version_info >= (3,12)
+assert (pathlib.Path(sysconfig.get_path('stdlib')) / 'EXTERNALLY-MANAGED').is_file()
+print(json.dumps({'version':sys.version,'executable':sys.executable,'prefix':sys.prefix}))
+'@
+    $result = & $python -I -B -c $probe
+    if ($LASTEXITCODE -ne 0) { throw 'Installed Python or preinstalled libraries failed to load' }
+    $runtime = $result | ConvertFrom-Json
+    if (-not $runtime.prefix.StartsWith($runtimeDirectory, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Managed Python resolved outside the installed application'
+    }
+    $artifactDirectory = Join-Path $desktop 'test-results/packaged'
+    New-Item -ItemType Directory -Path $artifactDirectory -Force | Out-Null
+    $result | Set-Content (Join-Path $artifactDirectory 'python-runtime.json') -Encoding utf8
+}
+
 try {
     # NSIS requires /D last, without quotes, even when the path contains spaces.
     $installer = Start-Process -FilePath $installers[0].FullName -ArgumentList "/S /currentuser /D=$installDirectory" -PassThru
@@ -55,27 +81,33 @@ try {
         throw 'Installed uninstaller missing'
     }
     Assert-BackendDependencies
-    $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
-    $startInfo.FileName = (Get-Command node).Source
-    $startInfo.UseShellExecute = $false
-    $startInfo.ArgumentList.Add((Join-Path $desktop 'tests/e2e/packaged.mjs'))
-    $smoke = [System.Diagnostics.Process]::Start($startInfo)
-    try {
-        if (-not $smoke.WaitForExit(720000)) {
-            throw 'Installed app smoke test timed out after 12 minutes; see stage diagnostics'
+    Assert-ManagedPython
+    foreach ($suite in @('packaged', 'script-workflow')) {
+        $env:OPENHARNESS_E2E_ARTIFACTS = if ($suite -eq 'script-workflow') {
+            Join-Path $desktop 'test-results/packaged/scripts'
+        } else { $previousArtifacts }
+        $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+        $startInfo.FileName = (Get-Command node).Source
+        $startInfo.UseShellExecute = $false
+        $startInfo.ArgumentList.Add((Join-Path $desktop "tests/e2e/$suite.mjs"))
+        $smoke = [System.Diagnostics.Process]::Start($startInfo)
+        try {
+            if (-not $smoke.WaitForExit(720000)) {
+                throw "Installed app $suite test timed out after 12 minutes; see stage diagnostics"
+            }
+            if ($smoke.ExitCode -ne 0) { throw "Installed app $suite test failed" }
+        } finally {
+            if (-not $smoke.HasExited) {
+                # Terminate only this test's process tree before uninstalling.
+                & "$env:SystemRoot\System32\taskkill.exe" /PID $smoke.Id /T /F
+                $null = $smoke.WaitForExit(10000)
+            }
+            $smoke.Dispose()
         }
-        if ($smoke.ExitCode -ne 0) { throw 'Installed app smoke test failed' }
-    } finally {
-        if (-not $smoke.HasExited) {
-            # Terminate only this test's process tree, including its isolated
-            # Chromium and Electron children, before trying to uninstall.
-            & "$env:SystemRoot\System32\taskkill.exe" /PID $smoke.Id /T /F
-            $null = $smoke.WaitForExit(10000)
-        }
-        $smoke.Dispose()
     }
 } finally {
     $env:OPENHARNESS_E2E_EXECUTABLE = $previousExecutable
+    $env:OPENHARNESS_E2E_ARTIFACTS = $previousArtifacts
     $uninstaller = Join-Path $installDirectory 'Uninstall Open Harness.exe'
     if (Test-Path $uninstaller) {
         # Keep the uninstaller in this process so we can wait for real completion.

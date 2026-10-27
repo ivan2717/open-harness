@@ -3,11 +3,148 @@ mod history;
 use agent_core::agent::{AgentRun, RunEvent, RunEventEnvelope};
 use agent_runtime::{
     AppendOutcome, EventStore, EventStoreError, EventStoreHistoryAccess, HistoryAccess,
-    HistoryContext, InMemoryEventStore, NoHistoryAccess, READ_RUN_HISTORY_TOOL,
-    SEARCH_RUN_HISTORY_TOOL, StoredRun, ToggleHistoryAccess, ToolCall,
+    HistoryAccessError, HistoryContext, HistoryLimits, InMemoryEventStore, NoHistoryAccess,
+    READ_RUN_HISTORY_TOOL, SEARCH_RUN_HISTORY_TOOL, StoredRun, ToggleHistoryAccess, ToolCall,
 };
 use history::persist_run;
 use std::{ops::Range, sync::Mutex};
+
+#[tokio::test]
+async fn declared_history_limits_match_default_and_custom_execution_limits() {
+    let store = InMemoryEventStore::new();
+    let mut run = AgentRun::new("limits-contract", "worker", "searchable evidence");
+    run.begin_step().unwrap();
+    run.record(RunEvent::ModelResponseReceived {
+        response: None,
+        provider_continuation: None,
+        token_usage: None,
+        provider_state: None,
+        content: "Read the source records.".into(),
+    })
+    .unwrap();
+    for index in 0..10 {
+        run.record(RunEvent::ToolCallRequested {
+            call_id: format!("source-{index}"),
+            tool_name: "read_file".into(),
+            arguments: "{}".into(),
+        })
+        .unwrap();
+    }
+    for index in 0..10 {
+        run.record(RunEvent::ToolCallSucceeded {
+            call_id: format!("source-{index}"),
+            output: "searchable evidence".into(),
+            images: Vec::new(),
+        })
+        .unwrap();
+    }
+    persist_run(&store, &run).await;
+    let context = HistoryContext {
+        run_id: run.id().into(),
+        through_sequence: run.events().last().unwrap().sequence,
+        checkpoint_id: "limits-checkpoint".into(),
+    };
+    let call = |name: &str, arguments: serde_json::Value| ToolCall {
+        id: "lookup".into(),
+        name: name.into(),
+        arguments: arguments.to_string(),
+    };
+    for access in [
+        EventStoreHistoryAccess::new(),
+        EventStoreHistoryAccess::with_limits(
+            HistoryLimits::builder()
+                .max_results(3)
+                .max_events(4)
+                .build()
+                .unwrap(),
+        ),
+    ] {
+        let limits = access.limits();
+        let definitions = HistoryAccess::<InMemoryEventStore>::definitions(&access);
+        let search = definitions
+            .iter()
+            .find(|definition| definition.name == SEARCH_RUN_HISTORY_TOOL)
+            .unwrap();
+        let schema: serde_json::Value = serde_json::from_str(&search.input_schema).unwrap();
+        let declared_limit = &schema["properties"]["limit"];
+        assert_eq!(declared_limit["minimum"], 1);
+        assert_eq!(declared_limit["maximum"], limits.max_results());
+        assert_eq!(declared_limit["default"], limits.max_results());
+        for arguments in [
+            serde_json::json!({"query": "searchable"}),
+            serde_json::json!({"query": "searchable", "limit": declared_limit["maximum"]}),
+        ] {
+            let output = access
+                .execute(
+                    &store,
+                    context.clone(),
+                    call(SEARCH_RUN_HISTORY_TOOL, arguments),
+                )
+                .await
+                .unwrap();
+            let output: serde_json::Value = serde_json::from_str(&output).unwrap();
+            assert_eq!(
+                output["hits"].as_array().unwrap().len(),
+                limits.max_results()
+            );
+            assert_eq!(output["total_matches"], 11);
+        }
+        let error = access
+            .execute(
+                &store,
+                context.clone(),
+                call(
+                    SEARCH_RUN_HISTORY_TOOL,
+                    serde_json::json!({
+                        "query": "searchable", "limit": limits.max_results() + 1,
+                    }),
+                ),
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(error, HistoryAccessError::RequestedLimitExceeded {
+            configured, ..
+        } if configured == limits.max_results()));
+
+        let read = definitions
+            .iter()
+            .find(|definition| definition.name == READ_RUN_HISTORY_TOOL)
+            .unwrap();
+        assert!(
+            read.description
+                .contains(&format!("at most {} events", limits.max_events()))
+        );
+        access
+            .execute(
+                &store,
+                context.clone(),
+                call(
+                    READ_RUN_HISTORY_TOOL,
+                    serde_json::json!({
+                        "from_sequence": 0, "to_sequence": limits.max_events() - 1,
+                    }),
+                ),
+            )
+            .await
+            .unwrap();
+        let error = access
+            .execute(
+                &store,
+                context.clone(),
+                call(
+                    READ_RUN_HISTORY_TOOL,
+                    serde_json::json!({
+                        "from_sequence": 0, "to_sequence": limits.max_events(),
+                    }),
+                ),
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(error, HistoryAccessError::TooManyEvents {
+            configured, ..
+        } if configured == limits.max_events()));
+    }
+}
 
 #[test]
 fn no_history_access_exposes_no_model_tools() {
@@ -205,9 +342,9 @@ async fn history_search_matches_original_text_without_json_escaping() {
             "query: {query:?}"
         );
         if expected_sequence == success_sequence {
-            let preview: serde_json::Value =
-                serde_json::from_str(response["hits"][0]["preview"].as_str().unwrap()).unwrap();
-            assert_eq!(preview["output"], output);
+            assert_eq!(response["hits"][0]["preview"], output);
+            assert_eq!(response["hits"][0]["field"], "/output");
+            assert_eq!(response["hits"][0]["preview_truncated"], false);
         }
     }
 

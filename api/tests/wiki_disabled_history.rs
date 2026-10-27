@@ -66,6 +66,8 @@ impl Fixture {
                 max_output_tokens: 4096,
                 reasoning_mode: "off".into(),
                 reasoning_effort: "high".into(),
+                reasoning_capability: None,
+                reasoning_default: None,
             })
             .await
             .unwrap();
@@ -171,12 +173,26 @@ async fn respond(
     } else {
         "stop"
     };
+    // This fixture's reported usage must grow with the supplied instructions,
+    // schemas and history. A constant 1200-token response makes the calibrated
+    // pre-compaction input smaller than its fixed tool header; a rewritten
+    // request correctly loses that exact-prefix measurement and cannot shrink
+    // below it. The rough count here models usage, not an exact tokenizer.
+    let prompt_tokens = json!({"messages":messages,"tools":request["tools"]})
+        .to_string()
+        .len()
+        .div_ceil(4)
+        + 16
+        + messages.len() * 8
+        + request["tools"]
+            .as_array()
+            .map_or(0, |tools| tools.len() * 16);
     let mut requests = requests.lock().unwrap();
     requests.push(request);
     Json(
         json!({"id":format!("response-{index}"), "model":"history-fixture",
             "choices":[{"index":0,"message":response,"finish_reason":finish}],
-            "usage":{"prompt_tokens":1200,"completion_tokens":100,"total_tokens":1300}
+            "usage":{"prompt_tokens":prompt_tokens,"completion_tokens":100,"total_tokens":prompt_tokens + 100}
         }),
     )
 }
@@ -199,6 +215,7 @@ async fn settled(state: &AppState, id: &str) -> RunDetail {
 async fn create(state: &AppState, model_id: &str, prompt: String) -> String {
     let run = state
         .create(CreateRunInput {
+            reasoning_effort: None,
             execution_policy: Default::default(),
             prompt,
             files: Vec::new(),

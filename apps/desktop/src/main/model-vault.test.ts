@@ -32,6 +32,25 @@ afterEach(async () => {
 })
 
 describe('model credential storage', () => {
+  it('preserves independent capability mapping and default across restart', async () => {
+    const file = await location()
+    const configured: ResolvedModelConfiguration = {
+      ...input,
+      reasoning_mode: 'off',
+      reasoning_default: 'thorough',
+      reasoning_capability: {
+        source: 'manual',
+        adapter: 'effort',
+        options: [{ id: 'thorough', label: '深入', effort: 'xhigh' }],
+      },
+    }
+    const vault = new ModelVault(file, cipher)
+    await vault.save('model', configured)
+    const copy = vault.get('model')!
+    copy.reasoning_capability!.options[0].effort = 'low'
+    expect(vault.get('model')).toEqual(configured)
+    expect(await new ModelVault(file, cipher).load()).toEqual([configured])
+  })
   it('stores only cipher output, serializes concurrent saves, and restores multiple configurations', async () => {
     const file = await location()
     const vault = new ModelVault(file, cipher)
@@ -48,6 +67,21 @@ describe('model credential storage', () => {
     const vault = new ModelVault(file, { ...cipher, isEncryptionAvailable: () => false })
     expect(await vault.save('model', input)).toBe(false)
     await expect(readFile(file)).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+  it('keeps credentials internal and removes superseded profiles durably', async () => {
+    const file = await location()
+    const vault = new ModelVault(file, cipher)
+    await vault.save('old-model', { ...input, context_window: 8192, max_output_tokens: 2048 })
+    const copy = vault.get('old-model')!
+    copy.context_window = 1_000_000
+    expect(vault.get('old-model')?.context_window).toBe(8192)
+    await vault.save('new-model', copy)
+    expect(await vault.remove('old-model')).toBe(true)
+    expect(vault.get('old-model')).toBeUndefined()
+    const reopened = new ModelVault(file, cipher)
+    expect(await reopened.load()).toEqual([copy])
+    expect(reopened.get('new-model')).toEqual(copy)
+    expect(reopened.get('old-model')).toBeUndefined()
   })
   it('preserves an unreadable existing vault', async () => {
     const file = await location()
@@ -72,6 +106,56 @@ describe('model credential storage', () => {
 })
 
 describe('provider IPC validation', () => {
+  it('validates configured defaults after capability discovery without conflating default and off', () => {
+    const capability = {
+      source: 'manual',
+      adapter: 'deepseek',
+      options: [
+        { id: 'off', enabled: false },
+        { id: 'thorough', effort: 'max' },
+      ],
+    }
+    const configured = {
+      ...input,
+      protocol: 'chat_completions',
+      reasoning_mode: 'off',
+      reasoning_capability: capability,
+    }
+    expect(
+      resolvedModelConfiguration({ ...configured, reasoning_default: null }).reasoning_default,
+    ).toBeNull()
+    expect(
+      resolvedModelConfiguration({ ...configured, reasoning_default: 'off' }).reasoning_default,
+    ).toBe('off')
+    expect(
+      resolvedModelConfiguration({ ...configured, reasoning_default: 'thorough' })
+        .reasoning_default,
+    ).toBe('thorough')
+    expect(() => resolvedModelConfiguration({ ...configured, reasoning_default: 'high' })).toThrow(
+      '不受支持',
+    )
+    expect(() => modelConfiguration({ ...configured, reasoning_mode: 'standard' })).toThrow()
+    expect(
+      modelConfiguration({ ...input, reasoning_mode: 'off', reasoning_default: 'xhigh' })
+        .reasoning_default,
+    ).toBe('xhigh')
+    expect(() =>
+      resolvedModelConfiguration({ ...input, reasoning_mode: 'off', reasoning_default: 'xhigh' }),
+    ).toThrow('声明模型能力')
+    expect(() =>
+      resolvedModelConfiguration({
+        ...input,
+        protocol: 'anthropic_messages',
+        reasoning_mode: 'off',
+        reasoning_default: 'large',
+        reasoning_capability: {
+          source: 'manual',
+          adapter: 'anthropic_budget',
+          options: [{ id: 'large', budget_tokens: 8192 }],
+        },
+      }),
+    ).toThrow('输出上限')
+  })
   it('accepts explicit protocol settings and only fixed maintenance routes', () => {
     expect(modelConfiguration(input)).toEqual(input)
     expect(apiRequest({ operation: 'compactRun', id: 'run-a' }).path).toBe(

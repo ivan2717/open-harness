@@ -43,15 +43,31 @@ pub(crate) fn definitions(mode: PermissionMode) -> Vec<ToolDefinition> {
         ),
         make(
             "run_command",
-            "Run a foreground shell command after explicit one-time user approval. macOS sandbox limits writes to the project, denies network and protected paths. Defaults to 60s, max 120s. Background daemons, detached processes and setsid are unsupported; do not start them. Output is bounded; command edits are reviewed but not automatically reversible.",
-            json!({"command":{"type":"string"},"timeout_seconds":{"type":"integer","minimum":1,"maximum":120}}),
+            if cfg!(windows) {
+                "Execute PowerShell in a Windows AppContainer within the user-approved access scope. Writes are confined to the workspace; protected files are denied. Network is denied by default; request network_access=allowed only when the command needs Internet/LAN access. Windows loopback remains blocked. Isolation failure stops execution. Set access=read_only for tests/inspection: the project is OS read-only, only this command’s temporary directory ($TMPDIR on macOS, $env:TEMP on Windows) is writable and is removed after exit. Read-only commands can run concurrently and see live files, not a snapshot; rerun final checks after edits settle. Delegated agents can only use read_only. Workspace writes require access=workspace_write and run exclusively. Returns a command_id if still running; use manage_command to inspect or stop it. yield_time_ms is only the initial wait (default 10000); timeout_seconds is an optional total deadline. Output is bounded. Do not start detached daemons."
+            } else {
+                "Execute /bin/sh in the macOS sandbox within the user-approved access scope. macOS sandbox allows workspace writes and denies protected paths. Network is denied by default; request network_access=allowed only when necessary. The user approves access and network together, once or for subsequent commands in this conversation; file restrictions stay in place. Set access=read_only for tests/inspection: the project is OS read-only, only this command’s temporary directory ($TMPDIR on macOS, $env:TEMP on Windows) is writable and is removed after exit. Read-only commands can run concurrently and see live files, not a snapshot; rerun final checks after edits settle. Delegated agents can only use read_only. Workspace writes require access=workspace_write and run exclusively. Returns a command_id if still running; use manage_command to inspect or stop it. yield_time_ms is only the initial wait (default 10000); timeout_seconds is an optional total deadline. Output is bounded. Do not start detached daemons."
+            },
+            json!({"command":{"type":"string"},"access":{"type":"string","enum":["read_only","workspace_write"]},"network_access":{"type":"string","enum":["denied","allowed"],"default":"denied"},"yield_time_ms":{"type":"integer","minimum":0,"maximum":30000},"timeout_seconds":{"type":"integer","minimum":1,"maximum":86400}}),
             &["command"],
+        ),
+        make(
+            "manage_command",
+            "Read incremental output/status or stop one command from this conversation. Pass next_cursor as cursor to avoid duplicate output; keep reading while has_more_output, including after completion. wait_ms waits for new output or completion (max 30000), not a process deadline. Use wait_ms of at least 1000 when a command is quiet; avoid tight empty polling. Stopped/interrupted commands are never automatically replayed. Only workspace-write commands keep the workspace busy; read-only commands can run concurrently.",
+            json!({"command_id":{"type":"string"},"action":{"type":"string","enum":["output","status","stop"]},"cursor":{"type":"integer","minimum":0},"wait_ms":{"type":"integer","minimum":0,"maximum":30000}}),
+            &["command_id"],
+        ),
+        make(
+            "load_workspace_dependencies",
+            "Report the host-prepared Node/Python interpreters, exact arguments and verified libraries without installing anything. Use these paths for local scripts; an unavailable interpreter is null. Does not grant execution permission or download packages.",
+            json!({}),
+            &[],
         ),
     ];
     definitions.retain(|tool| match tool.name.as_str() {
         "apply_patch" => mode == PermissionMode::WorkspaceWrite,
-        "run_command" => {
-            mode == PermissionMode::WorkspaceWrite && crate::command::sandbox_available()
+        "run_command" | "manage_command" | "load_workspace_dependencies" => {
+            crate::command::execution_available()
         }
         _ => true,
     });
@@ -111,6 +127,9 @@ impl LocalTools {
             }
             "read_file" => crate::reader::read(self.root(), &call.arguments)?,
             "search_files" => crate::reader::search(self.root(), &call.arguments)?,
+            "load_workspace_dependencies" => {
+                crate::workspace_runtime::describe(self.root(), &call.arguments)?
+            }
             "apply_patch" => self.apply_patch(&call.arguments)?,
             "read_document" | "search_document" => crate::documents::call(self.root(), &call)?,
 

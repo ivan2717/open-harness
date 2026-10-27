@@ -1,6 +1,6 @@
 use crate::{
     context::DemoCompactor,
-    contracts::{ConfigureModel, ModelInfo},
+    contracts::{ConfigureModel, ModelInfo, ModelReasoning},
     demo::{DemoModel, DemoTools},
 };
 use agent_core::agent::RunEventEnvelope;
@@ -213,6 +213,11 @@ pub struct ConfiguredModel {
     pub model: HttpModel,
 }
 pub fn configure(input: ConfigureModel) -> Result<ConfiguredModel, ProviderError> {
+    if input.reasoning_capability.is_some() && input.reasoning_mode != "off" {
+        return Err(ProviderError::InvalidConfig(
+            "use reasoning_default with a capability declaration, not legacy reasoning_mode",
+        ));
+    }
     let reasoning = match input.reasoning_mode.as_str() {
         "off" => ReasoningMode::Off,
         "standard" if input.protocol == ProviderProtocol::AnthropicMessages => {
@@ -246,7 +251,7 @@ pub fn configure(input: ConfigureModel) -> Result<ConfiguredModel, ProviderError
         })?;
     // Versioned deterministic identifier includes all wire/accounting settings,
     // never the secret. Credential rotation preserves conversation identity.
-    let identity = serde_json::to_vec(&(
+    let mut identity = serde_json::to_vec(&(
         input.protocol,
         input.base_url.trim_end_matches('/'),
         &input.model,
@@ -255,11 +260,20 @@ pub fn configure(input: ConfigureModel) -> Result<ConfiguredModel, ProviderError
         &reasoning,
     ))
     .map_err(|_| ProviderError::InvalidConfig("invalid model configuration"))?;
+    // Old profiles retain their identifiers. New declarations are connection
+    // specific and cannot accidentally reuse a profile with a different mapping.
+    if input.reasoning_capability.is_some() || input.reasoning_default.is_some() {
+        identity.extend_from_slice(b".reasoning.v2:");
+        identity.extend(
+            serde_json::to_vec(&(&input.reasoning_capability, &input.reasoning_default))
+                .map_err(|_| ProviderError::InvalidConfig("invalid reasoning configuration"))?,
+        );
+    }
     let mut hash = 0xcbf2_9ce4_8422_2325u64;
     for byte in identity {
         hash = (hash ^ u64::from(byte)).wrapping_mul(0x100_0000_01b3);
     }
-    let info = ModelInfo {
+    let mut info = ModelInfo {
         id: format!("model-{hash:016x}"),
         name: input.model.clone(),
         description: format!(
@@ -269,8 +283,9 @@ pub fn configure(input: ConfigureModel) -> Result<ConfiguredModel, ProviderError
         ),
         available: true,
         context_window: input.context_window,
+        reasoning: None,
     };
-    let model = HttpModel::new(ProviderConfig {
+    let mut model = HttpModel::new(ProviderConfig {
         protocol: input.protocol,
         base_url: input.base_url,
         api_key: input.api_key,
@@ -280,6 +295,23 @@ pub fn configure(input: ConfigureModel) -> Result<ConfiguredModel, ProviderError
         supports_images: input.supports_images,
         reasoning,
     })?;
+    if let Some(capability) = input.reasoning_capability {
+        model = model.with_reasoning_capability(capability)?;
+    }
+    if let Some(effort) = input.reasoning_default.as_deref() {
+        model = model.with_reasoning_effort(effort)?;
+    }
+    info.reasoning = Some(ModelReasoning {
+        default_effort: input
+            .reasoning_default
+            .or_else(|| (input.reasoning_mode != "off").then_some(input.reasoning_effort)),
+        supported_efforts: model
+            .supported_reasoning_efforts()
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
+        capability: Some(model.reasoning_capability().clone()),
+    });
     Ok(ConfiguredModel { info, model })
 }
 
@@ -297,6 +329,8 @@ mod tests {
             max_output_tokens: 4096,
             reasoning_mode: "off".into(),
             reasoning_effort: "high".into(),
+            reasoning_capability: None,
+            reasoning_default: None,
         }
     }
     #[test]
@@ -313,5 +347,69 @@ mod tests {
         invalid.context_window = 100;
         invalid.max_output_tokens = 80;
         assert!(configure(invalid).is_err());
+    }
+
+    fn declared() -> agent_providers::ReasoningCapability {
+        serde_json::from_value(serde_json::json!({
+            "source":"manual", "adapter":"effort",
+            "options":[{"id":"balanced","label":"Balanced","effort":"medium"}, {"id":"maximum","effort":"max"}]
+        })).unwrap()
+    }
+
+    #[test]
+    fn capability_declarations_and_defaults_are_validated_and_part_of_profile_identity() {
+        let old = configure(input("key")).unwrap();
+        let preset = old.info.reasoning.unwrap();
+        assert_eq!(preset.supported_efforts, vec!["low", "medium", "high"]);
+        assert_eq!(
+            preset.capability.unwrap().source,
+            agent_providers::ReasoningSource::Preset
+        );
+        assert_eq!(preset.default_effort, None);
+        let mut declared_input = input("key");
+        declared_input.reasoning_capability = Some(declared());
+        let declared_model = configure(declared_input).unwrap();
+        let info = declared_model.info.reasoning.as_ref().unwrap();
+        assert_eq!(info.default_effort, None);
+        assert_eq!(info.supported_efforts, vec!["balanced", "maximum"]);
+        assert_ne!(old.info.id, declared_model.info.id);
+        let mut selected = input("rotated-key");
+        selected.reasoning_capability = Some(declared());
+        selected.reasoning_default = Some("maximum".into());
+        let selected = configure(selected).unwrap();
+        assert_eq!(
+            selected.info.reasoning.unwrap().default_effort.as_deref(),
+            Some("maximum")
+        );
+        assert_ne!(selected.info.id, declared_model.info.id);
+        let mut invalid = input("key");
+        invalid.reasoning_capability = Some(declared());
+        invalid.reasoning_default = Some("high".into());
+        assert!(configure(invalid).is_err());
+        let mut conflicting = input("key");
+        conflicting.reasoning_mode = "standard".into();
+        conflicting.reasoning_capability = Some(declared());
+        assert!(configure(conflicting).is_err());
+    }
+
+    #[test]
+    fn legacy_explicit_modes_keep_defaults_and_budget_default_rejects_insufficient_output() {
+        let mut legacy = input("key");
+        legacy.protocol = ProviderProtocol::ChatCompletions;
+        legacy.reasoning_mode = "deepseek".into();
+        let configured = configure(legacy).unwrap();
+        let info = configured.info.reasoning.unwrap();
+        assert_eq!(info.default_effort.as_deref(), Some("high"));
+        assert_eq!(
+            info.capability.unwrap().source,
+            agent_providers::ReasoningSource::Legacy
+        );
+        let mut budget = input("key");
+        budget.protocol = ProviderProtocol::AnthropicMessages;
+        budget.reasoning_capability = Some(serde_json::from_value(serde_json::json!({
+            "source":"manual","adapter":"anthropic_budget","options":[{"id":"budget","budget_tokens":4096}]
+        })).unwrap());
+        budget.reasoning_default = Some("budget".into());
+        assert!(configure(budget).is_err());
     }
 }

@@ -1,0 +1,50 @@
+{
+  "reviewer": "independent evaluation agent",
+  "method": "Read-only inspection of original script, source files, public messages and saved host command records; no model script was rerun.",
+  "final_artifact_sha256": "93762dd08dbdc9a2d02279be3483c04a0d850adeae1b70dadf89ead966e08e81",
+  "original_score": {
+    "passed": true,
+    "passed_checks": 16,
+    "total_checks": 16,
+    "check_names": [
+      "actual_compaction_covers_correction_before_delivery",
+      "all_agents_successful",
+      "applied_refund",
+      "child_executed_command",
+      "child_read_parent_history",
+      "correct_refund_ids",
+      "correction_cited",
+      "net_received",
+      "one_child_agent",
+      "source_files_cited",
+      "unchanged:orders.csv",
+      "unchanged:payments.csv",
+      "unchanged:refunds.csv",
+      "unchanged:rules.md",
+      "unpaid_before_refunds",
+      "valid_result_json"
+    ]
+  },
+  "additional_audit": {
+    "passed": true,
+    "passed_checks": 26,
+    "total_checks": 26,
+    "failed_checks": []
+  },
+  "final_numeric_and_citation_requirements_satisfied": true,
+  "source_files_unchanged": true,
+  "child_computes_from_sources": true,
+  "child_read_complete_parent_originals_in_one_preview": true,
+  "parent_source_and_script_review_observed": true,
+  "final_artifact_readback": {
+    "verified": true,
+    "method": "read_file plus executed Node JSON.parse and assertions",
+    "command_id": "command-1793084124397592000-1",
+    "exit_code": 0,
+    "no_later_artifact_mutations": true
+  },
+  "no_outstanding_commands": true,
+  "reporting_issues": [],
+  "audit_adjudication": null,
+  "verdict": "Functional and reviewed reporting requirements satisfied."
+}

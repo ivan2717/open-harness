@@ -1,0 +1,54 @@
+{
+  "reviewer": "independent evaluation agent",
+  "method": "Read-only inspection of original script, source files, public messages and saved host command records; no model script was rerun.",
+  "final_artifact_sha256": "eb34ac877330e612a094c08f169d563235e584a4e0fe3cf61bf658eb3731b833",
+  "original_score": {
+    "passed": true,
+    "passed_checks": 16,
+    "total_checks": 16,
+    "check_names": [
+      "actual_compaction_covers_correction_before_delivery",
+      "all_agents_successful",
+      "applied_refund",
+      "child_executed_command",
+      "child_read_parent_history",
+      "correct_refund_ids",
+      "correction_cited",
+      "net_received",
+      "one_child_agent",
+      "source_files_cited",
+      "unchanged:orders.csv",
+      "unchanged:payments.csv",
+      "unchanged:refunds.csv",
+      "unchanged:rules.md",
+      "unpaid_before_refunds",
+      "valid_result_json"
+    ]
+  },
+  "additional_audit": {
+    "passed": false,
+    "passed_checks": 25,
+    "total_checks": 26,
+    "failed_checks": [
+      "parent_readback_matches_deliverable"
+    ]
+  },
+  "final_numeric_and_citation_requirements_satisfied": true,
+  "source_files_unchanged": true,
+  "child_computes_from_sources": true,
+  "child_read_complete_parent_originals_in_one_preview": true,
+  "parent_source_and_script_review_observed": true,
+  "final_artifact_readback": {
+    "verified": true,
+    "method": "executed Node fs.readFileSync plus JSON.parse and final citation/numeric assertions",
+    "command_id": "command-1793084379477130000-2",
+    "exit_code": 0,
+    "no_later_artifact_mutations": true
+  },
+  "no_outstanding_commands": true,
+  "reporting_issues": [
+    "Child report labels its shortened correction quotation as complete original text; the actual history read was complete and the final artifact short quotation is verbatim."
+  ],
+  "audit_adjudication": "The preserved read_file-only automatic check is conservative: a later citation edit changed the file, but the final completed Node command read and verified that final version. No automated score was changed.",
+  "verdict": "Functional requirements satisfied; retain reporting caveat and automatic audit 25/26."
+}

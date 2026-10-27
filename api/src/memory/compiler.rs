@@ -1,7 +1,8 @@
 use super::sources::{Batch, redact_tokens};
 use agent_memory::{MAX_PAGES, WikiState, WikiTaskKind, WikiTaskStatus, WikiUpdate};
 use agent_runtime::{
-    ApproximateTokenCounter, Model, ModelFinishReason, ModelMessage, ModelRequest, TokenCounter,
+    ApproximateTokenCounter, Model, ModelContextBudget, ModelFinishReason, ModelMessage,
+    ModelRequest, TokenCounter,
 };
 use serde_json::json;
 use std::{collections::HashSet, io, time::Duration};
@@ -14,7 +15,10 @@ pub(super) async fn compile<M: Model>(
     batch: &mut Batch,
 ) -> io::Result<WikiUpdate> {
     let metadata = model.context_metadata();
-    let window = metadata.map_or(128_000, |m| m.context_window);
+    let window = metadata.map_or_else(
+        || ModelContextBudget::default().context_window(),
+        |m| m.context_window,
+    );
     let output = metadata
         .and_then(|m| m.max_output_tokens)
         .unwrap_or(4_096)
@@ -293,14 +297,14 @@ mod tests {
     }
 
     struct Fixture {
-        metadata: ModelContextMetadata,
+        metadata: Option<ModelContextMetadata>,
         requests: Mutex<Vec<ModelRequest>>,
         response: String,
     }
     impl Fixture {
         fn new(window: usize, response: Value) -> Self {
             Self {
-                metadata: ModelContextMetadata::new("fixture", "compiler", window).unwrap(),
+                metadata: Some(ModelContextMetadata::new("fixture", "compiler", window).unwrap()),
                 requests: Mutex::new(Vec::new()),
                 response: response.to_string(),
             }
@@ -309,7 +313,7 @@ mod tests {
     impl Model for Fixture {
         type Error = io::Error;
         fn context_metadata(&self) -> Option<&ModelContextMetadata> {
-            Some(&self.metadata)
+            self.metadata.as_ref()
         }
         async fn respond(&self, request: ModelRequest) -> io::Result<ModelResponse> {
             self.requests.lock().unwrap().push(request);
@@ -326,6 +330,33 @@ mod tests {
                 files: vec![],
             },
         }]
+    }
+
+    #[tokio::test]
+    async fn unknown_and_million_token_models_keep_wiki_requests_within_the_batch_budget() {
+        let events = events(&"甲🙂".repeat(20_000));
+        let original =
+            super::super::sources::batch(&events, None, super::super::UpdateReason::Compaction)
+                .unwrap();
+        let mut model = Fixture::new(
+            1_000_000,
+            json!({"overview":"Task notes", "pages":[], "tasks":[]}),
+        );
+        let mut known_batch = original.clone();
+        compile(&model, None, &mut known_batch).await.unwrap();
+        model.metadata = None;
+        let mut unknown_batch = original.clone();
+        compile(&model, None, &mut unknown_batch).await.unwrap();
+
+        assert_eq!(unknown_batch.cursor, known_batch.cursor);
+        assert!(unknown_batch.source_chars() < original.source_chars());
+        assert!(unknown_batch.source_chars() > 0);
+        let requests = model.requests.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        for request in requests.iter() {
+            assert_eq!(request.max_output_tokens, Some(4_096));
+            assert!(ApproximateTokenCounter::conservative().count_tokens(request) <= 32_000);
+        }
     }
 
     #[tokio::test]

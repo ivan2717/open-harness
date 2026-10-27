@@ -87,8 +87,12 @@ install dependencies or mutate themselves. Desktop packaging builds/copies the
 helper. `launch.sh` uses `OPENHARNESS_NODE_BINARY` when the desktop host supplies
 its Electron executable together with `ELECTRON_RUN_AS_NODE=1`; otherwise it uses
 `node` on PATH. The host provides the absolute `.app` path through
-`OPENHARNESS_COMPUTER_APP`, keeping the installed control component at a stable
-app-resource path across plugin updates. With no override, the package's own
+`OPENHARNESS_COMPUTER_APP`. On macOS the desktop copies the signed component
+unchanged into `userData/computer-use/Open Harness Computer Use.app`, outside
+the main `.app` bundle. This stable location prevents Screen Recording from
+being attributed to the enclosing desktop app. Unchanged components are reused;
+deployment failure is reported without falling back to a different permission
+identity. With no override, the package's own
 `bin/Open Harness Computer Use.app` is used. `OPENHARNESS_COMPUTER_HELPER` is an
 explicit compatibility override for stdio tests; the app setting takes precedence.
 Paths are host configuration and never come from model arguments. A missing app

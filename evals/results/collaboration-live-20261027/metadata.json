@@ -1,0 +1,62 @@
+{
+  "started_at": "2026-10-26T16:12:22.280Z",
+  "platform": "darwin",
+  "backend": "/Users/jiangtao/Desktop/open-harness/target/debug/api",
+  "backend_sha256": "dabad678f5ac619423a106206d2b3d9bf37b19f9112091f8527c9ef06f552ead",
+  "model": "gpt-6-luna",
+  "protocol": "responses",
+  "host": "api.openai.com",
+  "reasoning_mode": "standard",
+  "reasoning_effort": "medium",
+  "context_window": 1050000,
+  "max_output_tokens": 8192,
+  "runtime_manifest": "/tmp/openharness-collaboration-eval-electron/runtime/runtime.json",
+  "temporary": "/private/var/folders/rv/ghrq1zqn405dtldv_2vymry80000gn/T/openharness-collaboration-live-DOywM6",
+  "limits": {
+    "seconds_per_case": 240,
+    "max_steps_per_agent": 24,
+    "max_children": 2,
+    "observed_tokens_per_case": 180000
+  },
+  "notes": [
+    "Production API and model adapter; no mock model in this suite.",
+    "Fresh workspace and conversation for every case; same input bytes and saved model settings.",
+    "OS-sandboxed commands with network denied are approved once by the test driver; this is not human approval latency.",
+    "Usage includes recorded main/child model responses; missing, failed, retry, Wiki and summary calls may not be included.",
+    "No personal MCP/browser connection is copied into this accounting task. Permission/MCP behavior has a separate deterministic suite.",
+    "Public transcripts exclude reasoning; internal persisted provider state stays in the temporary API data directory."
+  ],
+  "registered_model": {
+    "id": "model-3df693477dc3066f",
+    "name": "gpt-6-luna",
+    "description": "responses · 1050000 token context",
+    "available": true,
+    "context_window": 1050000,
+    "reasoning": {
+      "default_effort": "medium",
+      "supported_efforts": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "capability": {
+        "source": "legacy",
+        "adapter": "effort",
+        "options": [
+          {
+            "id": "low",
+            "effort": "low"
+          },
+          {
+            "id": "medium",
+            "effort": "medium"
+          },
+          {
+            "id": "high",
+            "effort": "high"
+          }
+        ]
+      }
+    }
+  }
+}

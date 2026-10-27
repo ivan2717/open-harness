@@ -1,6 +1,9 @@
 //! Shared workspace coordination for delegated runs. A lease reserves exact
 //! files, never a directory subtree; it does not grant additional permissions.
-use crate::{LocalTools, lock_error, paths};
+use crate::{
+    CommandAccess, LocalTools, PermissionMode, command_policy::CommandPermissions, lock_error,
+    paths,
+};
 use agent_runtime::ToolDefinition;
 use std::{
     collections::BTreeMap,
@@ -8,7 +11,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
-use tokio::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
+use tokio::sync::{OwnedRwLockWriteGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use unicode_normalization::UnicodeNormalization;
 
 #[derive(Clone)]
@@ -18,8 +21,9 @@ pub struct WorkspaceAccess {
 
 struct Shared {
     root: PathBuf,
-    operations: RwLock<()>,
+    operations: Arc<RwLock<()>>,
     leases: Mutex<BTreeMap<String, Vec<PathBuf>>>,
+    command_permissions: Mutex<BTreeMap<String, Arc<CommandPermissions>>>,
 }
 
 impl WorkspaceAccess {
@@ -31,13 +35,15 @@ impl WorkspaceAccess {
         Ok(Self {
             inner: Arc::new(Shared {
                 root,
-                operations: RwLock::new(()),
+                operations: Arc::new(RwLock::new(())),
                 leases: Mutex::new(BTreeMap::new()),
+                command_permissions: Mutex::new(BTreeMap::new()),
             }),
         })
     }
 
-    /// Atomically reserve files after any active command or file mutation ends.
+    /// Atomically reserve files after any workspace-writing command or file
+    /// mutation ends. Read-only commands do not hold this lock.
     /// Cancelling while waiting leaves no reservation. Repeating the same lease
     /// is idempotent; replacing one requires an explicit release first.
     pub async fn acquire(&self, owner: &str, paths: &[String]) -> io::Result<()> {
@@ -68,7 +74,10 @@ impl WorkspaceAccess {
             } else {
                 Err(io::Error::new(
                     io::ErrorKind::WouldBlock,
-                    "release the existing file lease before replacing it",
+                    format!(
+                        "run {owner} already reserves exact files {}; stop the run and wait for cleanup before replacing its write_paths",
+                        describe_paths(existing),
+                    ),
                 ))
             };
         }
@@ -79,7 +88,11 @@ impl WorkspaceAccess {
             {
                 return Err(io::Error::new(
                     io::ErrorKind::WouldBlock,
-                    format!("a requested file overlaps a lease held by {other}"),
+                    format!(
+                        "requested files {} overlap exact files {} reserved by run {other}; coordinate with that owner, or stop it and wait for cleanup before retrying",
+                        describe_paths(&paths),
+                        describe_paths(reserved),
+                    ),
                 ));
             }
         }
@@ -107,7 +120,9 @@ impl WorkspaceAccess {
             if target == self.inner.root
                 || fs::symlink_metadata(&target).is_ok_and(|metadata| !metadata.is_file())
             {
-                return Err(paths::denied("write leases must name individual files"));
+                return Err(paths::denied(&format!(
+                    "write_paths must name individual files, not directories: {path:?}; for example use .openharness-tmp/task.js, not .openharness-tmp. Omit write_paths to inherit workspace access",
+                )));
             }
             let relative = target.strip_prefix(&self.inner.root).unwrap().to_path_buf();
             if normalized.contains(&relative) {
@@ -117,7 +132,9 @@ impl WorkspaceAccess {
                 .iter()
                 .any(|existing| overlaps(existing, &relative))
             {
-                return Err(paths::denied("overlapping paths in write lease"));
+                return Err(paths::denied(&format!(
+                    "overlapping individual file paths in write_paths at {path:?}; directory subtrees are not supported",
+                )));
             }
             normalized.push(relative);
         }
@@ -135,6 +152,41 @@ impl WorkspaceAccess {
                 _guard: self.inner.operations.read().await,
             }
         }
+    }
+
+    /// A read-only command is enforced by the OS sandbox and can mutate only
+    /// its own scratch directory. It needs no workspace mutation lock. Reads
+    /// observe the live workspace; this does not promise a frozen test snapshot.
+    pub(crate) fn command_operation(
+        &self,
+        access: CommandAccess,
+    ) -> io::Result<Option<OwnedRwLockWriteGuard<()>>> {
+        if access == CommandAccess::ReadOnly {
+            return Ok(None);
+        }
+        self.inner
+            .operations
+            .clone()
+            .try_write_owned()
+            .map(Some)
+            .map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::WouldBlock,
+                    "workspace is busy; wait for the current operation before running a command",
+                )
+            })
+    }
+
+    fn command_permissions(&self, root_run_id: &str) -> io::Result<Arc<CommandPermissions>> {
+        validate_owner(root_run_id)?;
+        Ok(self
+            .inner
+            .command_permissions
+            .lock()
+            .map_err(lock_error)?
+            .entry(root_run_id.to_owned())
+            .or_default()
+            .clone())
     }
 
     pub(crate) fn try_write(&self) -> io::Result<RwLockWriteGuard<'_, ()>> {
@@ -159,13 +211,14 @@ pub(crate) enum WorkspaceOperation<'a> {
 pub(crate) struct Collaboration {
     pub access: WorkspaceAccess,
     owner: String,
-    allowed: Option<Vec<PathBuf>>,
+    pub(crate) allowed: Option<Vec<PathBuf>>,
     pub definitions: Vec<ToolDefinition>,
 }
 
 impl LocalTools {
-    /// `None` is the parent role; `Some` restricts a delegate to exact files,
-    /// and an empty list makes it read-only. A delegate must also hold a lease.
+    /// `None` retains the configured workspace permission for either a parent
+    /// or an inheriting delegate. `Some` narrows writes to exact leased files;
+    /// an empty list makes the binding read-only. It never grants permissions.
     /// Bind all tools for one workspace to the same `WorkspaceAccess` instance.
     pub fn with_collaboration(
         mut self,
@@ -186,16 +239,27 @@ impl LocalTools {
             .transpose()?;
         let mut definitions = self.inner.definitions.clone();
         if let Some(paths) = &allowed {
-            definitions.retain(|tool| {
-                tool.name != "run_command" && (tool.name != "apply_patch" || !paths.is_empty())
-            });
+            definitions.retain(|tool| tool.name != "apply_patch" || !paths.is_empty());
         }
+        self.command_permissions = access.command_permissions(&owner)?;
         self.collaboration = Some(Arc::new(Collaboration {
             access,
             owner,
             allowed,
             definitions,
         }));
+        Ok(self)
+    }
+
+    /// Bind descendants to their root conversation's user-approved command
+    /// policy. The host supplies this ID from delegation metadata, never a
+    /// model-controlled tool argument. Separate root conversations do not share
+    /// grants even when they use the same project directory.
+    pub fn with_command_approval_scope(mut self, root_run_id: &str) -> io::Result<Self> {
+        let binding = self.collaboration.as_ref().ok_or_else(|| {
+            io::Error::other("command approval scope requires a collaboration binding")
+        })?;
+        self.command_permissions = binding.access.command_permissions(root_run_id)?;
         Ok(self)
     }
 
@@ -210,40 +274,67 @@ impl LocalTools {
                         .get(&binding.owner)
                         .is_some_and(|paths| paths.iter().any(|path| path == relative)))
             {
-                return Err(paths::denied(
-                    "file is outside this delegated run's active write lease",
-                ));
+                return Err(paths::denied(&format!(
+                    "file {path:?} is outside run {}'s active write lease; allowed exact files: {}. write_paths does not authorize directory children. Ask the coordinator to stop this task, then resume it with corrected write_paths (null to inherit the parent's workspace permission)",
+                    binding.owner,
+                    describe_paths(allowed),
+                )));
             }
-            if leases.iter().any(|(owner, paths)| {
-                owner != &binding.owner && paths.iter().any(|path| overlaps(path, relative))
+            if let Some((owner, reserved)) = leases.iter().find(|(owner, paths)| {
+                *owner != &binding.owner && paths.iter().any(|path| overlaps(path, relative))
             }) {
-                return Err(paths::denied("file is reserved by another delegated run"));
+                return Err(paths::denied(&format!(
+                    "file {path:?} is reserved by another delegated run {owner}; its exact files are {}. Send that owner the task, or stop it and wait for cleanup before taking over",
+                    describe_paths(reserved),
+                )));
             }
         }
         Ok(target)
     }
 
-    pub(crate) fn authorize_command(&self) -> io::Result<()> {
+    pub(crate) fn authorize_command(&self, access: CommandAccess) -> io::Result<()> {
+        if access == CommandAccess::ReadOnly {
+            return Ok(());
+        }
+        if self.inner.mode != PermissionMode::WorkspaceWrite {
+            return Err(paths::denied(
+                "this workspace permits only read-only sandboxed commands",
+            ));
+        }
         if let Some(binding) = &self.collaboration {
-            if binding.allowed.is_some() {
-                return Err(paths::denied(
-                    "delegated runs cannot execute shell commands",
-                ));
+            if let Some(allowed) = &binding.allowed {
+                return Err(paths::denied(&format!(
+                    "file-scoped run {} can only execute read-only sandboxed commands; write through file tools within {}. If the task needs a workspace-writing command, ask the coordinator to stop it and resume with write_paths:null to inherit its permission",
+                    binding.owner,
+                    describe_paths(allowed),
+                )));
             }
-            if !binding
-                .access
-                .inner
-                .leases
-                .lock()
-                .map_err(lock_error)?
-                .is_empty()
-            {
-                return Err(paths::denied(
-                    "wait for delegated file writes to finish before running a command",
-                ));
+            let leases = binding.access.inner.leases.lock().map_err(lock_error)?;
+            if let Some((owner, reserved)) = leases.iter().next() {
+                return Err(paths::denied(&format!(
+                    "wait for delegated file writes to finish before running a workspace-writing command; run {owner} reserves {}. Collect its result or stop it and wait for cleanup",
+                    describe_paths(reserved),
+                )));
             }
         }
         Ok(())
+    }
+}
+
+fn describe_paths(paths: &[PathBuf]) -> String {
+    if paths.is_empty() {
+        return "[] (read-only)".into();
+    }
+    let listed = paths
+        .iter()
+        .take(8)
+        .map(|path| format!("{:?}", path.to_string_lossy()))
+        .collect::<Vec<_>>()
+        .join(", ");
+    if paths.len() > 8 {
+        format!("[{listed}, … {} more]", paths.len() - 8)
+    } else {
+        format!("[{listed}]")
     }
 }
 
@@ -271,4 +362,138 @@ fn overlaps(left: &Path, right: &Path) -> bool {
     let left = key(left);
     let right = key(right);
     left.starts_with(&right) || right.starts_with(&left)
+}
+
+#[cfg(test)]
+mod command_policy_tests {
+    use super::*;
+    use crate::NetworkAccess;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    struct Fixture(PathBuf);
+    impl Fixture {
+        fn new() -> Self {
+            static NEXT: AtomicU64 = AtomicU64::new(1);
+            let root = std::env::temp_dir().join(format!(
+                "openharness-command-scopes-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+            fs::create_dir_all(root.join("project")).unwrap();
+            Self(root)
+        }
+        fn tools(
+            &self,
+            access: &WorkspaceAccess,
+            owner: &str,
+            allowed: Option<Vec<String>>,
+        ) -> LocalTools {
+            LocalTools::open(
+                self.0.join("project"),
+                self.0.join(owner),
+                PermissionMode::WorkspaceWrite,
+            )
+            .unwrap()
+            .with_collaboration(access.clone(), owner, allowed)
+            .unwrap()
+        }
+    }
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn descendants_share_only_their_root_conversations_authorization_ceiling() {
+        let fixture = Fixture::new();
+        let access = WorkspaceAccess::new(fixture.0.join("project")).unwrap();
+        let parent = fixture.tools(&access, "parent", None);
+        let child = fixture
+            .tools(&access, "child", Some(Vec::new()))
+            .with_command_approval_scope("parent")
+            .unwrap();
+        let other = fixture.tools(&access, "unrelated", None);
+        parent
+            .command_permissions
+            .grant(CommandAccess::WorkspaceWrite, NetworkAccess::Allowed)
+            .unwrap();
+        assert!(
+            child
+                .command_permissions
+                .allows(CommandAccess::ReadOnly, NetworkAccess::Allowed)
+                .unwrap()
+        );
+        assert!(
+            !other
+                .command_permissions
+                .allows(CommandAccess::ReadOnly, NetworkAccess::Denied)
+                .unwrap()
+        );
+        // Inheriting a broad parent grant does not broaden delegated file access.
+        assert!(child.authorize_command(CommandAccess::ReadOnly).is_ok());
+        assert!(
+            child
+                .authorize_command(CommandAccess::WorkspaceWrite)
+                .is_err()
+        );
+        parent.command_permissions.revoke().unwrap();
+        assert!(
+            !child
+                .command_permissions
+                .allows(CommandAccess::ReadOnly, NetworkAccess::Denied)
+                .unwrap()
+        );
+        // A new host has no saved grant even for the same root/run identifiers.
+        let reopened = WorkspaceAccess::new(fixture.0.join("project")).unwrap();
+        assert!(
+            reopened
+                .command_permissions("parent")
+                .unwrap()
+                .grants()
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn only_workspace_mutating_commands_take_the_global_mutation_lock() {
+        let fixture = Fixture::new();
+        let access = WorkspaceAccess::new(fixture.0.join("project")).unwrap();
+        let writer = access
+            .command_operation(CommandAccess::WorkspaceWrite)
+            .unwrap()
+            .unwrap();
+        assert!(
+            access
+                .command_operation(CommandAccess::ReadOnly)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            access
+                .command_operation(CommandAccess::WorkspaceWrite)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::WouldBlock
+        );
+        assert!(access.try_acquire("child", &["a.txt".into()]).is_err());
+        drop(writer);
+        access.try_acquire("child", &["a.txt".into()]).unwrap();
+        let child = fixture.tools(&access, "child", Some(vec!["a.txt".into()]));
+        let parent = fixture.tools(&access, "parent", None);
+        assert!(child.authorize_command(CommandAccess::ReadOnly).is_ok());
+        assert!(parent.authorize_command(CommandAccess::ReadOnly).is_ok());
+        assert!(
+            parent
+                .authorize_command(CommandAccess::WorkspaceWrite)
+                .is_err()
+        );
+        access.release("child").await;
+        assert!(
+            parent
+                .authorize_command(CommandAccess::WorkspaceWrite)
+                .is_ok()
+        );
+    }
 }

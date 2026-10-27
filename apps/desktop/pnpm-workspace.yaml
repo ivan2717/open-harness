@@ -1,0 +1,3 @@
+# Electron packaging and bundled browser resources need a conventional layout.
+nodeLinker: hoisted
+storeDir: .pnpm-store

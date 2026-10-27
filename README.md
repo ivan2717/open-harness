@@ -8,12 +8,12 @@ show conversation output, tool execution, context budgets, and compaction.
 ## Desktop
 
 The desktop uses **Electron + React + TypeScript + Zustand + Tailwind CSS +
-TanStack Query + TanStack Router**. With Node.js 24 LTS and Rust installed:
+TanStack Query + TanStack Router**. With Node.js 24 LTS, pnpm 10.13.1 and Rust installed:
 
 ```sh
 cd apps/desktop
-npm ci
-npm run dev
+pnpm install --frozen-lockfile
+pnpm run dev
 ```
 
 The desktop includes an offline demonstration model and configurable real-model
@@ -24,9 +24,10 @@ turns and cancellable manual context compaction. The offline demo makes no model
 API requests. See [desktop setup and architecture](apps/desktop/README.md)
 for state ownership, persistence, checks, and packaging.
 
-The **Checks** GitHub Actions workflow checks every merged update to `main`.
+The **Checks** GitHub Actions workflow checks every merged update to `main`,
+including native Windows command, sandbox, lifecycle and desktop integration checks.
 It builds a Windows x64 installer only when the desktop version changes,
-after Rust, desktop, and plugin checks pass. Each installer is installed, launched,
+after the Linux and Windows checks pass. Each installer is installed, launched,
 tested with an offline task and restart, and uninstalled on the Windows runner.
 Download the installer and SHA-256 checksum from
 [GitHub Releases](https://github.com/ivan2717/open-harness/releases).
@@ -38,12 +39,22 @@ These builds are unsigned and need no Apple developer account. See
 
 Choose a project directory and a configured model to work on actual local files.
 New projects default to **read-only**. With **workspace write** enabled, the model
-can make focused edits; each shell command still requires a separate approval.
+can make focused edits. Commands request approval for their file and network
+access unless the user has already granted that scope for this conversation.
 The desktop shows pending approvals, command results, and file changes in an
 on-demand project panel. The offline demonstration does not operate on projects.
 
-The model sees up to five local tools: `list_files`, `read_file`, `search_files`,
-`apply_patch`, and `run_command`. Read-only projects expose just the first three.
+Real-model conversations without a selected project receive a private, persistent
+working directory under `session-files/<conversation-id>` in service storage.
+The composer labels it **会话文件** and can open it in the file manager; it is not
+added to the projects list. Scripts belong in `.openharness-tmp/`, deliverables
+in `outputs/`. The app never deletes those files merely because a turn ends.
+Selecting a read-only project still gives only read access to that project.
+
+The model sees up to seven local tools: `list_files`, `read_file`, `search_files`,
+`apply_patch`, `run_command`, `manage_command`, and `load_workspace_dependencies`.
+Read-only projects omit `apply_patch` and permit only read-only commands on
+supported sandboxed hosts.
 Reading and searching automatically handle UTF-8 text and PDF, DOCX, XLSX and
 PPTX documents, preserving page/paragraph/slide/cell locations and pagination.
 Directory searches scan bounded text files and report skipped documents for
@@ -56,15 +67,64 @@ is captured when the conversation starts; nested guidance can be read on demand.
 Each conversation keeps its original instruction snapshot when it is reopened,
 so persisted provider reasoning and prefix bindings remain valid.
 
-Command execution currently requires the macOS `sandbox-exec` facility. Commands
-run with a clean environment, network access disabled, project-scoped writes,
-bounded output, a 60-second default timeout (120 seconds maximum), and owned
-process-group cancellation. A pipe watchdog also stops the owned process group
-when the host exits unexpectedly. Commands must be foreground tasks: daemons or
-processes that deliberately detach into a new session are unsupported and cannot
-be guaranteed to stop with that group. If the supported sandbox is unavailable, commands
-are refused; there is no unrestricted fallback. Other platforms can still use
-file tools. Projects need installed dependencies for offline test commands.
+`run_command` waits up to `yield_time_ms` (10 seconds by default), then returns a
+command ID while the process continues. This is not an execution deadline;
+`timeout_seconds` optionally supplies one. `manage_command` reads incremental
+output using a cursor or stops the process. Continue paging while
+`has_more_output` is true, even after completion. Live output has a 256 KiB ring
+buffer with explicit eviction reporting; review retains 64 KiB of head/tail output
+and the latest 50 command records. Redirect large results into output files.
+Commands run noninteractively in the background; there is no terminal or later
+stdin input. Read-only commands may run concurrently, including from child
+agents. The OS sandbox makes project files read-only and gives each command a
+private writable temporary directory that is removed after exit. Reads see the
+live project, so final verification must wait for related edits to settle.
+Workspace-write commands serialize with other workspace mutations and retain
+the write/review lock until exit; conflicting write requests return busy for the
+model to retry after the current operation. A root conversation and its children share an
+eight-command concurrency limit. The desktop displays running commands even
+between model turns. Stopping a task or exiting the app
+stops its commands; restarting preserves records without replaying processes.
+
+Commands run inside an OS sandbox. Network is
+**off by default**. When a command needs a download or remote service, it may
+request `network_access: "allowed"`; the approval UI names the network grant and
+the command record retains it. Choose one-time approval, or allow future commands
+within the same file/network scope for the current root conversation and its
+child agents. A saved scope never bypasses read-only project permissions or
+delegated file ownership, and does not relax filesystem restrictions. Session
+grants are kept only in memory, can be revoked in the command panel and disappear
+when the app restarts. Revocation affects future approvals; already approved
+commands must be stopped separately. Missing or
+failed isolation never falls back to unrestricted execution.
+
+macOS uses `/bin/sh` and Seatbelt (`sandbox-exec`), with workspace-scoped writes,
+protected-path restrictions, and a pipe watchdog that stops the process group
+when the host exits. Windows uses PowerShell in an AppContainer launched by the
+bundled `openharness-sandbox.exe`. A command-specific package SID receives
+workspace/runtime ACL access; existing protected paths are denied. Job Objects
+terminate the helper and its children on stop or host exit. Read-only project
+grants do not inherit to newly created or atomically replaced files; start a new
+command to scan and authorize those files. Existing files remain live. Windows
+ACLs attach to file objects, unlike Seatbelt path rules; they do not dynamically
+reclassify an already authorized file when another process renames it. Workspace-write
+commands cannot preemptively deny every future filename matching a pattern.
+Windows also keeps its AppContainer loopback
+restriction even for an approved Internet/LAN command. No system loopback
+exemption is silently installed. Deliberately detached daemons are unsupported.
+Other platforms do not expose command execution.
+
+`load_workspace_dependencies` reports host-verified interpreter paths and
+libraries without downloads. Desktop builds include standalone Python and Node,
+pnpm, and shared libraries for documents, spreadsheets, PDF, images, data analysis
+and plotting. Neither language has unconditional priority: the task and available
+libraries determine the choice. Conversations share the bundled, read-only
+libraries; the loader does not create a venv or pnpm store per conversation. Extra
+dependencies use an explicitly chosen project or temporary environment. OS sandbox
+guarantees remain platform-specific as described above. See
+[workspace scripting runtimes](apps/desktop/README.md#local-script-runtimes).
+Use workspace-relative Markdown links/images for generated files; the desktop
+uses its existing contained file preview and save pipeline.
 
 File-tool changes are journaled before writing and can be reverted while idle
 only if the file still matches the agent's last saved content. This preserves
@@ -112,26 +172,79 @@ it does not silently queue it. These settings are currently API options, without
 a desktop configuration form.
 
 The coordinator uses `spawn_agent` for independent work and `agent_control` to
-list, send messages, wait, read results, resume or cancel members. Each child uses
-the same configured model and project, but starts a fresh conversation with its
-own persisted history and context budget. The parent supplies the task and relevant
-evidence explicitly; parent conversation history and provider reasoning state are
-not copied. Child results are saved and delivered automatically at model
+list, send messages, wait, read results, follow up or interrupt members. Children share
+the project and keep independent persisted histories and context budgets. A bounded
+public handoff includes the original goal, latest compaction summary and recent
+messages; omitted evidence can be read from the parent's public transcript.
+Provider reasoning and opaque continuation state are never copied. The default
+model and reasoning follow the parent, including on a later resume. The coordinator
+can inspect configured choices with `agent_control` action `models` and pass
+`model: {"model_id": "...", "reasoning_effort": "..."}` to `spawn_agent` for
+a fixed selection; omitted effort uses that model's configured default.
+Child results are saved and delivered automatically at model
 boundaries. The parent waits for active children before normal turn completion and can
 verify their conclusions before answering. Messages are evidence, not user
 authorization. Sending to an idle child does not restart it; the coordinator must
-explicitly resume it with a task. Child agents cannot create further agents.
+explicitly `followup` with a task once the child is fully idle. A running child
+accepts `send` messages at model boundaries; acceptance does not mean processing
+or successful completion. `followup` rejects a running or still-cleaning-up child
+instead of claiming it started another turn. `interrupt` waits for cleanup and
+preserves identity/history. The old `resume`/`cancel` actions remain compatible.
+Child agents cannot create further agents.
 
-Children are read-only by default. If the parent already has project-write
-permission, `write_paths` can reserve up to 32 exact project files for a child.
+Use `target: "parent"`, `"self"` (read only), `"/root"`, or the stable
+`"/root/<task_name>"` returned by spawn/list. Raw `agent_id` remains supported for
+old clients. The host rebuilds identity from persisted membership in every
+agent's instructions, outside compacted conversation history; addresses never
+resolve to a different root conversation. Names must be unique, at most 80
+characters, without `/` or surrounding whitespace; `self`, `parent`, and `root`
+are reserved. `result` returns bounded previews of the current turn's latest two
+assistant reports, also used for automatic completion delivery, so a final short
+acknowledgement does not hide the earlier report. `read` previews are capped at
+8 KiB total and 1,000 characters per message; tool output is omitted by default
+(`include_tools: true` opts in). Raw transcript offsets remain stable. Every
+truncated preview retains its message ID; read that ID in character chunks to
+recover the original text without modifying stored history.
+Attachment-only messages remain visible. To read a saved user attachment, use
+the message ID plus zero-based `file_index` and `text_offset`/`text_limit`;
+the response includes its persisted source event and continuation offset. This
+reads the original public input snapshot, never the current host file at its path.
+Waiting optionally selects a `target`, uses scoped receipt activity and member state, ignores
+unrelated conversations and cumulative token usage, and returns `no_progress`
+when the selected member (or all peers for an untargeted wait) is idle. Unrelated
+member changes do not extend the deadline; new caller inbox messages can wake
+either kind of wait. An idle state is not proof of task success.
+
+Children inherit the parent's workspace permissions by default. An explicit
+`write_paths: []` narrows a child to read-only; if the parent has project-write
+permission, a nonempty list can reserve up to 32 exact individual files for a child,
+never directory subtrees. Ordinary script and generated-output tasks should omit
+this optional restriction and describe responsibilities in the task instead.
+To repair an explicit restriction, interrupt first, then follow up on the same
+child with corrected `write_paths`: omission keeps the old scope, `null` restores
+parent-inherited access, and `[]` makes it read-only. The parent remains the
+permission ceiling; failed admission does not publish a new model/scope binding.
 Disjoint children can edit concurrently; conflicting assignments, writes outside
 the assigned files, and parent writes into a child's active reservation are
-refused. Commands are refused while file reservations remain active; the
-coordinator must wait for their release before requesting a command. Children
-do not inherit command approvals, MCP access, browser grants or computer-control
-grants, and cannot execute those operations. A coordinator handles required
-integration commands or external actions through its existing approval flow.
-Finishing or cancelling a child releases its file reservations. Stopping the
+refused. Children can run OS-enforced read-only commands for inspection and tests,
+using private temporary directories for test output. These commands may overlap
+with reserved file edits, but read the live project rather than a frozen snapshot.
+Children with inherited write access can also run approved workspace-writing
+commands. Explicitly file-restricted children must edit through file tools.
+Workspace-writing commands are refused while file reservations are active and
+hold the write lock while executing; read-only commands may run concurrently. Root and child tasks inherit the
+same MCP configuration and share the user's reusable session command/control
+grants. One-time approvals are not inherited. Pending child approvals and running
+commands appear on the parent page with their task names. Chrome agents use the
+same task group with separate active tabs; a released tab can be handed to another
+member, without letting it close a teammate's tabs. Desktop operations are serialized.
+Stopping one child preserves the root's reusable permissions; stopping control
+revokes the entire task family's control grants. Other conversations never share them.
+Finishing or cancelling a child stops and drains any outstanding commands before
+releasing its file reservations and delivering its result. Cleanup still counts
+as activity. Unsuccessful command IDs/statuses are included in the delivery;
+the model finishing is not proof of script/test success. Normal parent background
+commands keep their existing behavior. Stopping the
 parent cancels its children; a child explicitly stopped by the user cannot be
 automatically restarted by an agent.
 
@@ -206,9 +319,9 @@ as imagined descriptions. The long-run tests cover 40 successive screenshots,
 restore/continue, complete archive retrieval and corrupt-image rejection on read.
 
 After preparing Chromium, validate from the repository root with
-`npm --prefix apps/desktop run test:browser`,
-`npm --prefix apps/desktop run test:computer`, and
-`npm --prefix apps/desktop run test:e2e:computer`. The native macOS fixture uses
+`pnpm --dir apps/desktop run test:browser`,
+`pnpm --dir apps/desktop run test:computer`, and
+`pnpm --dir apps/desktop run test:e2e:computer`. The native macOS fixture uses
 `node plugins/computer-use/tests/gui-smoke.mjs`; missing OS permissions report
 `blocked`, not a successful GUI run. Windows installed-app CI also exercises the
 packaged independent browser and native helper against a temporary WinForms app,
@@ -485,26 +598,26 @@ model request.
 The internal module split preserves crate-root imports. Custom integrations
 using the previous interfaces need these changes:
 
-| Previous interface | Current interface |
-| --- | --- |
-| `ContextManager::prepare(ContextInput)` / `prepare_borrowed` | Implement `prepare(ContextInputRef)`; owned callers can use `prepare_owned`. |
-| `ContextCompactor::compact` alone | Also implement `estimate_input_tokens` using the adapter's actual input format. |
-| `HistoryAccess::execute` alone | Implement `execute_bounded` and `ToolOutputProjector`; `execute` delegates with no caller-supplied limit. |
-| Positional `ContextPolicy::new` / `HistoryLimits::new` | Use named builder setters and validate with `build()`. |
-| Four numeric arguments to `EventStoreHistoryAccess::with_limits` | Pass a validated `HistoryLimits`. |
-| `AgentRuntime::max_steps() -> u32` | Returns `Option<u32>`, preserving the configured limit. |
-| `ModelRequest` struct literals | Set `max_output_tokens` and `provider_context` (`None` for unbounded legacy text requests). |
-| Shared main/summary token counter | Configure `ModelContextCompactor::with_token_counter` and `with_budget` independently. |
-| `ModelMessage` enum variants | Use `ModelMessage { role, content, provider_state, context }`; each `content` is an ordered `ContentBlock` list. |
-| Separate assistant `ToolCall` messages | Keep calls in the same assistant content list; tool results remain subsequent tool-role messages. |
-| `ModelResponse::{FinalAnswer, ToolCalls, InputRequired}` | Use ordered `content` plus `ModelFinishReason`; convenience constructors are `final_answer`, `tool_calls`, and `input_required`. |
-| Core `ProviderProtocol` and `ProviderResponseState::validate_response` | Use adapter-owned format keys and `Model::validate_replay_state`; built-in codecs live in `agent-adapters::WireProtocol`. |
-| Direct `ModelRequest::validate_provider_state` | This checks generic invariants only; use `Model::validate_request` or `validate_provider_state_with` to include adapter payload validation. |
-| `RunEvent::ModelResponseReceived` literals | Supply `token_usage` (`None` for legacy/manual events). Existing serialized logs still load without it. |
-| `RunStarted`, `InputReceived`, `RunResumed` literals | Supply `files: Vec::new()` for plain text. The optional persisted field holds explicit `TextFileReference` snapshots; older logs remain readable. Existing runtime string methods remain available; use their `_with_files` variants for references. |
-| Raw `estimate_request_tokens` diagnostics | Use `measure_request(input, request)` for the same calibrated estimate and headroom used by the context policy. |
-| Wrappers around a `ContextManager` | Forward `request_usage_baseline` to preserve its counter-bound durable estimate anchors; forward `compact_now` to expose manual maintenance. |
-| Custom `TokenCounter` | Optionally implement a stable, versioned `estimator_identity` to retain calibration after history rewrites and restarts. Exact-prefix calibration still works without it. |
+| Previous interface                                                     | Current interface                                                                                                                                                                                                                                    |
+| ---------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ContextManager::prepare(ContextInput)` / `prepare_borrowed`           | Implement `prepare(ContextInputRef)`; owned callers can use `prepare_owned`.                                                                                                                                                                         |
+| `ContextCompactor::compact` alone                                      | Also implement `estimate_input_tokens` using the adapter's actual input format.                                                                                                                                                                      |
+| `HistoryAccess::execute` alone                                         | Implement `execute_bounded` and `ToolOutputProjector`; `execute` delegates with no caller-supplied limit.                                                                                                                                            |
+| Positional `ContextPolicy::new` / `HistoryLimits::new`                 | Use named builder setters and validate with `build()`.                                                                                                                                                                                               |
+| Four numeric arguments to `EventStoreHistoryAccess::with_limits`       | Pass a validated `HistoryLimits`.                                                                                                                                                                                                                    |
+| `AgentRuntime::max_steps() -> u32`                                     | Returns `Option<u32>`, preserving the configured limit.                                                                                                                                                                                              |
+| `ModelRequest` struct literals                                         | Set `max_output_tokens` and `provider_context` (`None` for unbounded legacy text requests).                                                                                                                                                          |
+| Shared main/summary token counter                                      | Configure `ModelContextCompactor::with_token_counter` and `with_budget` independently.                                                                                                                                                               |
+| `ModelMessage` enum variants                                           | Use `ModelMessage { role, content, provider_state, context }`; each `content` is an ordered `ContentBlock` list.                                                                                                                                     |
+| Separate assistant `ToolCall` messages                                 | Keep calls in the same assistant content list; tool results remain subsequent tool-role messages.                                                                                                                                                    |
+| `ModelResponse::{FinalAnswer, ToolCalls, InputRequired}`               | Use ordered `content` plus `ModelFinishReason`; convenience constructors are `final_answer`, `tool_calls`, and `input_required`.                                                                                                                     |
+| Core `ProviderProtocol` and `ProviderResponseState::validate_response` | Use adapter-owned format keys and `Model::validate_replay_state`; built-in codecs live in `agent-adapters::WireProtocol`.                                                                                                                            |
+| Direct `ModelRequest::validate_provider_state`                         | This checks generic invariants only; use `Model::validate_request` or `validate_provider_state_with` to include adapter payload validation.                                                                                                          |
+| `RunEvent::ModelResponseReceived` literals                             | Supply `token_usage` (`None` for legacy/manual events). Existing serialized logs still load without it.                                                                                                                                              |
+| `RunStarted`, `InputReceived`, `RunResumed` literals                   | Supply `files: Vec::new()` for plain text. The optional persisted field holds explicit `TextFileReference` snapshots; older logs remain readable. Existing runtime string methods remain available; use their `_with_files` variants for references. |
+| Raw `estimate_request_tokens` diagnostics                              | Use `measure_request(input, request)` for the same calibrated estimate and headroom used by the context policy.                                                                                                                                      |
+| Wrappers around a `ContextManager`                                     | Forward `request_usage_baseline` to preserve its counter-bound durable estimate anchors; forward `compact_now` to expose manual maintenance.                                                                                                         |
+| Custom `TokenCounter`                                                  | Optionally implement a stable, versioned `estimator_identity` to retain calibration after history rewrites and restarts. Exact-prefix calibration still works without it.                                                                            |
 
 Cancellation drops locally owned model/tool futures and lets event persistence
 finish. Adapters must clean up their resources on drop; already committed
@@ -598,15 +711,17 @@ preferred recent tail is 16% of the input space left after fixed instructions
 and tool schemas, retaining complete steps. Configure another ratio with
 `recent_tail_percent(1..=99)`; an explicit `recent_tail_tokens` takes precedence.
 
-| Configuration | Input limit | Trigger | Desired size | Tail before fixed-cost adjustment |
-| --- | ---: | ---: | ---: | ---: |
-| No metadata: 128,000 fallback window | 117,760 | 115,200 | 86,400 | 18,841 |
-| Model default window 1,000,000, effective 95% | 950,000 | 900,000 | 675,000 | 152,000 |
+| Configuration                                 | Input limit | Trigger | Desired size | Tail before fixed-cost adjustment |
+| --------------------------------------------- | ----------: | ------: | -----------: | --------------------------------: |
+| No metadata: 1,000,000 fallback window        |     950,000 | 900,000 |      675,000 |                           152,000 |
+| Model default window 1,000,000, effective 95% |     950,000 | 900,000 |      675,000 |                           152,000 |
 
 Both rows use the default 8,192 output reservation and 2,048 safety margin.
 Actual tail budgets subtract the current instructions and schemas first.
-Unknown adapters retain the fallback; adapters must advertise their real limits
-to use a larger window automatically. `policy.resolve(model.context_metadata())`
+Unknown adapters use the 1,000,000-token fallback. This is a default assumption;
+explicit configuration and advertised model limits still take precedence.
+The model-backed compactor uses the same fallback, while Wiki compilation keeps
+its separate 32,000-token input batch cap. `policy.resolve(model.context_metadata())`
 exposes the effective configuration for inspection.
 
 ```rust
@@ -792,12 +907,12 @@ replay scope, raw JSON payload, and extra replay token cost. The core neither
 matches protocol names nor parses vendor fields. The separate `agent-adapters`
 crate currently supplies these codecs:
 
-| Codec | Persisted payload |
-| --- | --- |
-| Chat Completions | Full assistant message, including reasoning fields and ordered `tool_calls` |
-| Responses | Entire ordered `output` array, including reasoning/encrypted items, message phases, and function calls |
-| Anthropic Messages | Assistant `role` and complete ordered `content`, including thinking signatures and redacted blocks |
-| Gemini generateContent | Complete model `Content`, keeping every part and `thoughtSignature` on its original part |
+| Codec                  | Persisted payload                                                                                      |
+| ---------------------- | ------------------------------------------------------------------------------------------------------ |
+| Chat Completions       | Full assistant message, including reasoning fields and ordered `tool_calls`                            |
+| Responses              | Entire ordered `output` array, including reasoning/encrypted items, message phases, and function calls |
+| Anthropic Messages     | Assistant `role` and complete ordered `content`, including thinking signatures and redacted blocks     |
+| Gemini generateContent | Complete model `Content`, keeping every part and `thoughtSignature` on its original part               |
 
 `WireProtocol::decode_content` produces normalized ordered blocks;
 `capture_state` retains the original payload, and `validate_replay_state` binds

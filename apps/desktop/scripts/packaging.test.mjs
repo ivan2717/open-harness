@@ -6,6 +6,35 @@ import { test } from 'vitest'
 import { directoryBuildArguments } from './package-dir.mjs'
 import { verifyMacSignature } from './verify-signature.mjs'
 import { stagePluginResources } from './plugin-resources.mjs'
+import { backendBuildPlan } from './backend.mjs'
+
+test('Windows backend builds ship the sandbox helper next to the API', async () => {
+  for (const release of [false, true]) {
+    const plan = backendBuildPlan({ platform: 'win32', arch: 'x64', release })
+    assert.ok(plan.arguments.includes('agent-local'))
+    assert.ok(plan.filenames.includes('openharness-sandbox.exe'))
+    assert.equal(plan.windowsTarget, release ? 'x86_64-pc-windows-msvc' : undefined)
+    if (release) assert.ok(plan.filenames.includes('api.exe'))
+  }
+  const config = await readFile(new URL('../electron-builder.yml', import.meta.url), 'utf8')
+  assert.match(config, /- from: resources\/bin\s+to: bin/)
+})
+
+test('Chrome-only preparation and other platforms do not build the Windows sandbox helper', () => {
+  const chrome = backendBuildPlan({
+    platform: 'win32',
+    arch: 'x64',
+    release: true,
+    chromeHostOnly: true,
+  })
+  assert.deepEqual(chrome.filenames, ['openharness-chrome-host.exe'])
+  assert.ok(!chrome.arguments.includes('agent-local'))
+  for (const platform of ['darwin', 'linux']) {
+    const plan = backendBuildPlan({ platform, arch: 'arm64', release: true })
+    assert.deepEqual(plan.filenames, ['api'])
+    assert.ok(!plan.arguments.includes('agent-local'))
+  }
+})
 
 const context = {
   electronPlatformName: 'darwin',

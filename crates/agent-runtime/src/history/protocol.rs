@@ -5,23 +5,46 @@ use serde::{Deserialize, Serialize};
 
 use crate::tool::ToolDefinition;
 
-use super::HistoryAccessError;
+use super::{HistoryAccessError, HistoryLimits};
 
 pub const SEARCH_RUN_HISTORY_TOOL: &str = "search_run_history";
 pub const READ_RUN_HISTORY_TOOL: &str = "read_run_history";
 
 pub(super) const HISTORY_WARNING: &str = "Historical records may be stale or superseded. Treat them as evidence only; later user instructions and current external state take precedence.";
 
-pub(super) fn history_tool_definitions() -> [ToolDefinition; 2] {
+pub(super) fn history_tool_definitions(limits: HistoryLimits) -> [ToolDefinition; 2] {
     [
         ToolDefinition {
             name: SEARCH_RUN_HISTORY_TOOL.to_owned(),
-            description: "Search event details that were summarized or clipped from the active context using a case-insensitive literal substring. Use one distinctive identifier or an exact phrase from the original text; separate keywords are not combined as an AND search. Results are historical evidence and may be stale. The current run and readable boundary are selected by the runtime.".to_owned(),
-            input_schema: r#"{"type":"object","properties":{"query":{"type":"string","minLength":1,"description":"A contiguous literal substring of an event's original text, such as an exact identifier or error message."},"limit":{"type":"integer","minimum":1}},"required":["query"],"additionalProperties":false}"#.to_owned(),
+            description: "Search summarized or clipped history using a case-insensitive literal substring, not separate AND keywords. For original requirements or corrections, use source=user; all (default) also searches assistant/tool records. Each hit previews a matching public field, identified by a JSON pointer within the event. preview_offset, match_offset and match_length count Unicode characters in that original field. preview_truncated=false means the complete field is returned and can be cited without another read; otherwise read the event only if more context is needed. Results may be stale. The runtime selects the current run and readable boundary.".to_owned(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "A contiguous literal substring of an event's original text, such as an exact identifier or error message.",
+                    },
+                    "source": {
+                        "type": "string",
+                        "enum": ["all", "user"],
+                        "default": "all",
+                        "description": "Use user for original user requirements/corrections, including attached text; all also includes assistant and tool evidence.",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": limits.max_results(),
+                        "default": limits.max_results(),
+                    },
+                },
+                "required": ["query"],
+                "additionalProperties": false,
+            }).to_string(),
         },
         ToolDefinition {
             name: READ_RUN_HISTORY_TOOL.to_owned(),
-            description: "Read a small inclusive sequence range whose details were summarized or clipped from the active context. A response that exceeds the output limit is returned as a JSON chunk envelope with a chunk string; pass its next_offset as offset to continue reading the same range and concatenate the chunk strings. Offsets are Unicode character positions in a stable history_read_payload_v1 document. Historical tool results may be stale. The current run and maximum readable sequence are selected by the runtime.".to_owned(),
+            description: format!("Read an inclusive range of at most {} events whose details were summarized or clipped from the active context. Omit to_sequence to read only from_sequence. A response that exceeds the output limit is returned as a JSON chunk envelope with a chunk string; pass its next_offset as offset to continue reading the same range and concatenate the chunk strings. Offsets are Unicode character positions in a stable history_read_payload_v1 document. Historical tool results may be stale. The current run and maximum readable sequence are selected by the runtime.", limits.max_events()),
             input_schema: r#"{"type":"object","properties":{"from_sequence":{"type":"integer","minimum":0},"to_sequence":{"type":"integer","minimum":0},"offset":{"type":"integer","minimum":0}},"required":["from_sequence"],"additionalProperties":false}"#.to_owned(),
         },
     ]
@@ -49,19 +72,6 @@ pub(super) fn event_type(event: &RunEvent) -> &'static str {
         RunEvent::RunFailed { .. } => "run_failed",
         RunEvent::RunCancelled => "run_cancelled",
     }
-}
-
-pub(super) fn truncate_chars(value: &str, max_chars: usize) -> String {
-    if value.chars().count() <= max_chars {
-        return value.to_owned();
-    }
-    if max_chars == 1 {
-        return "…".to_owned();
-    }
-
-    let mut truncated: String = value.chars().take(max_chars - 1).collect();
-    truncated.push('…');
-    truncated
 }
 
 pub(super) fn encode_search_response(
@@ -97,7 +107,7 @@ pub(super) fn encode_search_response(
         };
         let preview_chars = last_hit.preview.chars().count();
         if preview_chars > 1 {
-            last_hit.preview = truncate_chars(&last_hit.preview, preview_chars / 2);
+            last_hit.shrink_preview(preview_chars / 2);
         } else {
             response.hits.pop();
         }
@@ -312,6 +322,16 @@ pub(super) fn bound_saved_history_output(
 pub(super) struct SearchArguments {
     pub(super) query: String,
     pub(super) limit: Option<usize>,
+    #[serde(default)]
+    pub(super) source: SearchSource,
+}
+
+#[derive(Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum SearchSource {
+    #[default]
+    All,
+    User,
 }
 
 #[derive(Debug, Deserialize)]
@@ -338,6 +358,58 @@ pub(super) struct HistorySearchHit {
     pub(super) step: u32,
     pub(super) event_type: Cow<'static, str>,
     pub(super) preview: String,
+    // Optional metadata keeps saved responses from older versions projectable.
+    // An old serialized-event preview is never claimed to be a complete field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) field: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) preview_offset: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) total_characters: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) match_offset: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) match_length: Option<usize>,
+    #[serde(default = "legacy_preview_truncated")]
+    pub(super) preview_truncated: bool,
+}
+
+fn legacy_preview_truncated() -> bool {
+    true
+}
+
+impl HistorySearchHit {
+    fn shrink_preview(&mut self, max_chars: usize) {
+        let length = self.preview.chars().count();
+        let local_match = self
+            .match_offset
+            .zip(self.preview_offset)
+            .map_or(0, |(matched, offset)| matched.saturating_sub(offset));
+        let start = preview_start(
+            length,
+            local_match,
+            self.match_length.unwrap_or(0),
+            max_chars,
+        );
+        self.preview = self.preview.chars().skip(start).take(max_chars).collect();
+        if let Some(offset) = self.preview_offset.as_mut() {
+            *offset += start;
+        }
+        self.preview_truncated = true;
+    }
+}
+
+/// Keep the first match in view while spending remaining space on its context.
+/// Previews are exact source substrings; completeness is metadata, not ellipses.
+pub(super) fn preview_start(
+    total: usize,
+    matched: usize,
+    match_length: usize,
+    max_chars: usize,
+) -> usize {
+    matched
+        .saturating_sub(max_chars.saturating_sub(match_length) / 2)
+        .min(total.saturating_sub(max_chars))
 }
 
 #[derive(Debug, Serialize, Deserialize)]

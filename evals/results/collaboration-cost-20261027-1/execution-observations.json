@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "metadata_delivery_count": 0,
+  "metadata": [],
+  "read_requests": [
+    {
+      "sequence": 70,
+      "action": "read",
+      "target": "independent-reconcile",
+      "offset": 0,
+      "limit": 20,
+      "include_tools": true
+    },
+    {
+      "sequence": 74,
+      "action": "read",
+      "target": "independent-reconcile",
+      "offset": 8,
+      "limit": 20,
+      "include_tools": true
+    }
+  ],
+  "broad_child_history_read_count": 2,
+  "exact_host_command_output_read_count": 0,
+  "metadata_only_results": 1,
+  "full_report_results": 0,
+  "parent_source_read_counts": {
+    "orders.csv": 1,
+    "payments.csv": 1,
+    "refunds.csv": 1,
+    "rules.md": 1
+  },
+  "child_parent_history_calls": [
+    {
+      "action": "read",
+      "target": "parent",
+      "offset": 0,
+      "limit": 10,
+      "include_tools": false
+    }
+  ]
+}

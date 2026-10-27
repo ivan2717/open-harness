@@ -1,8 +1,26 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
+import { win32 } from 'node:path'
 import type { ApiRequest } from './protocol'
 import { consumeSse } from './sse'
 import type { RunDetail } from '../shared/contracts'
+
+export function backendSandboxEnvironment(
+  binary: string,
+  platform: NodeJS.Platform = process.platform,
+): NodeJS.ProcessEnv {
+  if (platform !== 'win32') return {}
+  if (!win32.isAbsolute(binary) || !/^(?:[a-z]:[\\/]|\\\\[^\\]+\\[^\\]+)/i.test(binary))
+    throw new Error('The Windows runtime path must be absolute')
+  // The helper is built and installed alongside the API. Never inherit a helper
+  // selected by the shell or resolve one from a project's working directory.
+  return {
+    OPENHARNESS_WINDOWS_SANDBOX_HELPER: win32.join(
+      win32.dirname(binary),
+      'openharness-sandbox.exe',
+    ),
+  }
+}
 
 export class Backend {
   private child: ChildProcessWithoutNullStreams | undefined
@@ -24,6 +42,7 @@ export class Backend {
         env: {
           ...process.env,
           ...this.environment,
+          ...backendSandboxEnvironment(this.binary),
           OPENHARNESS_BIND: '127.0.0.1:0',
           OPENHARNESS_DATA_DIR: this.dataDirectory,
           OPENHARNESS_API_TOKEN: this.token,

@@ -1,0 +1,9 @@
+payment_id,order_id,amount,status
+P201,O101,120,paid
+P202,O102,80,paid
+P203,O103,200,paid
+P202,O102,80,paid
+P204,O105,75,paid
+P205,O999,50,paid
+P206,O104,60,failed
+P207,O106,90,cancelled

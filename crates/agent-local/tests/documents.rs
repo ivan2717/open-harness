@@ -82,7 +82,7 @@ fn malformed_scanned_and_expanding_documents_report_actionable_results() {
     assert!(extract_document("bad.docx", &malformed).is_err());
 }
 #[tokio::test]
-async fn readonly_project_can_review_resume_and_handbook_without_commands() {
+async fn readonly_project_can_review_resume_and_handbook_without_executing_commands() {
     static NEXT: AtomicU64 = AtomicU64::new(1);
     let base = std::env::temp_dir().join(format!(
         "document-tools-{}-{}",
@@ -100,9 +100,17 @@ async fn readonly_project_can_review_resume_and_handbook_without_commands() {
         .iter()
         .map(|tool| tool.name.as_str())
         .collect();
-    assert_eq!(names, ["list_files", "read_file", "search_files"]);
+    let mut expected = vec!["list_files", "read_file", "search_files"];
+    if tools.review().unwrap().execution_mode != "unavailable" {
+        expected.extend([
+            "run_command",
+            "manage_command",
+            "load_workspace_dependencies",
+        ]);
+    }
+    assert_eq!(names, expected);
     assert!(
-        !names.contains(&"run_command")
+        !names.contains(&"apply_patch")
             && !names.contains(&"write_file")
             && !names.contains(&"edit_file")
     );

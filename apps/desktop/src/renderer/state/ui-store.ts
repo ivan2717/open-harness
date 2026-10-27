@@ -20,6 +20,7 @@ interface UiState {
   project: ProjectSelection | null
   projectPaths: string[]
   selectedModel: string
+  draftReasoningEfforts: Record<string, string>
   inspectorOpen: boolean
   inspectorTab: InspectorTab
   setDraft: (key: string, value: string) => void
@@ -29,6 +30,7 @@ interface UiState {
   setFileImporting: (key: string, pending: boolean) => void
   setProject: (project: ProjectSelection | null) => void
   setSelectedModel: (model: string) => void
+  setDraftReasoningEffort: (model: string, effort: string | null) => void
   setInspectorOpen: (open: boolean) => void
   setInspectorTab: (tab: InspectorTab) => void
 }
@@ -47,6 +49,9 @@ export const useUiStore = create<UiState>()(
       // Remember sidebar entries, not filesystem grants or permission modes.
       projectPaths: [],
       selectedModel: '',
+      // A new task can choose an override without changing the saved model.
+      // These draft choices survive navigation, but are not persisted to disk.
+      draftReasoningEfforts: {},
       inspectorOpen: false,
       inspectorTab: 'context',
       setDraft: (key, value) => set((state) => ({ drafts: { ...state.drafts, [key]: value } })),
@@ -82,6 +87,13 @@ export const useUiStore = create<UiState>()(
               : state.projectPaths,
         })),
       setSelectedModel: (selectedModel) => set({ selectedModel }),
+      setDraftReasoningEffort: (model, effort) =>
+        set((state) => {
+          const draftReasoningEfforts = { ...state.draftReasoningEfforts }
+          if (effort === null) delete draftReasoningEfforts[model]
+          else draftReasoningEfforts[model] = effort
+          return { draftReasoningEfforts }
+        }),
       setInspectorOpen: (inspectorOpen) => set({ inspectorOpen }),
       setInspectorTab: (inspectorTab) => set({ inspectorTab }),
     }),

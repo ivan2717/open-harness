@@ -72,17 +72,27 @@ fn advertises_only_the_compact_surface_available_to_the_permission_mode() {
                     "read_file",
                     "search_files",
                     "apply_patch",
-                    "run_command"
+                    "run_command",
+                    "manage_command",
+                    "load_workspace_dependencies"
                 ]
     );
     let tools = fixture.tools(PermissionMode::ReadOnly);
+    let mut expected = vec!["list_files", "read_file", "search_files"];
+    if tools.review().unwrap().execution_mode != "unavailable" {
+        expected.extend([
+            "run_command",
+            "manage_command",
+            "load_workspace_dependencies",
+        ]);
+    }
     assert_eq!(
         tools
             .definitions()
             .iter()
             .map(|tool| tool.name.as_str())
             .collect::<Vec<_>>(),
-        ["list_files", "read_file", "search_files"]
+        expected
     );
     let schema: Value = serde_json::from_str(&tools.definitions()[1].input_schema).unwrap();
     assert!(schema["properties"]["cursor"].is_object());

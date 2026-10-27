@@ -1,17 +1,28 @@
 import { useState, type FormEvent } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { ChevronRight } from 'lucide-react'
 import type { ConfigureModelInput } from '../../shared/contracts'
 import { resolveModelLimits, type ModelCapacity } from '../../shared/model-limits'
+import {
+  resolveReasoningCapability,
+  validateReasoningCapability,
+  type ReasoningCapability,
+} from '../../shared/model-reasoning'
 import { configOptions } from '../lib/queries'
 import { errorMessage } from '../lib/format'
+import { availableReasoningOptions } from '../lib/reasoning-settings'
 import { useUiStore } from '../state/ui-store'
 import { InlineError } from './Feedback'
+import { ModelReasoningCompatibility, ModelReasoningDefault } from './ModelReasoningSettings'
 
 export function ModelSettings() {
   const client = useQueryClient()
   const select = useUiStore((state) => state.setSelectedModel)
   const [protocol, setProtocol] = useState<ConfigureModelInput['protocol']>('chat_completions')
-  const [mode, setMode] = useState<ConfigureModelInput['reasoning_mode']>('off')
+  const [reasoningOverride, setReasoningOverride] = useState<ReasoningCapability>()
+  const [discoveredReasoning, setDiscoveredReasoning] = useState<ReasoningCapability>()
+  const [reasoningDefault, setReasoningDefault] = useState('')
+  const [formError, setFormError] = useState<string>()
   const [key, setKey] = useState('')
   const [baseUrl, setBaseUrl] = useState('')
   const [modelName, setModelName] = useState('')
@@ -28,6 +39,12 @@ export function ModelSettings() {
         input.max_output_tokens === undefined
       )
         setCapacity(result.capacity)
+      const discovered = result.model.reasoning?.capability
+      setDiscoveredReasoning(
+        discovered?.source === 'metadata' || discovered?.source === 'preset'
+          ? discovered
+          : undefined,
+      )
       select(result.model.id)
       await client.invalidateQueries({ queryKey: configOptions.queryKey })
     },
@@ -48,18 +65,50 @@ export function ModelSettings() {
     capacity,
   )
   const customized = contextOverride !== '' || outputOverride !== ''
+  const capability =
+    reasoningOverride ??
+    resolveReasoningCapability(
+      { protocol, base_url: baseUrl, model: modelName },
+      discoveredReasoning,
+    )
+  const outputLimit =
+    outputOverride !== '' && Number(outputOverride) > 0
+      ? Number(outputOverride)
+      : limits.max_output_tokens
+  const selectedReasoning = availableReasoningOptions(capability, outputLimit).some(
+    (option) => option.id === reasoningDefault,
+  )
+    ? reasoningDefault
+    : ''
   function resetLimits() {
     setContextOverride('')
     setOutputOverride('')
     save.reset()
+    setFormError(undefined)
   }
   function resetModel() {
     setCapacity(undefined)
+    setDiscoveredReasoning(undefined)
+    setReasoningOverride(undefined)
+    setReasoningDefault('')
     resetLimits()
   }
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     const data = new FormData(event.currentTarget)
+    setFormError(undefined)
+    try {
+      if (
+        reasoningOverride &&
+        reasoningOverride.adapter !== 'none' &&
+        !reasoningOverride.options.length
+      )
+        throw new Error('请至少保留一个思考选项，或选择“不提供思考控制”。')
+      if (reasoningOverride) validateReasoningCapability(reasoningOverride, protocol)
+    } catch (error) {
+      setFormError(errorMessage(error))
+      return
+    }
     save.mutate({
       protocol,
       base_url: baseUrl.trim(),
@@ -67,11 +116,13 @@ export function ModelSettings() {
       api_key: key,
       ...(contextOverride !== '' ? { context_window: Number(contextOverride) } : {}),
       ...(outputOverride !== '' ? { max_output_tokens: Number(outputOverride) } : {}),
-      reasoning_mode: mode,
+      // Keep the legacy fields readable by older vaults. New settings use a
+      // capability and an independent default, including a null service default.
+      reasoning_mode: 'off',
+      reasoning_effort: 'medium',
+      ...(reasoningOverride ? { reasoning_capability: reasoningOverride } : {}),
+      reasoning_default: selectedReasoning || null,
       supports_images: data.get('supports_images') === 'on',
-      reasoning_effort: String(
-        data.get('reasoning_effort') ?? 'medium',
-      ) as ConfigureModelInput['reasoning_effort'],
     })
   }
   return (
@@ -86,7 +137,6 @@ export function ModelSettings() {
               value={protocol}
               onChange={(event) => {
                 setProtocol(event.target.value as ConfigureModelInput['protocol'])
-                setMode('off')
                 resetModel()
               }}
             >
@@ -134,41 +184,37 @@ export function ModelSettings() {
               maxLength={4096}
               autoComplete="off"
               value={key}
-              onChange={(event) => setKey(event.target.value)}
+              onChange={(event) => {
+                setKey(event.target.value)
+                setDiscoveredReasoning(undefined)
+                setReasoningDefault('')
+                save.reset()
+              }}
             />
           </label>
           <label className="model-capability-option">
-            <input type="checkbox" name="supports_images" />
-            此模型支持图片输入
-            <small>支持视觉的模型可查看操作截图；未开启时仍可读取网页和应用的结构化界面。</small>
+            <input
+              type="checkbox"
+              name="supports_images"
+              aria-labelledby="model-image-support-label"
+              aria-describedby="model-image-support-help"
+            />
+            <span className="model-capability-copy">
+              <span id="model-image-support-label">此模型支持图片输入</span>
+              <small id="model-image-support-help">
+                开启后可查看图片和操作截图，请确认模型支持视觉输入。
+              </small>
+            </span>
           </label>
-          <div className="model-form-row">
-            <label>
-              思考模式
-              <select
-                value={mode}
-                onChange={(event) =>
-                  setMode(event.target.value as ConfigureModelInput['reasoning_mode'])
-                }
-              >
-                <option value="off">使用模型默认设置</option>
-                <option value="standard">开启</option>
-                {protocol === 'chat_completions' && (
-                  <option value="deepseek">DeepSeek 思考模式</option>
-                )}
-              </select>
-            </label>
-            {mode !== 'off' && (
-              <label>
-                思考强度
-                <select name="reasoning_effort" defaultValue="medium">
-                  <option value="low">低</option>
-                  <option value="medium">中</option>
-                  <option value="high">高</option>
-                </select>
-              </label>
-            )}
-          </div>
+          <ModelReasoningDefault
+            capability={capability}
+            outputLimit={outputLimit}
+            value={selectedReasoning}
+            onChange={(value) => {
+              setReasoningDefault(value)
+              save.reset()
+            }}
+          />
           <details
             className="model-advanced"
             onInvalidCapture={(event) => {
@@ -176,8 +222,23 @@ export function ModelSettings() {
             }}
           >
             <summary>
-              高级设置<span>{customized ? '已自定义' : '自动'}</span>
+              <ChevronRight size={14} className="model-advanced-chevron" aria-hidden="true" />
+              高级设置
+              <span className="model-advanced-state">
+                {customized || reasoningOverride ? '已自定义' : '默认'}
+              </span>
             </summary>
+            <ModelReasoningCompatibility
+              protocol={protocol}
+              value={reasoningOverride}
+              resolved={capability}
+              onChange={(value) => {
+                setReasoningOverride(value)
+                setReasoningDefault('')
+                setFormError(undefined)
+                save.reset()
+              }}
+            />
             <p className="model-limit-note">
               {limits.context_source === 'metadata'
                 ? '已采用服务商提供的容量。'
@@ -185,7 +246,7 @@ export function ModelSettings() {
                   ? '已根据模型资料自动设置，无需填写。'
                   : limits.context_source === 'override'
                     ? '使用你填写的容量，输出预算仍可自动设置。'
-                    : '保存时自动读取模型信息；未识别的模型先使用保守容量。'}
+                    : '保存时自动读取模型信息；未识别时默认使用 1M（1,000,000 tokens），不代表已确认模型容量。'}
               留空即可使用自动设置。
             </p>
             <div className="model-form-row">
@@ -217,6 +278,7 @@ export function ModelSettings() {
                   value={outputOverride}
                   onChange={(event) => {
                     setOutputOverride(event.target.value)
+                    if (capability.adapter === 'anthropic_budget') setReasoningDefault('')
                     save.reset()
                   }}
                 />
@@ -225,7 +287,7 @@ export function ModelSettings() {
             <div className="model-limit-footer">
               <p className="model-limit-note">单次输出包含思考和回复；系统会为输入保留空间。</p>
               <button type="button" disabled={!customized} onClick={resetLimits}>
-                恢复自动设置
+                恢复容量自动设置
               </button>
             </div>
           </details>
@@ -237,6 +299,7 @@ export function ModelSettings() {
           密钥由系统加密后保存在此设备上。系统加密不可用时，仅在本次应用会话中使用。保存时可能读取模型信息，不会发起生成或计数请求。
         </p>
         {save.isError && <InlineError message={errorMessage(save.error)} />}
+        {formError && <InlineError message={formError} />}
         {save.isSuccess && (
           <p role="status" className="settings-footnote">
             {save.data.persisted

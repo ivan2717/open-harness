@@ -1,0 +1,18 @@
+{
+  "refund_ids": [
+    "R301",
+    "R302",
+    "R303"
+  ],
+  "applied_refund": 60,
+  "net_received": 415,
+  "unpaid_before_refunds": 225,
+  "evidence": [
+    "rules.md §§2–7: deduplicate payments by payment_id; count only paid payments matched to orders; apply refunds only when settled and matched to a counted payment with the same order_id; unpaid_before_refunds is max(order amount − valid payments, 0) and is not reduced by refunds.",
+    "orders.csv records O101–O106: amounts 120, 80, 200, 60, 150, 90 (total 700).",
+    "payments.csv records P201, P202, P203, P204: valid payments total 475; duplicate P202 is counted once. P205 is an orphan (O999), P206 is failed, and P207 is cancelled.",
+    "refunds.csv records R301 (30, settled, P203/O103), R302 (20, settled, P201/O101), and R303 (10, source status pending, P204/O105); R304 (5, settled) is excluded because P999 is not a counted payment.",
+    "Correction CORRECTION-ORCHID (parent conversation event 4): “R303 已经人工核实为 settled。” Therefore R303 is counted without modifying refunds.csv; applied_refund = 30 + 20 + 10 = 60.",
+    "Calculation from the records above: net_received = valid payments 475 − applied_refund 60 = 415; unpaid_before_refunds = O104 60 + O105 (150 − 75) 75 + O106 90 = 225."
+  ]
+}

@@ -23,7 +23,12 @@ export function useWorkspace(id: string, enabled: boolean, running: boolean) {
     queryKey: ['workspace', id],
     queryFn: () => window.harness.getWorkspace(id),
     enabled,
-    refetchInterval: enabled ? (running ? 1_000 : 5_000) : false,
+    refetchInterval: (query) =>
+      enabled
+        ? running || query.state.data?.commands.some((command) => command.status === 'running')
+          ? 1_000
+          : 5_000
+        : false,
     retry: 1,
   })
   const { refetch } = query

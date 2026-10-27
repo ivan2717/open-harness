@@ -4,12 +4,15 @@
 
 # Desktop dependencies, builds, and local run data
 **/node_modules/
+**/.pnpm-store/
 **/*.tsbuildinfo
 /apps/desktop/out/
 /apps/desktop/release/
 /apps/desktop/release-next/
 /apps/desktop/resources/bin/
 /apps/desktop/resources/plugins/
+/apps/desktop/resources/workspace-runtime/
+/apps/desktop/resources/workspace-runtime-cache/
 /plugins/computer-use/bin/
 /plugins/computer-use/windows/bin/
 /apps/desktop/test-results/

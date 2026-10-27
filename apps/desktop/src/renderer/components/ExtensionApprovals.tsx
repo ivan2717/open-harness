@@ -53,10 +53,15 @@ export function ExtensionApprovals({
         <section className="control-session" aria-label="电脑与浏览器控制">
           <Monitor size={15} />
           <span>
-            {query.data.controls.map((control) => controlLabel(control.scope)).join(' · ')}
+            {query.data.controls
+              .map(
+                (control) =>
+                  `${control.task_title ? `${control.task_title}：` : ''}${controlLabel(control.scope)}`,
+              )
+              .join(' · ')}
             <small>
               {query.data.controls.every((control) => control.remembered)
-                ? '本会话控制'
+                ? '本会话及协作任务控制'
                 : '当前控制范围'}{' '}
               · 可随时停止
             </small>
@@ -80,6 +85,9 @@ export function ExtensionApprovals({
                 <ShieldCheck size={15} />
                 <strong>允许调用 {approval.server_name}？</strong>
               </div>
+              {approval.task_title && (
+                <p className="extension-operation">协作任务：{approval.task_title}</p>
+              )}
               <p className="extension-operation">{approval.operation}</p>
               <details className="extension-approval-arguments">
                 <summary>
@@ -123,7 +131,7 @@ export function ExtensionApprovals({
                     disabled={busy || approve.isPending}
                     onClick={() => approve.mutate({ id: approval.id, allow: true, session: true })}
                   >
-                    允许本会话
+                    允许本会话及协作任务
                   </button>
                 )}
               </div>

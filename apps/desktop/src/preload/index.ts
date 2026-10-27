@@ -61,8 +61,10 @@ const bridge: DesktopBridge = {
   listRuns: () => invoke<RunSummary[]>({ operation: 'listRuns' }),
   getRun: (id) => invoke<RunDetail>({ operation: 'getRun', id }),
   createRun: (input) => invoke<RunDetail>({ operation: 'createRun', input }),
+  updateRunModel: (id, input) => invoke<RunDetail>({ operation: 'updateRunModel', id, input }),
   chooseWorkspace: () => ipcRenderer.invoke(channels.chooseWorkspace) as Promise<string | null>,
   openWorkspace: (path) => ipcRenderer.invoke(channels.openWorkspace, path) as Promise<string>,
+  revealWorkspace: (id) => ipcRenderer.invoke(channels.revealWorkspace, id) as Promise<void>,
   chooseFiles: () => ipcRenderer.invoke(channels.chooseFiles) as Promise<FileImportResult>,
   importFiles: (files) => {
     if (!Array.isArray(files) || files.length > MAX_REFERENCE_FILES)
@@ -74,8 +76,11 @@ const bridge: DesktopBridge = {
   },
   pasteFiles: () => ipcRenderer.invoke(channels.pasteFiles) as Promise<FileImportResult>,
   getWorkspace: (id) => invoke<WorkspaceReview>({ operation: 'getWorkspace', id }),
-  approveCommand: (id, approvalId, allow) =>
-    invoke<WorkspaceReview>({ operation: 'approveCommand', id, approvalId, allow }),
+  approveCommand: (id, approvalId, allow, scope) =>
+    invoke<WorkspaceReview>({ operation: 'approveCommand', id, approvalId, allow, scope }),
+  revokeCommandGrants: (id) => invoke<WorkspaceReview>({ operation: 'revokeCommandGrants', id }),
+  stopCommand: (id, commandId) =>
+    invoke<WorkspaceReview>({ operation: 'stopCommand', id, commandId }),
   revertFile: (id, path) => invoke<WorkspaceReview>({ operation: 'revertFile', id, path }),
   resumeRun: (id, message, files) =>
     invoke<RunDetail>({ operation: 'resumeRun', id, message, files }),
@@ -83,6 +88,8 @@ const bridge: DesktopBridge = {
   compactRun: (id) => invoke<RunDetail>({ operation: 'compactRun', id }),
   cancelCompaction: (id) => invoke<RunDetail>({ operation: 'cancelCompaction', id }),
   configureModel: (input) => invoke<ConfigureModelResult>({ operation: 'configureModel', input }),
+  refreshModelContext: (id) =>
+    invoke<ConfigureModelResult>({ operation: 'refreshModelContext', id }),
   submitInput: (id, message, files) =>
     invoke<RunDetail>({ operation: 'submitInput', id, message, files }),
   watchRun: (id, listener, onError) => {

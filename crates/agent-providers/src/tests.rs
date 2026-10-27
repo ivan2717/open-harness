@@ -30,6 +30,63 @@ fn request() -> ModelRequest {
         provider_context: None,
     }
 }
+
+#[test]
+fn session_reasoning_overrides_clone_the_model_and_use_each_wire_protocol() {
+    for protocol in [
+        ProviderProtocol::ChatCompletions,
+        ProviderProtocol::Responses,
+    ] {
+        let original = model(protocol)
+            .with_reasoning_capability(ReasoningCapability::legacy(&ReasoningMode::Effort {
+                effort: "medium".into(),
+            }))
+            .unwrap();
+        let derived = original.with_reasoning_effort("high").unwrap();
+        assert_ne!(original.identity, derived.identity);
+        assert_eq!(original.reasoning, ReasoningMode::Off);
+        assert_eq!(original.endpoint, derived.endpoint);
+        assert_eq!(
+            original.metadata.context_window,
+            derived.metadata.context_window
+        );
+        let body = derived.encode(&request()).unwrap();
+        if protocol == ProviderProtocol::Responses {
+            assert_eq!(body["reasoning"]["effort"], "high");
+        } else {
+            assert_eq!(body["reasoning_effort"], "high");
+        }
+        assert!(original.with_reasoning_effort("ultra").is_err());
+    }
+    let mut config = config(
+        ProviderProtocol::ChatCompletions,
+        "http://127.0.0.1:1".into(),
+    );
+    config.reasoning = ReasoningMode::DeepSeek {
+        effort: "high".into(),
+    };
+    let deepseek = HttpModel::new(config)
+        .unwrap()
+        .with_reasoning_effort("low")
+        .unwrap();
+    let body = deepseek.encode(&request()).unwrap();
+    assert_eq!(body["thinking"]["type"], "enabled");
+    assert_eq!(body["reasoning_effort"], "low");
+
+    let anthropic = model(ProviderProtocol::AnthropicMessages)
+        .with_reasoning_capability(ReasoningCapability::legacy(
+            &ReasoningMode::AnthropicBudget { tokens: 1024 },
+        ))
+        .unwrap();
+    assert_eq!(anthropic.supported_reasoning_efforts(), vec!["low"]);
+    assert!(anthropic.with_reasoning_effort("medium").is_err());
+    let body = anthropic
+        .with_reasoning_effort("low")
+        .unwrap()
+        .encode(&request())
+        .unwrap();
+    assert_eq!(body["thinking"]["budget_tokens"], 1024);
+}
 async fn serve(
     status: &str,
     content_type: &str,

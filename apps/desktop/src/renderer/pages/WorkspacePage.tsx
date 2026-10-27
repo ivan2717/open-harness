@@ -16,7 +16,11 @@ import { RunActivity } from '../components/RunActivity'
 import { ContextInspector } from '../components/ContextInspector'
 import { Conversation } from '../components/Conversation'
 import { CollaborationTasks } from '../components/CollaborationTasks'
-import { CommandApprovals, WorkspaceReviewPanel } from '../components/WorkspaceReview'
+import {
+  CommandApprovals,
+  RunningCommands,
+  WorkspaceReviewPanel,
+} from '../components/WorkspaceReview'
 import { ExtensionApprovals } from '../components/ExtensionApprovals'
 import { ErrorState, InlineError, Loading } from '../components/Feedback'
 import { errorMessage } from '../lib/format'
@@ -25,7 +29,11 @@ import { configOptions, storeSnapshot, useRun, useWorkspace } from '../lib/queri
 import { taskModels } from '../lib/task-models'
 import { useCreateRun } from '../lib/use-create-run'
 import { useUiStore } from '../state/ui-store'
-import type { TextFileReference } from '../../shared/contracts'
+import type {
+  CommandApprovalScope,
+  TextFileReference,
+  UpdateRunModelInput,
+} from '../../shared/contracts'
 
 interface UserMessageInput {
   message?: string
@@ -56,11 +64,18 @@ export function WelcomePage() {
   const create = useCreateRun()
   const selectedModel = useUiStore((state) => state.selectedModel)
   const setModel = useUiStore((state) => state.setSelectedModel)
+  const draftEfforts = useUiStore((state) => state.draftReasoningEfforts)
+  const setDraftEffort = useUiStore((state) => state.setDraftReasoningEffort)
   const project = useUiStore((state) => state.project)
   const setProject = useUiStore((state) => state.setProject)
   if (config.isPending) return <Loading />
   if (config.isError) return <ErrorState error={config.error} retry={() => void config.refetch()} />
   const { models, selected: model } = taskModels(config.data, selectedModel)
+  const savedEffort = model ? draftEfforts[model.id] : undefined
+  const reasoningEffort =
+    savedEffort && model?.reasoning?.supported_efforts.includes(savedEffort)
+      ? savedEffort
+      : undefined
   const draftKey = project ? `new:${project.path}` : 'new'
   return (
     <div className="workspace-layout">
@@ -76,6 +91,10 @@ export function WelcomePage() {
                 models={models}
                 modelId={model?.id ?? ''}
                 onModelChange={setModel}
+                reasoningEffort={reasoningEffort}
+                onReasoningChange={(effort) => {
+                  if (model) setDraftEffort(model.id, effort)
+                }}
                 project={project}
                 onProjectChange={setProject}
                 pending={create.isPending}
@@ -85,6 +104,7 @@ export function WelcomePage() {
                   await create.mutateAsync({
                     prompt,
                     model_id: model.id,
+                    ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
                     files,
                     ...(project
                       ? { workspace_path: project.path, permission_mode: project.permission }
@@ -109,9 +129,10 @@ export function RunPage({ runId }: { runId: string }) {
   const inspectorOpen = useUiStore((state) => state.inspectorOpen)
   const setInspectorOpen = useUiStore((state) => state.setInspectorOpen)
   const [reviewRun, setReviewRun] = useState<string | null>(null)
+  const [reviewTab, setReviewTab] = useState<'changes' | 'commands'>('changes')
   const workspace = useWorkspace(
     runId,
-    Boolean(query.data?.workspace_path),
+    Boolean(query.data?.workspace_path || query.data?.execution_directory),
     query.data?.status === 'running',
   )
   const refreshWorkspace = () => void client.invalidateQueries({ queryKey: ['workspace', runId] })
@@ -124,8 +145,20 @@ export function RunPage({ runId }: { runId: string }) {
     },
   })
   const approve = useMutation({
-    mutationFn: ({ id, allow }: { id: string; allow: boolean }) =>
-      window.harness.approveCommand(runId, id, allow),
+    mutationFn: ({
+      id,
+      allow,
+      scope,
+    }: {
+      id: string
+      allow: boolean
+      scope?: CommandApprovalScope
+    }) => window.harness.approveCommand(runId, id, allow, scope),
+    onSuccess: (review) => client.setQueryData(['workspace', runId], review),
+    onSettled: refreshWorkspace,
+  })
+  const revokeGrants = useMutation({
+    mutationFn: () => window.harness.revokeCommandGrants(runId),
     onSuccess: (review) => client.setQueryData(['workspace', runId], review),
     onSettled: refreshWorkspace,
   })
@@ -134,6 +167,12 @@ export function RunPage({ runId }: { runId: string }) {
     onSuccess: (review) => client.setQueryData(['workspace', runId], review),
     onSettled: refreshWorkspace,
   })
+  const stopCommand = useMutation({
+    mutationFn: (commandId: string) => window.harness.stopCommand(runId, commandId),
+    onSuccess: (review) => client.setQueryData(['workspace', runId], review),
+    onSettled: refreshWorkspace,
+  })
+  const revealWorkspace = useMutation({ mutationFn: () => window.harness.revealWorkspace(runId) })
   const cancel = useMutation({
     mutationFn: () => window.harness.cancelRun(runId),
     onSuccess: (run) => storeSnapshot(client, run),
@@ -154,6 +193,10 @@ export function RunPage({ runId }: { runId: string }) {
     mutationFn: () => window.harness.cancelCompaction(runId),
     onSuccess: (run) => storeSnapshot(client, run),
   })
+  const modelSettings = useMutation({
+    mutationFn: (settings: UpdateRunModelInput) => window.harness.updateRunModel(runId, settings),
+    onSuccess: (run) => storeSnapshot(client, run),
+  })
   if (query.isPending) return <Loading label="正在恢复会话记录" />
   if (query.isError && !query.data)
     return <ErrorState error={query.error} retry={() => void query.refetch()} />
@@ -162,16 +205,24 @@ export function RunPage({ runId }: { runId: string }) {
   const running = run.status === 'running'
   const waiting = run.status === 'waiting_for_input'
   const delegated = Boolean(run.delegation)
+  const hasWorkspace = Boolean(run.workspace_path || run.execution_directory)
   const compacting = run.compacting || compact.isPending
-  const active = running || compacting || input.isPending || resume.isPending
+  const active =
+    running || compacting || input.isPending || resume.isPending || modelSettings.isPending
   const mutationError =
     cancel.error ??
     input.error ??
     resume.error ??
     compact.error ??
     cancelCompaction.error ??
-    approve.error
+    approve.error ??
+    stopCommand.error ??
+    revealWorkspace.error ??
+    modelSettings.error
   const model = config.data?.models.find((entry) => entry.id === run.model_id)
+  const models = (config.data?.models ?? []).filter((entry) =>
+    run.model_id === 'local-demo' ? entry.id === 'local-demo' : entry.id !== 'local-demo',
+  )
   return (
     <div className="workspace-layout">
       <section className="main-pane">
@@ -203,18 +254,20 @@ export function RunPage({ runId }: { runId: string }) {
             )}
           </div>
           <div className="header-actions">
-            {run.workspace_path && (
+            {hasWorkspace && (
               <button
                 className="inspector-toggle"
-                aria-label="查看项目结果"
+                aria-label={run.workspace_path ? '查看项目结果' : '查看会话文件与命令'}
                 aria-expanded={reviewRun === runId}
                 onClick={() => {
                   setReviewRun(reviewRun === runId ? null : runId)
+                  setReviewTab('changes')
                   setInspectorOpen(false)
                 }}
               >
                 <FileDiff size={15} />
-                改动与命令 {workspace.data?.changes.length || ''}
+                {run.workspace_path ? '改动与命令' : '文件与命令'}{' '}
+                {workspace.data?.changes.length || ''}
               </button>
             )}
             <InspectorToggle onOpen={() => setReviewRun(null)} />
@@ -241,11 +294,21 @@ export function RunPage({ runId }: { runId: string }) {
           <CommandApprovals
             approvals={workspace.data?.approvals ?? []}
             busy={approve.isPending || cancel.isPending}
-            onDecide={(id, allow) => approve.mutate({ id, allow })}
+            onDecide={(id, allow, scope) => approve.mutate({ id, allow, scope })}
           />
-          {run.workspace_path && workspace.isError && (
+          <RunningCommands
+            commands={workspace.data?.commands ?? []}
+            stoppingId={stopCommand.isPending ? stopCommand.variables : undefined}
+            onInspect={() => {
+              setReviewRun(runId)
+              setReviewTab('commands')
+              setInspectorOpen(false)
+            }}
+            onStop={(id) => stopCommand.mutate(id)}
+          />
+          {hasWorkspace && workspace.isError && (
             <InlineError
-              message={`项目状态读取失败。${errorMessage(workspace.error)}`}
+              message={`文件与命令状态读取失败。${errorMessage(workspace.error)}`}
               retry={() => void workspace.refetch()}
             />
           )}
@@ -257,7 +320,9 @@ export function RunPage({ runId }: { runId: string }) {
               {!delegated && (
                 <button
                   className="resume-button"
-                  disabled={resume.isPending || compacting || !model?.available}
+                  disabled={
+                    resume.isPending || modelSettings.isPending || compacting || !model?.available
+                  }
                   onClick={() => resume.mutate({})}
                 >
                   <Play size={12} />
@@ -271,7 +336,9 @@ export function RunPage({ runId }: { runId: string }) {
               {run.status === 'interrupted' && <span>执行已中断，消息已保存。</span>}
               <button
                 className="resume-button"
-                disabled={resume.isPending || compacting || !model?.available}
+                disabled={
+                  resume.isPending || modelSettings.isPending || compacting || !model?.available
+                }
                 onClick={() => resume.mutate({})}
               >
                 <Play size={12} />
@@ -300,8 +367,21 @@ export function RunPage({ runId }: { runId: string }) {
                 key={runId}
                 runId={runId}
                 draftKey={`run:${runId}`}
-                models={config.data?.models ?? []}
+                models={models}
                 modelId={run.model_id}
+                reasoningEffort={run.reasoning_effort}
+                onModelChange={(modelId) => {
+                  if (modelId !== run.model_id)
+                    modelSettings.mutate({ model_id: modelId, reasoning_effort: null })
+                }}
+                onReasoningChange={(effort) => {
+                  if (effort !== (run.reasoning_effort ?? null))
+                    modelSettings.mutate({ model_id: run.model_id, reasoning_effort: effort })
+                }}
+                modelSettingsDisabled={compacting}
+                modelSettingsDisabledReason={
+                  compacting ? '正在整理上下文，完成后可切换模型和思考强度。' : undefined
+                }
                 project={
                   run.workspace_path
                     ? {
@@ -310,10 +390,12 @@ export function RunPage({ runId }: { runId: string }) {
                       }
                     : null
                 }
+                executionDirectory={run.execution_directory}
+                onRevealWorkspace={() => revealWorkspace.mutate()}
                 running={running}
                 onStop={() => cancel.mutate()}
                 stopping={cancel.isPending}
-                pending={input.isPending || resume.isPending}
+                pending={input.isPending || resume.isPending || modelSettings.isPending}
                 disabled={compacting || (!running && !model?.available)}
                 onSubmit={async (prompt, files) => {
                   if (waiting) await input.mutateAsync({ message: prompt, files })
@@ -337,6 +419,7 @@ export function RunPage({ runId }: { runId: string }) {
                 disabled={
                   input.isPending ||
                   resume.isPending ||
+                  modelSettings.isPending ||
                   (compacting
                     ? cancelCompaction.isPending
                     : running ||
@@ -358,15 +441,27 @@ export function RunPage({ runId }: { runId: string }) {
           }
         />
       )}
-      {run.workspace_path && reviewRun === runId && (
+      {hasWorkspace && reviewRun === runId && (
         <WorkspaceReviewPanel
+          key={`${runId}-${reviewTab}`}
+          initialTab={reviewTab}
+          managed={!run.workspace_path}
           review={workspace.data}
           loading={workspace.isPending}
-          error={revert.error ? errorMessage(revert.error) : undefined}
+          error={
+            revert.error || revokeGrants.error
+              ? errorMessage(revokeGrants.error ?? revert.error)
+              : undefined
+          }
           busy={running || revert.isPending}
           onClose={() => setReviewRun(null)}
           onRefresh={() => void workspace.refetch()}
           onRevert={(path) => revert.mutateAsync(path)}
+          onStopCommand={(id) => stopCommand.mutate(id)}
+          stoppingCommandId={stopCommand.isPending ? stopCommand.variables : undefined}
+          onRevealWorkspace={() => revealWorkspace.mutate()}
+          onRevokeGrants={() => revokeGrants.mutate()}
+          revokingGrants={revokeGrants.isPending}
         />
       )}
     </div>

@@ -1,0 +1,218 @@
+{
+  "directory": "/Users/jiangtao/Desktop/open-harness/evals/results/collaboration-cost-20261027-3",
+  "audit_version": 1,
+  "passed": true,
+  "checks": [
+    {
+      "name": "original_score_passed",
+      "passed": true
+    },
+    {
+      "name": "unchanged:orders.csv",
+      "passed": true
+    },
+    {
+      "name": "parent_read_source:orders.csv",
+      "passed": true
+    },
+    {
+      "name": "child_read_source:orders.csv",
+      "passed": true
+    },
+    {
+      "name": "unchanged:payments.csv",
+      "passed": true
+    },
+    {
+      "name": "parent_read_source:payments.csv",
+      "passed": true
+    },
+    {
+      "name": "child_read_source:payments.csv",
+      "passed": true
+    },
+    {
+      "name": "unchanged:refunds.csv",
+      "passed": true
+    },
+    {
+      "name": "parent_read_source:refunds.csv",
+      "passed": true
+    },
+    {
+      "name": "child_read_source:refunds.csv",
+      "passed": true
+    },
+    {
+      "name": "unchanged:rules.md",
+      "passed": true
+    },
+    {
+      "name": "parent_read_source:rules.md",
+      "passed": true
+    },
+    {
+      "name": "child_read_source:rules.md",
+      "passed": true
+    },
+    {
+      "name": "independent_recalculation",
+      "passed": true,
+      "detail": {
+        "calculated": {
+          "refund_ids": [
+            "R301",
+            "R302",
+            "R303"
+          ],
+          "valid_payment_total": 475,
+          "applied_refund": 60,
+          "net_received": 415,
+          "unpaid_before_refunds": 225
+        }
+      }
+    },
+    {
+      "name": "child_read_original_requirement",
+      "passed": true
+    },
+    {
+      "name": "child_read_original_correction",
+      "passed": true
+    },
+    {
+      "name": "correction_source_is_real_user_message",
+      "passed": true
+    },
+    {
+      "name": "compaction_covers_correction",
+      "passed": true
+    },
+    {
+      "name": "exact_correction_quote",
+      "passed": true
+    },
+    {
+      "name": "source_and_record_references",
+      "passed": true
+    },
+    {
+      "name": "child_executed_saved_script",
+      "passed": true,
+      "detail": {
+        "passed": true,
+        "run_id": "run-18e251ce4600f760-46b6-2",
+        "command_id": "command-1793085574673759000-1",
+        "script": ".openharness-tmp/reconcile_independent.py"
+      }
+    },
+    {
+      "name": "child_wrote_script_before_execution",
+      "passed": true
+    },
+    {
+      "name": "parent_readback_matches_deliverable",
+      "passed": true
+    },
+    {
+      "name": "one_child_and_all_agents_successful",
+      "passed": true
+    },
+    {
+      "name": "no_outstanding_commands_or_approvals",
+      "passed": true
+    },
+    {
+      "name": "all_recorded_commands_network_denied",
+      "passed": true
+    }
+  ],
+  "passed_checks": 26,
+  "total_checks": 26,
+  "original_score": {
+    "passed": true,
+    "passed_checks": 16,
+    "total_checks": 16,
+    "check_names": [
+      "actual_compaction_covers_correction_before_delivery",
+      "all_agents_successful",
+      "applied_refund",
+      "child_executed_command",
+      "child_read_parent_history",
+      "correct_refund_ids",
+      "correction_cited",
+      "net_received",
+      "one_child_agent",
+      "source_files_cited",
+      "unchanged:orders.csv",
+      "unchanged:payments.csv",
+      "unchanged:refunds.csv",
+      "unchanged:rules.md",
+      "unpaid_before_refunds",
+      "valid_result_json"
+    ]
+  },
+  "source_sha256": {
+    "orders.csv": "51b22336d7eda0772cae0a6ca1a57517ab1ac3377d351a0395414b710e67ca03",
+    "payments.csv": "77f2ce629ae05601309109a51b254d4c2d658dad7aaf46d142d07306ae45e7b7",
+    "refunds.csv": "c0119c1f31ca1c3750638bf53265bb92b5f7494a5d8110c49e3ff0a181c4adc9",
+    "rules.md": "4c1a2c9e0ffdb336fb6ef234a98c43b4a3303a51de726bfe23bf469401105fb6"
+  },
+  "prompt_sha256": "e2e551997d55fe5d5849c75dbe7bb0c71f21aed74a6f4e1552a116ee060be126",
+  "calculated": {
+    "refund_ids": [
+      "R301",
+      "R302",
+      "R303"
+    ],
+    "valid_payment_total": 475,
+    "applied_refund": 60,
+    "net_received": 415,
+    "unpaid_before_refunds": 225
+  },
+  "model": "gpt-6-luna",
+  "protocol": "responses",
+  "context_window": 24576,
+  "max_output_tokens": 4096,
+  "reasoning_effort": "medium",
+  "reasoning_mode": "standard",
+  "limits": {
+    "wall_seconds": 480,
+    "observed_tokens": 450000
+  },
+  "backend_sha256": "dc0c24b6d8ece966791026b4631891bfdffb3e8210c660b0f408cd22f028d158",
+  "observed_usage": {
+    "input_tokens": 367943,
+    "output_tokens": 9331,
+    "responses": 32
+  },
+  "duration_ms": 266815,
+  "by_agent": [
+    {
+      "role": "parent",
+      "run_id": "run-18e251bd7339d348-46b6-1",
+      "observed_usage": {
+        "input_tokens": 321823,
+        "output_tokens": 5587,
+        "responses": 27
+      },
+      "compactions": 2
+    },
+    {
+      "role": "child",
+      "run_id": "run-18e251ce4600f760-46b6-2",
+      "observed_usage": {
+        "input_tokens": 46120,
+        "output_tokens": 3744,
+        "responses": 5
+      },
+      "compactions": 0
+    }
+  ],
+  "manual_review_required": [
+    "Script derives its figures from the actual sources rather than hardcoding answers.",
+    "Evidence prose correctly explains deduplication, exclusions and the user override.",
+    "Parent actually reconciles the child report against sources; file reads alone do not prove reasoning."
+  ],
+  "caveat": "Read-only checks add requirements to the original score; they do not replace semantic review or execute model scripts."
+}

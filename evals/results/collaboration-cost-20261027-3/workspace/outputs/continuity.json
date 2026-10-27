@@ -1,0 +1,17 @@
+{
+  "refund_ids": [
+    "R301",
+    "R302",
+    "R303"
+  ],
+  "applied_refund": 60,
+  "net_received": 415,
+  "unpaid_before_refunds": 225,
+  "evidence": [
+    "orders.csv: O101=120, O102=80, O103=200, O104=60, O105=150, O106=90; total order value 700.",
+    "payments.csv: P201/O101=120, P202/O102=80 (duplicate row counted once), P203/O103=200, and P204/O105=75 are valid payments; total 475. P205 is orphaned (O999); P206 failed and P207 cancelled. Rules: rules.md clauses 2–4.",
+    "refunds.csv: R301/P203/O103=30 and R302/P201/O101=20 are settled and matched; R303/P204/O105=10 is included under the user correction despite source status pending. Applied refund total=60. R304/P999 is a settled orphan and excluded. Rules: rules.md clause 5.",
+    "net_received = valid payments 475 - applied refunds 60 = 415; unpaid_before_refunds = max(order amount - valid payments, 0) summed across O101–O106 = 225. Rules: rules.md clauses 6–7.",
+    "User correction CORRECTION-ORCHID, event-4: ‘R303 已经人工核实为 settled’ and ‘最终计算必须按这条用户更正把 R303 作为已结算退款处理’ (despite refunds.csv showing pending)."
+  ]
+}

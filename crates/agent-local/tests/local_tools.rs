@@ -1,11 +1,12 @@
 use agent_local::{LocalTools, PermissionMode};
 use agent_runtime::{ToolCall, ToolExecutor};
 use serde_json::{Value, json};
+#[cfg(target_os = "macos")]
+use std::time::Duration;
 use std::{
     fs, io,
     path::PathBuf,
     sync::atomic::{AtomicU64, Ordering},
-    time::Duration,
 };
 
 struct Fixture {
@@ -115,11 +116,16 @@ async fn paths_permissions_and_expected_contents_are_enforced() {
             .await
             .is_err()
     );
-    assert!(
+    assert_eq!(
         read_only
-            .execute(call("run_command", json!({"command":"echo unsafe"})))
+            .execute(call(
+                "run_command",
+                json!({"command":"echo unsafe", "access":"workspace_write"})
+            ))
             .await
-            .is_err()
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::PermissionDenied
     );
     let tools = fixture.tools(PermissionMode::WorkspaceWrite);
     for path in [
@@ -330,6 +336,7 @@ fn reopening_refuses_a_replaced_workspace_and_accepts_legacy_journals() {
     assert!(matches!(result, Err(error) if error.kind() == io::ErrorKind::PermissionDenied));
 }
 
+#[cfg(target_os = "macos")]
 #[test]
 fn command_host_for_crash_test() {
     let Some(base) = std::env::var_os("OPENHARNESS_TEST_COMMAND_HOST") else {
@@ -350,6 +357,7 @@ fn command_host_for_crash_test() {
     });
 }
 
+#[cfg(target_os = "macos")]
 #[tokio::test]
 async fn killing_the_host_does_not_leave_a_foreground_command_running() {
     let fixture = Fixture::new();
@@ -383,6 +391,7 @@ async fn killing_the_host_does_not_leave_a_foreground_command_running() {
     );
 }
 
+#[cfg(target_os = "macos")]
 async fn pending(tools: &LocalTools) -> String {
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
@@ -396,6 +405,7 @@ async fn pending(tools: &LocalTools) -> String {
     .unwrap()
 }
 
+#[cfg(target_os = "macos")]
 #[tokio::test]
 async fn command_approval_is_single_use_and_cancellation_clears_it() {
     let fixture = Fixture::new();
@@ -414,7 +424,7 @@ async fn command_approval_is_single_use_and_cancellation_clears_it() {
     });
     let id = pending(&tools).await;
     assert!(!fixture.root.join("should-not-exist").exists());
-    assert!(tools.review().unwrap().busy);
+    assert!(!tools.review().unwrap().busy);
     tools.approve(&id, false).unwrap();
     assert!(tools.approve(&id, true).is_err());
     assert!(task.await.unwrap().is_err());
@@ -438,6 +448,7 @@ async fn command_approval_is_single_use_and_cancellation_clears_it() {
     assert_eq!(review.commands.last().unwrap().status, "cancelled");
 }
 
+#[cfg(target_os = "macos")]
 #[tokio::test]
 async fn approved_command_is_sandboxed_and_changes_are_reviewed() {
     let fixture = Fixture::new();
@@ -480,6 +491,85 @@ async fn approved_command_is_sandboxed_and_changes_are_reviewed() {
     assert!(!outside.exists());
 }
 
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn commands_reuse_shared_runtime_without_creating_conversation_dependencies() {
+    let fixture = Fixture::new();
+    let tools = fixture.tools(PermissionMode::WorkspaceWrite);
+    if !tools.review().unwrap().sandbox_available {
+        return;
+    }
+    let inventory: Value = serde_json::from_str(
+        &tools
+            .execute(call("load_workspace_dependencies", json!({})))
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(inventory.get("dependency_environment").is_none());
+    assert!(
+        !fixture.root.join(".openharness-tmp").exists(),
+        "discovery must remain read-only"
+    );
+    let result = approved_session(&tools, r#"printf '%s\n' "$HOME" "$TMPDIR" "$PIP_CACHE_DIR" "$pnpm_config_store_dir" "$PIP_REQUIRE_VIRTUALENV"; printf scratch > "$TMPDIR/probe.txt""#, 10_000).await;
+    assert_eq!(result["status"], "completed", "{result}");
+    let lines = result["output"]
+        .as_str()
+        .unwrap()
+        .lines()
+        .collect::<Vec<_>>();
+    assert_eq!(lines.len(), 5);
+    assert_eq!(lines[0], std::env::var("HOME").unwrap_or_default());
+    let temporary = fs::canonicalize(&fixture.root)
+        .unwrap()
+        .join(".openharness-tmp/tmp");
+    assert_eq!(PathBuf::from(lines[1]), temporary);
+    assert!(lines[2..].iter().all(|line| line.is_empty()));
+    assert!(temporary.join("probe.txt").is_file());
+    for path in [
+        ".openharness-tmp/tasks",
+        "node_modules",
+        "package.json",
+        ".venv",
+    ] {
+        assert!(
+            !fixture.root.join(path).exists(),
+            "unexpected default dependency: {path}"
+        );
+    }
+    assert!(tools.review().unwrap().changes.is_empty());
+
+    // Old dependencies survive upgrading, but discovery never selects them.
+    let legacy = fixture
+        .root
+        .join(".openharness-tmp/tasks/old/dependencies/python");
+    fs::create_dir_all(legacy.join("bin")).unwrap();
+    fs::write(legacy.join("pyvenv.cfg"), "old configuration").unwrap();
+    fs::write(legacy.join("bin/python"), "old executable").unwrap();
+    let other = LocalTools::open(
+        fixture.root.clone(),
+        fixture.base.join("another-conversation"),
+        PermissionMode::WorkspaceWrite,
+    )
+    .unwrap();
+    let other_inventory: Value = serde_json::from_str(
+        &other
+            .execute(call("load_workspace_dependencies", json!({})))
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        inventory, other_inventory,
+        "runtime selection must not depend on conversation or legacy environments"
+    );
+    assert_eq!(
+        fs::read_to_string(legacy.join("pyvenv.cfg")).unwrap(),
+        "old configuration"
+    );
+}
+
+#[cfg(target_os = "macos")]
 #[tokio::test]
 async fn timeout_kills_the_shells_child_process() {
     let fixture = Fixture::new();
@@ -505,6 +595,7 @@ async fn timeout_kills_the_shells_child_process() {
     assert!(!tools.review().unwrap().busy);
 }
 
+#[cfg(target_os = "macos")]
 #[tokio::test]
 async fn dropping_execution_stops_command_descendants() {
     let fixture = Fixture::new();
@@ -539,6 +630,7 @@ async fn dropping_execution_stops_command_descendants() {
     );
 }
 
+#[cfg(target_os = "macos")]
 #[tokio::test]
 async fn command_sandbox_denies_secrets_and_network() {
     let fixture = Fixture::new();
@@ -588,6 +680,7 @@ async fn command_sandbox_denies_secrets_and_network() {
     );
 }
 
+#[cfg(target_os = "macos")]
 #[tokio::test]
 async fn incomplete_command_scan_recovers_without_losing_original_changes() {
     let fixture = Fixture::new();
@@ -618,4 +711,142 @@ async fn incomplete_command_scan_recovers_without_losing_original_changes() {
     assert_eq!(change.before.as_deref(), Some("before"));
     assert_eq!(change.after.as_deref(), Some("changed"));
     assert!(!change.revertible);
+}
+
+#[cfg(target_os = "macos")]
+async fn approved_session(tools: &LocalTools, command: &str, yield_ms: u64) -> Value {
+    let worker = tools.clone();
+    let command = command.to_owned();
+    let task = tokio::spawn(async move {
+        worker
+            .execute(call(
+                "run_command",
+                json!({"command":command,"yield_time_ms":yield_ms}),
+            ))
+            .await
+    });
+    let id = pending(tools).await;
+    tools.approve(&id, true).unwrap();
+    serde_json::from_str(&task.await.unwrap().unwrap()).unwrap()
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn yielded_command_continues_with_incremental_output_and_exclusive_workspace() {
+    let fixture = Fixture::new();
+    let tools = fixture.tools(PermissionMode::WorkspaceWrite);
+    if !tools.review().unwrap().sandbox_available {
+        return;
+    }
+    let started = approved_session(
+        &tools,
+        "printf first; sleep 1; printf second; printf result > generated.txt",
+        0,
+    )
+    .await;
+    assert_eq!(started["status"], "running");
+    let id = started["command_id"].as_str().unwrap();
+    assert!(tools.commands_running());
+    assert_eq!(
+        tools
+            .execute(call(
+                "apply_patch",
+                json!({"patch":"*** Begin Patch\n*** Add File: competing.txt\n+x\n*** End Patch"})
+            ))
+            .await
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::WouldBlock
+    );
+    let mut cursor = started["next_cursor"].as_u64().unwrap();
+    let mut output = started["output"].as_str().unwrap().to_owned();
+    loop {
+        // The UI's review polling must not consume the model's output cursor.
+        let peek = tools.command_status(id, cursor, 0).await.unwrap();
+        let _ = tools.review().unwrap();
+        let update = tools.command_status(id, cursor, 5000).await.unwrap();
+        assert!(update.output.starts_with(&peek.output));
+        output.push_str(&update.output);
+        cursor = update.next_cursor;
+        if update.status != "running" && !update.has_more_output {
+            assert_eq!(update.status, "completed");
+            break;
+        }
+    }
+    assert_eq!(output, "firstsecond");
+    assert_eq!(
+        fs::read_to_string(fixture.root.join("generated.txt")).unwrap(),
+        "result"
+    );
+    assert!(!tools.commands_running());
+    let review = tools.review().unwrap();
+    assert_eq!(review.commands.last().unwrap().output, "firstsecond");
+    assert!(
+        review
+            .changes
+            .iter()
+            .any(|change| change.path == "generated.txt")
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn stop_command_and_host_teardown_kill_yielded_descendants() {
+    let fixture = Fixture::new();
+    let tools = fixture.tools(PermissionMode::WorkspaceWrite);
+    if !tools.review().unwrap().sandbox_available {
+        return;
+    }
+    let started = approved_session(
+        &tools,
+        "printf started; sleep 2; printf escaped > late.txt",
+        0,
+    )
+    .await;
+    let id = started["command_id"].as_str().unwrap();
+    let stopped = tools.stop_command(id).await.unwrap();
+    assert_eq!(stopped.status, "cancelled");
+    assert!(!tools.commands_running());
+    let second = approved_session(
+        &tools,
+        "printf started; sleep 2; printf escaped > late-again.txt",
+        0,
+    )
+    .await;
+    assert_eq!(second["status"], "running");
+    // There is deliberately no explicit cancel here: workers must not retain
+    // the last LocalTools owner through a cycle.
+    drop(tools);
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    assert!(!fixture.root.join("late.txt").exists());
+    assert!(!fixture.root.join("late-again.txt").exists());
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn command_sessions_are_owned_by_their_conversation_and_cancel_cleanly() {
+    let fixture = Fixture::new();
+    let other = Fixture::new();
+    let tools = fixture.tools(PermissionMode::WorkspaceWrite);
+    if !tools.review().unwrap().sandbox_available {
+        return;
+    }
+    let started = approved_session(&tools, "sleep 10", 0).await;
+    let id = started["command_id"].as_str().unwrap();
+    assert_eq!(
+        other
+            .tools(PermissionMode::WorkspaceWrite)
+            .command_status(id, 0, 0)
+            .await
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::NotFound
+    );
+    tools.cancel_commands_and_wait().await.unwrap();
+    assert!(!tools.commands_running());
+    assert!(!tools.review().unwrap().busy);
+    assert_eq!(
+        tools.command_status(id, 0, 0).await.unwrap().status,
+        "cancelled"
+    );
 }

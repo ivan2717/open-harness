@@ -15,13 +15,16 @@ import { fileURLToPath } from 'node:url'
 import { mkdir } from 'node:fs/promises'
 import { Backend } from './backend'
 import { initializeRuntime, watchInitializedRuntime } from './runtime-startup'
+import { prepareWorkspaceRuntime } from './workspace-runtime'
 import { BundledPlugins } from './bundled-plugins'
 import { ChromeConnection } from './chrome-connection'
+import { COMPUTER_APP_NAME, installComputerApp } from './computer-app'
 import { execFile, spawn } from 'node:child_process'
 import { promisify } from 'node:util'
 import { createRequire } from 'node:module'
 import { installPluginFromDialog } from './plugin-install'
 import { WorkspaceSelection } from './workspace-selection'
+import { revealRunWorkspace } from './run-workspace'
 import {
   apiRequest,
   channels,
@@ -31,7 +34,9 @@ import {
 } from './protocol'
 import { SubscriptionRegistry } from './subscriptions'
 import { ModelVault } from './model-vault'
-import { fetchModelCapacity } from './model-metadata'
+import { fetchModelMetadata } from './model-metadata'
+import { resolveReasoningCapability } from '../shared/model-reasoning'
+import { refreshModelContext } from './model-context'
 import { resolveModelLimits } from '../shared/model-limits'
 import { importClipboardFiles, importFilePaths } from './file-references'
 import {
@@ -220,6 +225,15 @@ function installBridge(): void {
     assertSender(event)
     return workspaces.open(path)
   })
+  ipcMain.handle(channels.revealWorkspace, async (event, id: unknown) => {
+    assertSender(event)
+    if (!backend) throw new Error('The local runtime is starting')
+    return revealRunWorkspace(
+      id,
+      (request) => backend!.request(request),
+      (path) => shell.openPath(path),
+    )
+  })
   ipcMain.handle(channels.invoke, async (event, request: unknown) => {
     assertSender(event)
     if (!backend) throw new Error('The local runtime is starting')
@@ -234,14 +248,23 @@ function installBridge(): void {
       await workspaces.verify(mapped.body.workspace_path)
     }
     await modelsReady
+    const refreshContext = /^\/api\/models\/([a-zA-Z0-9_-]+)\/context\/refresh$/.exec(mapped.path)
+    if (refreshContext) {
+      if (!modelVault) throw new Error('模型配置尚未就绪')
+      return refreshModelContext(refreshContext[1], backend, modelVault)
+    }
     if (mapped.path === '/api/models') {
       const input = mapped.body as ConfigureModelInput
-      const capacity = await fetchModelCapacity(input)
+      const metadata = await fetchModelMetadata(input)
+      const capacity = metadata?.capacity
       const limits = resolveModelLimits(input, capacity)
       const resolved = resolvedModelConfiguration({
         ...input,
         context_window: limits.context_window,
         max_output_tokens: limits.max_output_tokens,
+        ...(input.reasoning_mode === 'off'
+          ? { reasoning_capability: resolveReasoningCapability(input, metadata?.reasoning) }
+          : {}),
       })
       const model = (await backend.request({ ...mapped, body: resolved })) as ModelInfo
       const persisted = (await modelVault?.save(model.id, resolved)) ?? false
@@ -332,7 +355,7 @@ if (!app.requestSingleInstanceLock()) {
       window.focus()
     } else if (app.isReady()) createWindow()
   })
-  void app.whenReady().then(() => {
+  void app.whenReady().then(async () => {
     session.defaultSession.setPermissionRequestHandler((_contents, _permission, callback) =>
       callback(false),
     )
@@ -350,12 +373,31 @@ if (!app.requestSingleInstanceLock()) {
       : process.platform === 'win32'
         ? join(app.getAppPath(), 'resources/plugins')
         : join(workspace, 'plugins')
+    let computerAppPath: string | undefined
+    let computerSetupError: string | undefined
+    if (process.platform === 'darwin') {
+      try {
+        computerAppPath = await installComputerApp(
+          join(pluginRoot, 'computer-use', 'bin', COMPUTER_APP_NAME),
+          app.getPath('userData'),
+        )
+      } catch {
+        // Do not let a failed update launch an older or nested permission host.
+        computerAppPath = join(app.getPath('userData'), 'computer-use', '.unavailable')
+        computerSetupError = '电脑组件安装失败，请重启 Open Harness 或重新安装应用。'
+        console.warn(computerSetupError)
+      }
+    }
     chromeConnection = new ChromeConnection({
       root: pluginRoot,
       executable: process.execPath,
       userData: app.getPath('userData'),
       home: app.getPath('home'),
       platform: process.platform,
+    })
+    void chromeConnection.refreshExisting().catch(() => {
+      // Do not include filesystem/configuration details in startup logs.
+      console.warn('Chrome 连接组件更新失败；可在扩展页重新配置，不影响应用启动。')
     })
     bundledPlugins = new BundledPlugins({
       root: pluginRoot,
@@ -366,12 +408,19 @@ if (!app.requestSingleInstanceLock()) {
       browsers: process.env.PLAYWRIGHT_BROWSERS_PATH ?? join(app.getPath('userData'), 'browsers'),
       platform: process.platform,
       chrome: chromeConnection,
+      computerAppPath,
+      computerSetupError,
     })
-    backend = new Backend(
-      binary,
-      join(app.getPath('userData'), 'runtime'),
-      bundledPlugins.environment,
-    )
+    backend = new Backend(binary, join(app.getPath('userData'), 'runtime'), {
+      ...bundledPlugins.environment,
+      ...(await prepareWorkspaceRuntime({
+        directory: join(app.getPath('userData'), 'workspace-runtime'),
+        platform: process.platform,
+        resourcesDirectory: app.isPackaged
+          ? process.resourcesPath
+          : join(app.getAppPath(), 'resources'),
+      })),
+    })
     installMessageResourceBridge({
       directory: app.getPath('userData'),
       backend,

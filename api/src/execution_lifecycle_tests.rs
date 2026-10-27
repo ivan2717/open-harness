@@ -28,11 +28,15 @@ impl Fixture {
             let now = time::now();
             let detail = RunDetail {
                 summary: RunSummary {
+                    reasoning_settings_version: 1,
+                    reasoning_effort: None,
+                    model_history_through: None,
                     delegation: (id == "child").then(|| Delegation {
                         parent_run_id: "parent".into(),
                         root_run_id: "parent".into(),
                         task_name: "child".into(),
-                        write_paths: vec!["owned.txt".into()],
+                        write_paths: Some(vec!["owned.txt".into()]),
+                        model_override: None,
                         spawn_call_id: "spawn-child".into(),
                     }),
                     execution_policy: Default::default(),
@@ -45,6 +49,7 @@ impl Fixture {
                     // Host collaboration hooks are active; no network model is called.
                     model_id: "lifecycle-fixture".into(),
                     workspace_path: Some(project.to_string_lossy().into_owned()),
+                    execution_directory: None,
                     permission_mode: agent_local::PermissionMode::WorkspaceWrite,
                     created_at: now.clone(),
                     updated_at: now,
@@ -355,4 +360,248 @@ async fn revert_waits_for_worker_tail_and_rechecks_family_after_releasing_locks(
         }
         fixture.close().await;
     }
+}
+
+#[cfg(any(target_os = "macos", windows))]
+async fn background_command(entry: &RunEntry) -> agent_local::CommandStatus {
+    let tools = entry.workspace.as_ref().unwrap().clone();
+    let worker = tools.clone();
+    let command = if cfg!(windows) {
+        "Write-Output ready; Start-Sleep -Seconds 30; Write-Output late"
+    } else {
+        "printf ready; sleep 30; printf late"
+    };
+    let launch = tokio::spawn(async move {
+        worker
+            .execute(agent_runtime::ToolCall {
+                id: "background-command".into(),
+                name: "run_command".into(),
+                arguments:
+                    serde_json::json!({"command":command,"yield_time_ms":1000,"access":"read_only"})
+                        .to_string(),
+            })
+            .await
+    });
+    let approval = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let Some(approval) = tools.review().unwrap().approvals.into_iter().next() {
+                break approval;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("sandboxed command should request approval");
+    tools.approve(&approval.id, true).unwrap();
+    let status: agent_local::CommandStatus = serde_json::from_str(
+        &tokio::time::timeout(Duration::from_secs(5), launch)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(status.status, "running", "{}", status.output);
+    assert!(
+        status.output.contains("ready"),
+        "the actual process must start: {}",
+        status.output
+    );
+    status
+}
+
+#[cfg(any(target_os = "macos", windows))]
+async fn record_completion(entry: &RunEntry) {
+    use agent_core::agent::RunEvent;
+    let id = entry.snapshot.get().summary.id;
+    let mut run = entry.runtime.restore_run(&id).await.unwrap().unwrap();
+    run.begin_step().unwrap();
+    entry
+        .runtime
+        .record_event(
+            &mut run,
+            RunEvent::ModelResponseReceived {
+                content: "Finished the delegated work".into(),
+                response: Some(agent_runtime::ModelResponse::final_answer(
+                    "Finished the delegated work".into(),
+                )),
+                provider_state: None,
+                provider_continuation: None,
+                token_usage: None,
+            },
+        )
+        .await
+        .unwrap();
+    entry
+        .runtime
+        .record_event(
+            &mut run,
+            RunEvent::RunCompleted {
+                answer: "Finished the delegated work".into(),
+            },
+        )
+        .await
+        .unwrap();
+}
+
+#[cfg(any(target_os = "macos", windows))]
+#[tokio::test]
+async fn completed_delegate_remains_active_until_its_real_command_is_cleaned_up() {
+    let fixture = Fixture::new().await;
+    let command = background_command(&fixture.child).await;
+    record_completion(&fixture.child).await;
+    // Exercise command ownership independently of the driver activity flag.
+    fixture.child.background.store(false, Ordering::Release);
+    let list: serde_json::Value = serde_json::from_str(
+        &fixture
+            .state
+            .collaboration_call(
+                "parent",
+                agent_runtime::ToolCall {
+                    id: "list".into(),
+                    name: "agent_control".into(),
+                    arguments: "{\"action\":\"list\"}".into(),
+                },
+            )
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        list["members"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|member| member["agent_id"] == "child")
+            .unwrap()["active"],
+        true
+    );
+    let waiting: serde_json::Value = serde_json::from_str(
+        &fixture
+            .state
+            .collaboration_call(
+                "parent",
+                agent_runtime::ToolCall {
+                    id: "wait".into(),
+                    name: "agent_control".into(),
+                    arguments: "{\"action\":\"wait\",\"target\":\"child\",\"timeout_seconds\":0}"
+                        .into(),
+                },
+            )
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(waiting["wait"]["outcome"], "timeout");
+    assert!(
+        fixture
+            .parent
+            .runtime
+            .tools()
+            .pending_messages()
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    let parent = fixture.parent.clone();
+    let mut messages =
+        tokio::spawn(async move { parent.runtime.tools().wait_for_messages().await });
+    assert!(
+        tokio::time::timeout(Duration::from_millis(25), &mut messages)
+            .await
+            .is_err()
+    );
+    assert!(
+        fixture
+            .access
+            .try_acquire("next-owner", &["owned.txt".into()])
+            .is_err()
+    );
+
+    fixture.child.background.store(true, Ordering::Release);
+    execute_and_settle(&fixture.state, &fixture.child, "child", async {
+        Ok::<_, io::Error>(CoreStatus::Completed)
+    })
+    .await;
+    let messages = tokio::time::timeout(Duration::from_secs(1), messages)
+        .await
+        .expect("command cleanup must wake the parent")
+        .unwrap()
+        .unwrap();
+    assert_eq!(messages.len(), 1);
+    assert!(messages[0].text.contains(&command.command_id));
+    assert!(messages[0].text.contains("cancelled"));
+    assert!(messages[0].text.contains("no successful exit"));
+    let tools = fixture.child.workspace.as_ref().unwrap();
+    assert!(!tools.commands_running());
+    let final_command = tools
+        .command_status(&command.command_id, 0, 0)
+        .await
+        .unwrap();
+    assert_eq!(final_command.status, "cancelled");
+    assert_eq!(final_command.exit_code, None);
+    assert!(!final_command.output.contains("late"));
+    assert!(!fixture.child.background.load(Ordering::Acquire));
+    fixture
+        .access
+        .try_acquire("next-owner", &["owned.txt".into()])
+        .unwrap();
+    fixture.access.release("next-owner").await;
+    fixture.close().await;
+}
+
+#[cfg(any(target_os = "macos", windows))]
+#[tokio::test]
+async fn stopping_a_delegate_drains_its_command_before_notifying_the_parent() {
+    let fixture = Fixture::new().await;
+    let command = background_command(&fixture.child).await;
+    fixture.child.background.store(false, Ordering::Release);
+    fixture.state.cancel_member("child", false).await.unwrap();
+    let tools = fixture.child.workspace.as_ref().unwrap();
+    assert!(!tools.commands_running());
+    assert_eq!(
+        tools
+            .command_status(&command.command_id, 0, 0)
+            .await
+            .unwrap()
+            .status,
+        "cancelled"
+    );
+    let messages = fixture
+        .parent
+        .runtime
+        .tools()
+        .pending_messages()
+        .await
+        .unwrap();
+    assert_eq!(messages.len(), 1);
+    assert!(messages[0].text.contains(&command.command_id));
+    assert!(messages[0].text.contains("cancelled"));
+    fixture.close().await;
+}
+
+#[cfg(any(target_os = "macos", windows))]
+#[tokio::test]
+async fn ordinary_parent_completion_preserves_its_background_command() {
+    let fixture = Fixture::new().await;
+    let command = background_command(&fixture.parent).await;
+    record_completion(&fixture.parent).await;
+    execute_and_settle(&fixture.state, &fixture.parent, "parent", async {
+        Ok::<_, io::Error>(CoreStatus::Completed)
+    })
+    .await;
+    let tools = fixture.parent.workspace.as_ref().unwrap();
+    assert!(tools.commands_running());
+    assert_eq!(
+        tools
+            .command_status(&command.command_id, 0, 0)
+            .await
+            .unwrap()
+            .status,
+        "running"
+    );
+    fixture.child.background.store(false, Ordering::Release);
+    fixture.state.cancel_member("parent", false).await.unwrap();
+    assert!(!tools.commands_running());
+    fixture.close().await;
 }

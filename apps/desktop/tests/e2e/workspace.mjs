@@ -148,7 +148,7 @@ async function crashOwnedBackend() {
 }
 try {
   let page = await launch()
-  // This fixture asserts the five project tools; memory has its own E2E suite.
+  // This fixture asserts the local workflow and coordination tools; memory has its own E2E suite.
   await page.evaluate(() => window.harness.setPluginEnabled('builtin.llm-wiki', false))
   await expect(page.getByLabel('选择模型')).toHaveCount(0)
   await expect(page.getByRole('link', { name: '添加模型', exact: true })).toBeVisible()
@@ -365,14 +365,26 @@ try {
   )
   assert.deepEqual(
     workRequests[0].tools.map((tool) => tool.function.name).sort(),
-    ['apply_patch', 'list_files', 'read_file', 'run_command', 'search_files'],
-    'only the five available local tools are sent to the provider',
+    [
+      'agent_control',
+      'apply_patch',
+      'list_files',
+      'load_workspace_dependencies',
+      'manage_command',
+      'read_file',
+      'run_command',
+      'search_files',
+      'spawn_agent',
+    ],
+    'only available local workflow and coordination tools are sent to the provider',
   )
   for (const request of workRequests) {
     assert.deepEqual(request.tools, workRequests[0].tools, 'one turn uses one tool snapshot')
   }
   await expect(page.getByRole('button', { name: '项目权限', exact: true })).toHaveCount(0)
-  await expect(page.getByRole('button', { name: '选择模型', exact: true })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: '选择模型', exact: true })).toContainText(
+    configured.model.name,
+  )
   await expect(page.getByRole('button', { name: '项目', exact: true })).toHaveCount(0)
   const review = await page.evaluate((id) => window.harness.getWorkspace(id), id)
   assert.equal(review.root, root)

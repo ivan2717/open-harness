@@ -17,7 +17,13 @@ interface ComposerProps {
   models: ModelInfo[]
   modelId: string
   onModelChange?: (id: string) => void
+  reasoningEffort?: string | null
+  onReasoningChange?: (effort: string | null) => void
+  modelSettingsDisabled?: boolean
+  modelSettingsDisabledReason?: string
   project?: ProjectSelection | null
+  executionDirectory?: string | null
+  onRevealWorkspace?: () => void
   onProjectChange?: (project: ProjectSelection | null) => void
   onSubmit: (prompt: string, files: TextFileReference[]) => Promise<void>
   pending?: boolean
@@ -35,7 +41,13 @@ export function Composer({
   models,
   modelId,
   onModelChange,
+  reasoningEffort,
+  onReasoningChange,
+  modelSettingsDisabled,
+  modelSettingsDisabledReason,
   project,
+  executionDirectory,
+  onRevealWorkspace,
   onProjectChange,
   onSubmit,
   pending,
@@ -174,6 +186,8 @@ export function Composer({
     <div className="composer-stack">
       <ProjectPicker
         project={project}
+        executionDirectory={executionDirectory}
+        onRevealWorkspace={onRevealWorkspace}
         onChoose={onProjectChange ? () => void chooseProject() : undefined}
         onChange={onProjectChange}
         disabled={controlsBusy}
@@ -250,7 +264,13 @@ export function Composer({
               models={models}
               modelId={modelId}
               onChange={onModelChange}
-              disabled={controlsBusy || running}
+              reasoningEffort={reasoningEffort}
+              onReasoningChange={onReasoningChange}
+              disabled={controlsBusy || running || modelSettingsDisabled}
+              disabledReason={
+                modelSettingsDisabledReason ??
+                (running ? '任务运行中，停止或等待本轮结束后可切换模型和思考强度。' : undefined)
+              }
             />
             {running ? (
               <button

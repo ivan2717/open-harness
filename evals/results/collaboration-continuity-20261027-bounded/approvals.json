@@ -1,0 +1,15 @@
+[
+  {
+    "id": "command-1793076630068362000-1",
+    "task_title": "independent_reconcile",
+    "command": "\"/Users/jiangtao/Desktop/open-harness/apps/desktop/resources/workspace-runtime/python/bin/python3\" -I -B .openharness-tmp/continuity_reconcile.py",
+    "cwd": "/private/var/folders/rv/ghrq1zqn405dtldv_2vymry80000gn/T/openharness-continuity-veZfAv/workspace",
+    "execution_mode": "sandboxed",
+    "network_access": "denied",
+    "access": "read_only",
+    "allow": true,
+    "scope": "once",
+    "approved_by": "evaluation_driver",
+    "time": "2026-10-27T04:50:30.452Z"
+  }
+]

@@ -156,6 +156,7 @@ async fn readonly_composite_exposes_document_and_extension_tools_without_mutatin
         agent_local::PermissionMode::ReadOnly,
     )
     .unwrap();
+    let sandbox_available = local.review().unwrap().sandbox_available;
     let host = ExtensionHost::open(&dir.0.join("state")).unwrap();
     host.save(config()).unwrap();
     skill(
@@ -172,12 +173,22 @@ async fn readonly_composite_exposes_document_and_extension_tools_without_mutatin
     for name in ["read_file", "search_files", "load_skill", "call_mcp_tool"] {
         assert!(names.contains(&name));
     }
-    for name in ["run_command", "apply_patch", "write_file", "edit_file"] {
+    for name in ["apply_patch", "write_file", "edit_file"] {
         assert!(!names.contains(&name));
+    }
+    for name in [
+        "run_command",
+        "manage_command",
+        "load_workspace_dependencies",
+    ] {
+        assert_eq!(names.contains(&name), sandbox_available);
     }
     assert!(
         tools
-            .execute(call("run_command", json!({"command":"touch blocked"})))
+            .execute(call(
+                "run_command",
+                json!({"command":"touch blocked", "access":"workspace_write"})
+            ))
             .await
             .is_err()
     );

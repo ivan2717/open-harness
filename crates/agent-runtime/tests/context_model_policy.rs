@@ -169,12 +169,15 @@ fn output_cap_and_reservations_apply_without_double_counting_headroom() {
 }
 
 #[test]
-fn fallback_is_explicitly_conservative_and_input_only_compatibility_is_retained() {
+fn unknown_models_use_a_million_token_fallback_and_retain_input_only_compatibility() {
     let fallback = ContextPolicy::default().resolve(None).unwrap();
-    assert_eq!(fallback.model_budget().context_window(), 128_000);
-    assert_eq!(fallback.input_token_limit(), 117_760);
-    assert_eq!(fallback.compaction_threshold(), 115_200);
-    assert_eq!(fallback.compaction_target(), 86_400);
+    assert_eq!(fallback.model_budget().context_window(), 1_000_000);
+    assert_eq!(fallback.input_token_limit(), 950_000);
+    assert_eq!(fallback.compaction_threshold(), 900_000);
+    assert_eq!(fallback.compaction_target(), 675_000);
+    assert_eq!(fallback.recent_tail_tokens(), 152_000);
+    assert_eq!(fallback.output_token_limit(), Some(8_192));
+    assert_eq!(fallback.model_budget().safety_margin(), 2_048);
 
     let small = ContextPolicy::builder()
         .input_token_limit(100)

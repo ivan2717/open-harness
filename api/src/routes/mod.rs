@@ -1,8 +1,8 @@
 use crate::{
     AppState,
     contracts::{
-        AppConfig, ApprovalInput, ConfigureModel, CreateRunInput, ModelInfo, ResumeRunInput,
-        RevertInput, RunDetail, RunSummary, SubmitInput,
+        AppConfig, ApprovalInput, ConfigureModel, CreateRunInput, ModelInfo, ReplaceModelInput,
+        ResumeRunInput, RevertInput, RunDetail, RunSummary, SubmitInput, UpdateRunModelInput,
     },
     service::ServiceError,
 };
@@ -15,7 +15,7 @@ use axum::{
         IntoResponse, Response, Sse,
         sse::{Event, KeepAlive},
     },
-    routing::{delete, get, post},
+    routing::{delete, get, patch, post},
 };
 use std::{convert::Infallible, time::Duration};
 mod health_router;
@@ -26,6 +26,7 @@ pub(crate) fn router(state: AppState) -> Router {
         .merge(health_router::health_router())
         .route("/config", get(config))
         .route("/models", post(configure_model))
+        .route("/models/{id}/replace", post(replace_model))
         .route("/extensions", get(extension_settings).post(save_extensions))
         .route("/extensions/skills", get(skill_catalog))
         .route("/extensions/mcp/{id}/test", post(test_mcp))
@@ -42,6 +43,7 @@ pub(crate) fn router(state: AppState) -> Router {
         )
         .route("/runs", get(list).post(create))
         .route("/runs/{id}", get(detail))
+        .route("/runs/{id}/model", patch(update_run_model))
         .route(
             "/runs/{id}/messages/{message_id}/images/{index}",
             get(message_image),
@@ -54,7 +56,15 @@ pub(crate) fn router(state: AppState) -> Router {
         .route("/runs/{id}/input", post(input))
         .route("/runs/{id}/resume", post(resume))
         .route("/runs/{id}/workspace", get(workspace))
+        .route(
+            "/runs/{id}/workspace/commands/{command}/stop",
+            post(stop_command),
+        )
         .route("/runs/{id}/approvals/{approval}", post(approve))
+        .route(
+            "/runs/{id}/workspace/command-grants/revoke",
+            post(revoke_command_grants),
+        )
         .route("/runs/{id}/revert", post(revert))
         .route("/runs/{id}/compact", post(compact))
         .route("/runs/{id}/compact/cancel", post(cancel_compaction))
@@ -176,6 +186,23 @@ async fn configure_model(
 ) -> Result<Json<ModelInfo>, ServiceError> {
     state.configure_model(input).await.map(Json)
 }
+async fn replace_model(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(input): Json<ReplaceModelInput>,
+) -> Result<Json<ModelInfo>, ServiceError> {
+    state
+        .replace_model(&id, &input.replacement_model_id)
+        .await
+        .map(Json)
+}
+async fn update_run_model(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(input): Json<UpdateRunModelInput>,
+) -> Result<Json<RunDetail>, ServiceError> {
+    state.update_run_model(&id, input).await.map(Json)
+}
 async fn compact(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -250,9 +277,21 @@ async fn approve(
     Json(input): Json<ApprovalInput>,
 ) -> Result<Json<agent_local::WorkspaceReview>, ServiceError> {
     state
-        .approve_command(&id, &approval, input.allow)
+        .approve_command(&id, &approval, input.allow, input.scope)
         .await
         .map(Json)
+}
+async fn revoke_command_grants(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<agent_local::WorkspaceReview>, ServiceError> {
+    state.revoke_command_grants(&id).await.map(Json)
+}
+async fn stop_command(
+    State(state): State<AppState>,
+    Path((id, command)): Path<(String, String)>,
+) -> Result<Json<agent_local::WorkspaceReview>, ServiceError> {
+    state.stop_command(&id, &command).await.map(Json)
 }
 async fn revert(
     State(state): State<AppState>,

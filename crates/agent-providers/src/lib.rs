@@ -1,7 +1,12 @@
 //! Async HTTP transports for the runtime's canonical model protocol.
 //! Credentials remain in memory and never enter model state or diagnostics.
 mod encode;
+mod reasoning;
+#[cfg(test)]
+mod reasoning_tests;
 mod stream;
+
+pub use reasoning::{ReasoningAdapter, ReasoningCapability, ReasoningOption, ReasoningSource};
 
 use agent_adapters::WireProtocol;
 use agent_runtime::{
@@ -57,6 +62,10 @@ pub enum ReasoningMode {
     },
     AnthropicBudget {
         tokens: usize,
+    },
+    Configured {
+        adapter: ReasoningAdapter,
+        option: ReasoningOption,
     },
 }
 
@@ -155,6 +164,8 @@ pub struct HttpModel {
     protocol: ProviderProtocol,
     model: String,
     reasoning: ReasoningMode,
+    reasoning_capability: ReasoningCapability,
+    legacy_reasoning_profile: bool,
     metadata: ModelContextMetadata,
     identity: ProviderContextIdentity,
     supports_images: bool,
@@ -206,6 +217,21 @@ impl HttpModel {
                 if config.protocol == ProviderProtocol::AnthropicMessages
                     && *tokens >= 1024
                     && *tokens < config.max_output_tokens => {}
+            ReasoningMode::Configured { adapter, option } => {
+                let capability = ReasoningCapability {
+                    source: ReasoningSource::Manual,
+                    adapter: *adapter,
+                    options: vec![option.clone()],
+                };
+                capability.validate(config.protocol)?;
+                if capability
+                    .available_options(config.max_output_tokens)
+                    .next()
+                    .is_none()
+                {
+                    return Err(invalid("reasoning budget exceeds the output limit"));
+                }
+            }
             _ => {
                 return Err(invalid(
                     "reasoning settings do not match the selected protocol or output budget",
@@ -254,12 +280,20 @@ impl HttpModel {
                 .map_err(|_| invalid("invalid context window"))?
                 .with_accounting_identity(&identity.format);
         metadata.max_output_tokens = Some(config.max_output_tokens);
+        let reasoning_capability = if config.reasoning == ReasoningMode::Off {
+            ReasoningCapability::preset(config.protocol)
+        } else {
+            ReasoningCapability::legacy(&config.reasoning)
+        };
+        reasoning_capability.validate(config.protocol)?;
         Ok(Self {
             client,
             endpoint,
             protocol: config.protocol,
             model: config.model,
             reasoning: config.reasoning,
+            reasoning_capability,
+            legacy_reasoning_profile: true,
             metadata,
             supports_images: config.supports_images,
             identity,
@@ -462,7 +496,7 @@ impl HttpModel {
     }
 }
 fn valid_effort(value: &str) -> bool {
-    matches!(value, "minimal" | "low" | "medium" | "high" | "xhigh")
+    reasoning::valid_reasoning_name(value)
 }
 fn transport_error(error: reqwest::Error) -> ProviderError {
     if error.is_timeout() {

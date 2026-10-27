@@ -842,16 +842,30 @@ async fn a_stale_checkpoint_is_cleared_and_rebuilt_from_changed_history() {
 async fn history_tools_are_deferred_until_context_actually_omits_events() {
     let history = EventStoreHistoryAccess::new();
     let history_tools = HistoryAccess::<InMemoryEventStore>::definitions(&history).to_vec();
+    let counter = ApproximateTokenCounter::new(1).unwrap();
+    let history_tool_tokens = counter.count_tokens(&ModelRequest {
+        instructions: String::new(),
+        messages: Vec::new(),
+        tools: history_tools.clone(),
+        max_output_tokens: None,
+        provider_context: None,
+    });
+    // Exercise when schemas become visible independently of their wording.
+    // Reserve their measured cost while keeping a small, fixed message budget;
+    // schema-budget failures and estimation headroom have separate coverage.
+    let message_budget = 1_000;
+    let input_token_limit = message_budget + history_tool_tokens;
     let compactor = RecordingCompactor::default();
     let manager = compacting_manager(
         ContextPolicy::builder()
-            .input_token_limit(2_500)
+            .input_token_limit(input_token_limit)
+            .estimation_margin_percent(0)
             .compaction_threshold(800)
             .recent_tail_tokens(250)
             .max_tool_output_chars(100)
             .build()
             .unwrap(),
-        compactor,
+        compactor.clone(),
         InMemoryContextCheckpointStore::new(),
     );
 
@@ -862,6 +876,7 @@ async fn history_tools_are_deferred_until_context_actually_omits_events() {
         .unwrap();
     assert!(short.omitted_history.is_none());
     assert!(short.request.tools.is_empty());
+    assert!(compactor.calls().is_empty());
 
     let mut long_run = AgentRun::new(
         "long-context",
@@ -875,7 +890,9 @@ async fn history_tools_are_deferred_until_context_actually_omits_events() {
         .prepare_owned(context_input(&long_run).with_deferred_tools(history_tools))
         .await
         .unwrap();
+    assert!(!compactor.calls().is_empty());
     assert!(compacted.omitted_history.is_some());
+    assert!(counter.count_tokens(&compacted.request) <= input_token_limit);
     assert!(
         compacted
             .request

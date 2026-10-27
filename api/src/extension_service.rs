@@ -62,10 +62,50 @@ impl AppState {
     }
     pub fn run_extensions(&self, id: &str) -> Result<RunExtensions, ServiceError> {
         let detail = self.get(id)?;
-        Ok(self
+        let mut state = self
             .inner
             .extensions
-            .run_state(id, detail.summary.workspace_path.as_deref().map(Path::new)))
+            .run_state(id, detail.summary.workspace_path.as_deref().map(Path::new));
+        if detail.summary.delegation.is_none() {
+            for (child, title) in self.extension_children(id) {
+                let child_state = self.inner.extensions.run_state(&child, None);
+                state
+                    .approvals
+                    .extend(child_state.approvals.into_iter().map(|mut approval| {
+                        approval.source_run_id = Some(child.clone());
+                        approval.task_title = Some(title.clone());
+                        approval
+                    }));
+                state
+                    .controls
+                    .extend(child_state.controls.into_iter().map(|mut control| {
+                        control.source_run_id = Some(child.clone());
+                        control.task_title = Some(title.clone());
+                        control
+                    }));
+            }
+        }
+        Ok(state)
+    }
+
+    fn extension_children(&self, root: &str) -> Vec<(String, String)> {
+        let mut children: Vec<_> = self
+            .inner
+            .runs
+            .read()
+            .unwrap()
+            .values()
+            .filter_map(|entry| {
+                let summary = entry.snapshot.get().summary;
+                summary
+                    .delegation
+                    .as_ref()
+                    .filter(|d| d.root_run_id == root)
+                    .map(|_| (summary.id.clone(), summary.title.clone()))
+            })
+            .collect();
+        children.sort();
+        children
     }
     pub fn approve_extension(
         &self,
@@ -82,19 +122,26 @@ impl AppState {
         allow: bool,
         session: bool,
     ) -> Result<RunExtensions, ServiceError> {
-        self.get(id)?;
+        let state = self.run_extensions(id)?;
+        let pending = state
+            .approvals
+            .iter()
+            .find(|request| request.id == approval)
+            .ok_or_else(|| ServiceError::Conflict("审批已失效，请刷新会话".into()))?;
+        let owner = pending.source_run_id.as_deref().unwrap_or(id);
         self.inner
             .extensions
             .approvals
-            .decide_scoped(id, approval, allow, session)
+            .decide_scoped(owner, approval, allow, session)
             .map_err(|error| ServiceError::Conflict(error.to_string()))?;
         self.run_extensions(id)
     }
     pub async fn revoke_control(&self, id: &str) -> Result<RunExtensions, ServiceError> {
-        let detail = self.get(id)?;
-        self.inner.extensions.revoke_run(id);
+        let root = self.root_id(id)?;
+        let detail = self.get(&root)?;
+        self.inner.extensions.revoke_run(&root);
         if detail.summary.status == crate::contracts::RunStatus::Running {
-            self.cancel(id).await?;
+            self.cancel(&root).await?;
         }
         self.run_extensions(id)
     }

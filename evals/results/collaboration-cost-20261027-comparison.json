@@ -1,0 +1,124 @@
+{
+  "comparison_version": 1,
+  "baseline": {
+    "directory": "/Users/jiangtao/Desktop/open-harness/evals/results/collaboration-continuity-20261027-functional-450k",
+    "automatic_quality_passed": true,
+    "observed_usage": {
+      "input_tokens": 368053,
+      "output_tokens": 9172,
+      "responses": 37,
+      "total_tokens": 377225
+    },
+    "duration_ms": 182004,
+    "backend_sha256": "c1d94d315ca1b197835d94a928b7eb622af086f6f16d0d760db1893c8cbb4c03"
+  },
+  "candidates": [
+    {
+      "directory": "/Users/jiangtao/Desktop/open-harness/evals/results/collaboration-cost-20261027-1",
+      "automatic_quality_passed": true,
+      "failed_checks": [],
+      "recorded_conditions_match": true,
+      "condition_differences": [],
+      "reasoning_settings_verified": false,
+      "observed_usage": {
+        "input_tokens": 244059,
+        "output_tokens": 8638,
+        "responses": 24,
+        "total_tokens": 252697
+      },
+      "duration_ms": 179970,
+      "observed_token_reduction_percent": 33.0115978527404,
+      "by_agent": [
+        {
+          "role": "parent",
+          "observed_usage": {
+            "input_tokens": 197554,
+            "output_tokens": 5074,
+            "responses": 19,
+            "total_tokens": 202628
+          },
+          "compactions": 2,
+          "observed_token_reduction_percent": 28.840534921616
+        },
+        {
+          "role": "child",
+          "observed_usage": {
+            "input_tokens": 46505,
+            "output_tokens": 3564,
+            "responses": 5,
+            "total_tokens": 50069
+          },
+          "compactions": 0,
+          "observed_token_reduction_percent": 45.85554702453689
+        }
+      ],
+      "backend_sha256": "a5b00ae9507bf37475d94252a2db51f04285b6b03573cadb422fd912bed67b26"
+    },
+    {
+      "directory": "/Users/jiangtao/Desktop/open-harness/evals/results/collaboration-cost-20261027-2",
+      "automatic_quality_passed": false,
+      "failed_checks": [
+        "parent_readback_matches_deliverable"
+      ],
+      "recorded_conditions_match": true,
+      "condition_differences": [],
+      "reasoning_settings_verified": false,
+      "observed_usage": {
+        "input_tokens": 416442,
+        "output_tokens": 12232,
+        "responses": 38,
+        "total_tokens": 428674
+      },
+      "duration_ms": 260088,
+      "observed_token_reduction_percent": -13.638809728941615,
+      "by_agent": [
+        {
+          "role": "parent",
+          "observed_usage": {
+            "input_tokens": 362069,
+            "output_tokens": 8263,
+            "responses": 32,
+            "total_tokens": 370332
+          },
+          "compactions": 2,
+          "observed_token_reduction_percent": -30.05422262179019
+        },
+        {
+          "role": "child",
+          "observed_usage": {
+            "input_tokens": 54373,
+            "output_tokens": 3969,
+            "responses": 6,
+            "total_tokens": 58342
+          },
+          "compactions": 0,
+          "observed_token_reduction_percent": 36.909151860543076
+        }
+      ],
+      "backend_sha256": "a5b00ae9507bf37475d94252a2db51f04285b6b03573cadb422fd912bed67b26"
+    }
+  ],
+  "candidate_count": 2,
+  "automatic_quality_retained": false,
+  "recorded_conditions_match": true,
+  "reasoning_settings_verified": false,
+  "observed_summary": {
+    "candidate_mean_tokens": 340685.5,
+    "candidate_min_tokens": 252697,
+    "candidate_max_tokens": 428674,
+    "mean_reduction_percent": 9.686394061899396,
+    "all_candidates_use_fewer_tokens": false
+  },
+  "manual_review_required": [
+    "Script derives its figures from the actual sources rather than hardcoding answers.",
+    "Evidence prose correctly explains deduplication, exclusions and the user override.",
+    "Parent actually reconciles the child report against sources; file reads alone do not prove reasoning."
+  ],
+  "caveats": [
+    "All original checks remain required; additional audit checks use the same verifier for baseline and candidates.",
+    "Automatic quality checks do not replace a review of script logic and evidence prose.",
+    "Missing historical reasoning metadata is unverified; consult the original run review and launcher settings.",
+    "Observed tokens are recorded usage, not a bill; retries, failed requests, compaction and Wiki usage may be omitted.",
+    "These repeated runs of one fixed task are descriptive observations, not statistical significance or a general success-rate estimate."
+  ]
+}

@@ -12,8 +12,8 @@ use super::{
     protocol::{
         HISTORY_WARNING, HistoryReadEvent, HistoryReadResponse, HistorySearchHit,
         READ_RUN_HISTORY_TOOL, ReadArguments, SEARCH_RUN_HISTORY_TOOL, SearchArguments,
-        bound_saved_history_output, encode_read_response, encode_search_response, event_type,
-        history_tool_definitions, is_history_tool, truncate_chars,
+        SearchSource, bound_saved_history_output, encode_read_response, encode_search_response,
+        event_type, history_tool_definitions, is_history_tool, preview_start,
     },
 };
 
@@ -32,7 +32,7 @@ impl EventStoreHistoryAccess {
     pub fn with_limits(limits: HistoryLimits) -> Self {
         Self {
             limits,
-            definitions: history_tool_definitions(),
+            definitions: history_tool_definitions(limits),
             excluded_tools: HashSet::new(),
         }
     }
@@ -140,20 +140,38 @@ impl EventStoreHistoryAccess {
         let mut total_matches = 0_usize;
 
         for envelope in visible_events {
-            if !event_matches_query(&envelope.event, &folded_query) {
+            let Some(matched) = event_match(&envelope.event, &folded_query, &arguments.source)
+            else {
                 continue;
-            }
+            };
 
             total_matches = total_matches.saturating_add(1);
             if hits.len() < limit {
-                let serialized_event =
-                    serde_json::to_string(&envelope.event.without_provider_state())
-                        .map_err(HistoryAccessError::Serialization)?;
+                let total = matched.value.chars().count();
+                let offset = preview_start(
+                    total,
+                    matched.offset,
+                    matched.length,
+                    self.limits.preview_chars(),
+                );
+                let preview: String = matched
+                    .value
+                    .chars()
+                    .skip(offset)
+                    .take(self.limits.preview_chars())
+                    .collect();
+                let preview_truncated = preview.chars().count() < total;
                 hits.push(HistorySearchHit {
                     sequence: envelope.sequence,
                     step: envelope.step,
                     event_type: Cow::Borrowed(event_type(&envelope.event)),
-                    preview: truncate_chars(&serialized_event, self.limits.preview_chars()),
+                    preview,
+                    field: Some(matched.field),
+                    preview_offset: Some(offset),
+                    total_characters: Some(total),
+                    match_offset: Some(matched.offset),
+                    match_length: Some(matched.length),
+                    preview_truncated,
                 });
             }
         }
@@ -274,53 +292,129 @@ impl EventStoreHistoryAccess {
     }
 }
 
-fn event_matches_query(event: &RunEvent, folded_query: &str) -> bool {
-    // Search the original values, not their JSON-escaped representation. Keep
-    // event types and tool identifiers searchable without matching JSON syntax
-    // or unrelated envelope metadata.
-    let matches = |value: &str| value.to_lowercase().contains(folded_query);
-    if matches(event_type(event)) {
-        return true;
+struct FieldMatch<'a> {
+    field: String,
+    value: &'a str,
+    offset: usize,
+    length: usize,
+}
+
+fn event_match<'a>(
+    event: &'a RunEvent,
+    folded_query: &str,
+    source: &SearchSource,
+) -> Option<FieldMatch<'a>> {
+    let is_user = matches!(
+        event,
+        RunEvent::RunStarted { .. } | RunEvent::InputReceived { .. } | RunEvent::RunResumed { .. }
+    );
+    if *source == SearchSource::User && !is_user {
+        return None;
     }
-    let user_matches = |content: &str, files: &[crate::TextFileReference]| {
-        matches(content)
-            || files.iter().any(|file| {
-                matches(&file.name)
-                    || file.path.as_deref().is_some_and(matches)
-                    || matches(&file.text)
-            })
-    };
+    // Explicit public fields avoid searching private reasoning, opaque provider
+    // state, usage and envelope metadata. JSON pointers locate the original
+    // string in read_run_history's event, including individual text attachments.
+    let mut fields: Vec<(String, &str)> = Vec::new();
     match event {
-        RunEvent::RunStarted { instruction, files } => user_matches(instruction, files),
-        RunEvent::InputReceived { content, files } => user_matches(content, files),
-        RunEvent::ModelResponseReceived { content, .. } => matches(content),
-        RunEvent::RunResumed {
-            content,
-            files,
-            interrupted_calls,
-        } => {
-            user_matches(content, files)
-                || interrupted_calls.iter().any(|call| matches(&call.call_id))
+        RunEvent::RunStarted { instruction, files } => {
+            fields.push(("/instruction".into(), instruction));
+            attachment_fields(&mut fields, files);
+        }
+        RunEvent::InputReceived { content, files }
+        | RunEvent::RunResumed { content, files, .. } => {
+            fields.push(("/content".into(), content));
+            attachment_fields(&mut fields, files);
+            if *source == SearchSource::All
+                && let RunEvent::RunResumed {
+                    interrupted_calls, ..
+                } = event
+            {
+                for (index, call) in interrupted_calls.iter().enumerate() {
+                    fields.push((format!("/interrupted_calls/{index}/call_id"), &call.call_id));
+                }
+            }
+        }
+        RunEvent::ModelResponseReceived { content, .. } => {
+            fields.push(("/content".into(), content))
         }
         RunEvent::ToolCallRequested {
             call_id,
             tool_name,
             arguments,
-        } => matches(call_id) || matches(tool_name) || matches(arguments),
+        } => fields.extend([
+            ("/arguments".into(), arguments.as_str()),
+            ("/tool_name".into(), tool_name.as_str()),
+            ("/call_id".into(), call_id.as_str()),
+        ]),
         RunEvent::ToolCallSucceeded {
             call_id, output, ..
-        } => matches(call_id) || matches(output),
-        RunEvent::ToolCallFailed { call_id, message } => matches(call_id) || matches(message),
-        RunEvent::InputRequested { prompt } => matches(prompt),
-        RunEvent::RunCompleted { answer } => matches(answer),
-        RunEvent::RunFailed { message } => matches(message),
-        RunEvent::AgentMessageReceived { message } => {
-            matches(&message.sender) || matches(&message.text)
+        } => fields.extend([
+            ("/output".into(), output.as_str()),
+            ("/call_id".into(), call_id.as_str()),
+        ]),
+        RunEvent::ToolCallFailed { call_id, message } => fields.extend([
+            ("/message".into(), message.as_str()),
+            ("/call_id".into(), call_id.as_str()),
+        ]),
+        RunEvent::InputRequested { prompt } => fields.push(("/prompt".into(), prompt)),
+        RunEvent::RunCompleted { answer } => fields.push(("/answer".into(), answer)),
+        RunEvent::RunFailed { message } => fields.push(("/message".into(), message)),
+        RunEvent::AgentMessageReceived { message } => fields.extend([
+            ("/message/text".into(), message.text.as_str()),
+            ("/message/sender".into(), message.sender.as_str()),
+        ]),
+        RunEvent::ToolLoopWarning { tool_name, .. } => {
+            fields.push(("/tool_name".into(), tool_name))
         }
-        RunEvent::ToolLoopWarning { tool_name, .. } => matches(tool_name),
-        RunEvent::RunPaused { .. } => false,
-        RunEvent::ModelRequestStarted | RunEvent::RunCancelled => false,
+        RunEvent::RunPaused { .. } | RunEvent::ModelRequestStarted | RunEvent::RunCancelled => {}
     }
+    if *source == SearchSource::All {
+        fields.push(("/type".into(), event_type(event)));
+    }
+    fields.into_iter().find_map(|(field, value)| {
+        let (offset, length) = match_offsets(value, folded_query)?;
+        Some(FieldMatch {
+            field,
+            value,
+            offset,
+            length,
+        })
+    })
+}
+
+fn attachment_fields<'a>(
+    fields: &mut Vec<(String, &'a str)>,
+    files: &'a [crate::TextFileReference],
+) {
+    for (index, file) in files.iter().enumerate() {
+        fields.push((format!("/files/{index}/text"), &file.text));
+        fields.push((format!("/files/{index}/name"), &file.name));
+        if let Some(path) = &file.path {
+            fields.push((format!("/files/{index}/path"), path));
+        }
+    }
+}
+
+fn match_offsets(value: &str, folded_query: &str) -> Option<(usize, usize)> {
+    let folded = value.to_lowercase();
+    let start_byte = folded.find(folded_query)?;
+    let folded_start = folded[..start_byte].chars().count();
+    let folded_end = folded_start + folded_query.chars().count();
+    let mut folded_offset = 0;
+    let mut original_start = None;
+    for (index, character) in value.chars().enumerate() {
+        // Lowercasing can expand one original character (e.g. İ -> i + dot).
+        // Contextual sigma changes its value but not its character count.
+        folded_offset += character.to_lowercase().count();
+        if original_start.is_none() && folded_offset > folded_start {
+            original_start = Some(index);
+        }
+        if folded_offset >= folded_end {
+            let start = original_start?;
+            return Some((start, index + 1 - start));
+        }
+    }
+    None
 }
 
 async fn load_history_prefix<S: EventStore>(

@@ -1,4 +1,6 @@
 import type { ModelCapacity, ResolvedModelLimits } from './model-limits'
+import type { ReasoningCapability } from './model-reasoning'
+export type { ReasoningCapability, ReasoningOption } from './model-reasoning'
 import type {
   ExtensionConfig,
   ExtensionSettings,
@@ -18,7 +20,8 @@ export interface RunDelegation {
   parent_run_id: string
   root_run_id: string
   task_name: string
-  write_paths: string[]
+  write_paths?: string[] | null
+  model_override?: UpdateRunModelInput | null
 }
 
 export interface ExecutionPolicy {
@@ -34,6 +37,11 @@ export interface ModelInfo {
   description: string
   available: boolean
   context_window: number
+  reasoning?: {
+    default_effort: string | null
+    supported_efforts: string[]
+    capability?: ReasoningCapability
+  }
 }
 
 export interface AppConfig {
@@ -54,7 +62,11 @@ export interface ConfigureModelInput {
   /** Per-request output budget, not the provider's physical maximum. */
   max_output_tokens?: number
   reasoning_mode: 'off' | 'standard' | 'deepseek'
-  reasoning_effort: 'low' | 'medium' | 'high'
+  reasoning_effort: string
+  /** Omitted for legacy profiles; resolved independently of the default selection. */
+  reasoning_capability?: ReasoningCapability
+  /** Omitted/null leaves the provider's default parameters unchanged. */
+  reasoning_default?: string | null
   supports_images?: boolean
 }
 
@@ -71,6 +83,7 @@ export interface ConfigureModelResult {
   persisted: boolean
   limits: ResolvedModelLimits
   capacity?: ModelCapacity
+  warning?: string
 }
 
 export interface RunSummary {
@@ -85,7 +98,11 @@ export interface RunSummary {
   delegation?: RunDelegation | null
   execution_policy?: ExecutionPolicy
   model_id: string
+  /** Omitted/null inherits this model configuration's default. */
+  reasoning_effort?: string | null
   workspace_path?: string | null
+  /** Backend-owned directory for a conversation that has no selected project. */
+  execution_directory?: string | null
   permission_mode?: PermissionMode
   created_at: string
   updated_at: string
@@ -170,9 +187,16 @@ export interface RunDetail extends RunSummary {
 export interface CreateRunInput {
   prompt: string
   model_id: string
+  reasoning_effort?: string
   files?: TextFileReference[]
   workspace_path?: string
   permission_mode?: PermissionMode
+}
+
+export interface UpdateRunModelInput {
+  model_id: string
+  /** Omitted/null resets the conversation override to the selected model's default. */
+  reasoning_effort?: string | null
 }
 
 /** A user-selected UTF-8 file snapshot, not a grant to its parent directory. */
@@ -201,18 +225,35 @@ export interface FileChange {
   revertible: boolean
 }
 
+export type CommandExecutionMode = 'sandboxed' | 'unrestricted' | 'unavailable'
+export type CommandNetworkAccess = 'denied' | 'allowed'
+export type CommandAccess = 'read_only' | 'workspace_write'
+export type CommandApprovalScope = 'once' | 'session'
+
+export interface CommandGrant {
+  access: CommandAccess
+  network_access: CommandNetworkAccess
+}
+
 export interface PendingApproval {
   id: string
+  task_title?: string
   command: string
   cwd: string
+  execution_mode?: CommandExecutionMode
+  access?: CommandAccess
+  network_access?: CommandNetworkAccess
 }
 
 export interface CommandRecord {
   id: string
+  task_title?: string
   command: string
   status: string
   output: string
   exit_code: number | null
+  access?: CommandAccess
+  network_access?: CommandNetworkAccess
 }
 
 export interface WorkspaceReview {
@@ -220,10 +261,12 @@ export interface WorkspaceReview {
   permission_mode: PermissionMode
   busy: boolean
   sandbox_available: boolean
+  execution_mode?: CommandExecutionMode
   review_incomplete?: boolean
   changes: FileChange[]
   approvals: PendingApproval[]
   commands: CommandRecord[]
+  command_grants?: CommandGrant[]
 }
 
 export interface DesktopBridge {
@@ -262,19 +305,29 @@ export interface DesktopBridge {
   listRuns(): Promise<RunSummary[]>
   getRun(id: string): Promise<RunDetail>
   createRun(input: CreateRunInput): Promise<RunDetail>
+  updateRunModel(id: string, input: UpdateRunModelInput): Promise<RunDetail>
   chooseFiles(): Promise<FileImportResult>
   importFiles(files: File[]): Promise<FileImportResult>
   pasteFiles(): Promise<FileImportResult>
   chooseWorkspace(): Promise<string | null>
   openWorkspace(path: string): Promise<string>
+  revealWorkspace(id: string): Promise<void>
   getWorkspace(id: string): Promise<WorkspaceReview>
-  approveCommand(id: string, approvalId: string, allow: boolean): Promise<WorkspaceReview>
+  approveCommand(
+    id: string,
+    approvalId: string,
+    allow: boolean,
+    scope?: CommandApprovalScope,
+  ): Promise<WorkspaceReview>
+  revokeCommandGrants(id: string): Promise<WorkspaceReview>
+  stopCommand(id: string, commandId: string): Promise<WorkspaceReview>
   revertFile(id: string, path: string): Promise<WorkspaceReview>
   resumeRun(id: string, message?: string, files?: TextFileReference[]): Promise<RunDetail>
   cancelRun(id: string): Promise<RunDetail>
   compactRun(id: string): Promise<RunDetail>
   cancelCompaction(id: string): Promise<RunDetail>
   configureModel(input: ConfigureModelInput): Promise<ConfigureModelResult>
+  refreshModelContext(id: string): Promise<ConfigureModelResult>
   submitInput(id: string, message: string, files?: TextFileReference[]): Promise<RunDetail>
   watchRun(
     id: string,

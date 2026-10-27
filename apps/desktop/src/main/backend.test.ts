@@ -2,11 +2,45 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { spawn } from 'node:child_process'
 import { EventEmitter } from 'node:events'
 import { PassThrough } from 'node:stream'
-import { Backend } from './backend'
+import { resolve } from 'node:path'
+import { Backend, backendSandboxEnvironment } from './backend'
 import { apiRequest } from './protocol'
 import { initializeRuntime, watchInitializedRuntime } from './runtime-startup'
 
 vi.mock('node:child_process', () => ({ spawn: vi.fn() }))
+
+const fixtureBinary = resolve('fixture-api.exe')
+
+describe('Windows sandbox helper location', () => {
+  it.each([
+    [
+      'C:\\Users\\Example User\\AppData\\Local\\Programs\\Open Harness\\resources\\bin\\api.exe',
+      'C:\\Users\\Example User\\AppData\\Local\\Programs\\Open Harness\\resources\\bin\\openharness-sandbox.exe',
+    ],
+    ['D:\\build cache\\debug\\api.exe', 'D:\\build cache\\debug\\openharness-sandbox.exe'],
+  ])('uses the API sibling for packaged and development binaries (%s)', (binary, helper) => {
+    expect(backendSandboxEnvironment(binary, 'win32')).toEqual({
+      OPENHARNESS_WINDOWS_SANDBOX_HELPER: helper,
+    })
+  })
+
+  it.each(['api.exe', 'C:api.exe', '\\api.exe'])(
+    'rejects a Windows path that depends on the working directory (%s)',
+    (binary) => {
+      expect(() => backendSandboxEnvironment(binary, 'win32')).toThrow('must be absolute')
+    },
+  )
+
+  it('does not configure the Windows helper on other platforms', () => {
+    expect(
+      backendSandboxEnvironment(
+        '/Applications/Open Harness.app/Contents/Resources/bin/api',
+        'darwin',
+      ),
+    ).toEqual({})
+    expect(backendSandboxEnvironment('/app/bin/api', 'linux')).toEqual({})
+  })
+})
 
 afterEach(() => {
   vi.restoreAllMocks()
@@ -84,7 +118,7 @@ describe('local runtime initialization', () => {
   it('does not start a process or readiness timer while keychain initialization is pending', async () => {
     vi.useFakeTimers()
     const child = runtimeProcess()
-    const backend = new Backend('fixture-api', 'fixture-directory')
+    const backend = new Backend(fixtureBinary, 'fixture-directory')
     let unlock!: () => void
     const load = new Promise<[]>((resolve) => {
       unlock = () => resolve([])
@@ -165,7 +199,7 @@ describe('local runtime initialization', () => {
   it('keeps the startup timeout as the cause when terminating the process produces exit zero', async () => {
     vi.useFakeTimers()
     const child = runtimeProcess()
-    const backend = new Backend('fixture-api', 'fixture-directory')
+    const backend = new Backend(fixtureBinary, 'fixture-directory')
     const started = backend.start()
     const rejected = expect(started).rejects.toThrow('did not become ready within 30 seconds')
     await vi.advanceTimersByTimeAsync(30_000)
@@ -184,7 +218,7 @@ describe('local runtime initialization', () => {
 
   it('requires an app restart after a runtime that was ready exits unexpectedly', async () => {
     const child = runtimeProcess()
-    const backend = new Backend('fixture-api', 'fixture-directory')
+    const backend = new Backend(fixtureBinary, 'fixture-directory')
     const started = backend.start()
     child.stdout.write(JSON.stringify({ event: 'ready', address: '127.0.0.1:1234' }) + '\n')
     await started
@@ -199,7 +233,7 @@ describe('local runtime shutdown', () => {
   it('closes the managed input pipe and lets the runtime finish cleanup', async () => {
     vi.useFakeTimers()
     const child = runtimeProcess()
-    const backend = new Backend('fixture-api', 'fixture-directory')
+    const backend = new Backend(fixtureBinary, 'fixture-directory')
     const started = backend.start()
     child.stdout.write(JSON.stringify({ event: 'ready', address: '127.0.0.1:1234' }) + '\n')
     await started
@@ -217,7 +251,7 @@ describe('local runtime shutdown', () => {
   it('uses a bounded hard stop only when graceful cleanup does not finish', async () => {
     vi.useFakeTimers()
     const child = runtimeProcess()
-    const backend = new Backend('fixture-api', 'fixture-directory')
+    const backend = new Backend(fixtureBinary, 'fixture-directory')
     const started = backend.start()
     child.stdout.write(JSON.stringify({ event: 'ready', address: '127.0.0.1:1234' }) + '\n')
     await started

@@ -20,6 +20,27 @@ export class ModelVault {
     private cipher: CredentialCipher,
   ) {}
 
+  /** Main-process access only; never send saved credentials through IPC. */
+  get(id: string): ResolvedModelConfiguration | undefined {
+    const input = this.entries.get(identifier(id))
+    return input ? structuredClone(input) : undefined
+  }
+
+  /** Remove a superseded profile only after its replacement and run bindings are saved. */
+  remove(id: string): Promise<boolean> {
+    const remove = async (): Promise<boolean> => {
+      const key = identifier(id)
+      const next = new Map(this.entries)
+      next.delete(key)
+      if (!(await this.persist(next))) return false
+      this.entries = next
+      return true
+    }
+    const result = this.writes.then(remove, remove)
+    this.writes = result.catch(() => undefined)
+    return result
+  }
+
   async load(): Promise<ResolvedModelConfiguration[]> {
     try {
       let encrypted: Buffer
@@ -51,22 +72,26 @@ export class ModelVault {
   save(id: string, input: ResolvedModelConfiguration): Promise<boolean> {
     const save = async (): Promise<boolean> => {
       this.entries.set(identifier(id), resolvedModelConfiguration(input))
-      if (!this.writable || !this.cipher.isEncryptionAvailable()) return false
-      try {
-        const encrypted = this.cipher.encryptString(
-          JSON.stringify([...this.entries].map(([id, input]) => ({ id, input }))),
-        )
-        await mkdir(dirname(this.file), { recursive: true })
-        const temporary = `${this.file}.tmp`
-        await writeFile(temporary, encrypted, { mode: 0o600 })
-        await rename(temporary, this.file)
-        return true
-      } catch {
-        return false
-      }
+      return this.persist(this.entries)
     }
     const result = this.writes.then(save, save)
     this.writes = result.catch(() => undefined)
     return result
+  }
+
+  private async persist(entries: Map<string, ResolvedModelConfiguration>): Promise<boolean> {
+    if (!this.writable || !this.cipher.isEncryptionAvailable()) return false
+    try {
+      const encrypted = this.cipher.encryptString(
+        JSON.stringify([...entries].map(([id, input]) => ({ id, input }))),
+      )
+      await mkdir(dirname(this.file), { recursive: true })
+      const temporary = `${this.file}.tmp`
+      await writeFile(temporary, encrypted, { mode: 0o600 })
+      await rename(temporary, this.file)
+      return true
+    } catch {
+      return false
+    }
   }
 }

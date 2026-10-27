@@ -23,7 +23,7 @@ function repository() {
   const write = (path, value) => writeFileSync(join(cwd, path), JSON.stringify(value))
   const manifest = (version, dependencies = {}) => {
     write('apps/desktop/package.json', { name: 'desktop', version, dependencies })
-    write('apps/desktop/package-lock.json', { version, packages: { '': { version } } })
+    writeFileSync(join(cwd, 'apps/desktop/pnpm-lock.yaml'), "lockfileVersion: '9.0'\n")
   }
   const commit = () => {
     git('add', '.')
@@ -93,15 +93,13 @@ test.each([undefined, '', ' ', ' 0.2.0', 2, null])(
   },
 )
 
-test.each(['top-level', 'package'])('mismatched %s lockfile version is rejected', (location) => {
+test('a version-only change can retain the same pnpm dependency lock', () => {
   const repo = repository()
+  const previousLock = readFileSync(join(repo.cwd, 'apps/desktop/pnpm-lock.yaml'), 'utf8')
   repo.manifest('0.2.0')
-  repo.write('apps/desktop/package-lock.json', {
-    version: location === 'top-level' ? '0.1.0' : '0.2.0',
-    packages: { '': { version: location === 'package' ? '0.1.0' : '0.2.0' } },
-  })
   repo.commit()
-  assert.throws(() => desktopVersionChanged(repo), /root versions must match/)
+  assert.equal(readFileSync(join(repo.cwd, 'apps/desktop/pnpm-lock.yaml'), 'utf8'), previousLock)
+  assert.equal(desktopVersionChanged(repo).changed, true)
 })
 
 test.each([

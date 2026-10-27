@@ -190,6 +190,22 @@ test('one task reuses its named background group while different tasks stay sepa
   assert.equal(pages.get(1).active, true); assert.equal(pages.get(1).groupId, -1);
 });
 
+test('delegated sessions may use released family tabs without stealing or closing a teammate tab', async () => {
+  const { controller, removed } = fixture(); controller.allowNewTabs = true;
+  const root = 'c'.repeat(64);
+  const opened = await controller.call(A, 'chrome_open', { url: 'https://example.com/work' }, root);
+  assert.deepEqual((await controller.call(B, 'chrome_tabs', {}, 'd'.repeat(64))).tabs, []);
+  const siblingTabs = (await controller.call(B, 'chrome_tabs', {}, root)).tabs;
+  assert.equal(siblingTabs.length, 1); assert.equal(siblingTabs[0].busy, true);
+  await assert.rejects(controller.call(B, 'chrome_select_tab', { tab_id: opened.tab_id, origin: opened.origin }, root), /already controlled/);
+  await controller.call(A, 'chrome_release', {}, root);
+  const selected = await controller.call(B, 'chrome_select_tab', { tab_id: opened.tab_id, origin: opened.origin }, root);
+  assert.equal(selected.tab_id, opened.tab_id);
+  assert.equal((await controller.call(B, 'chrome_snapshot', {}, root)).tab_id, opened.tab_id);
+  const released = await controller.call(B, 'chrome_release', { close_owned: true }, root);
+  assert.equal(released.closed, false); assert.deepEqual(removed, []);
+});
+
 test('task layout survives native reconnect without restoring page grants or ownership', async () => {
   const { controller, pages, removed } = fixture(); controller.allowNewTabs = true;
   const task = 'a'.repeat(64);

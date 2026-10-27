@@ -328,15 +328,16 @@ export class MessageResourceStore {
     let bytes: Buffer
     let path: string | undefined
     if ('source' in reference) {
-      if (!run.workspace_path) throw new Error('此任务未关联项目，无法访问本地输出文件。')
-      const root = await realpath(run.workspace_path)
+      const directory = run.workspace_path ?? run.execution_directory
+      if (!directory) throw new Error('此任务没有可访问的本地工作目录。')
+      const root = await realpath(directory)
       const candidate = resolve(root, sourcePath(reference.source!))
       if (!within(root, candidate)) throw new Error('只能查看当前项目中的文件。')
       path = await realpath(candidate)
       if (!within(root, path)) throw new Error('文件指向项目之外，无法预览。')
       name = basename(path)
       bytes = await readBounded(path, MAX_RESOURCE_BYTES)
-      if ((await realpath(candidate)) !== path || (await realpath(run.workspace_path)) !== root)
+      if ((await realpath(candidate)) !== path || (await realpath(directory)) !== root)
         throw new Error('文件路径已变化，请重试。')
     } else if (reference.imageIndex !== undefined) {
       const image = (await this.backend.request({

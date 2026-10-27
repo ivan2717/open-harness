@@ -20,6 +20,18 @@ struct Ledger {
     inboxes: BTreeMap<String, Vec<AgentMessage>>,
     completions: BTreeMap<String, u64>,
     user_stopped: BTreeSet<String>,
+    #[serde(default)]
+    deliveries: BTreeMap<String, u64>,
+}
+
+impl Ledger {
+    fn record_delivery(&mut self, recipient: &str) -> io::Result<()> {
+        let revision = self.deliveries.entry(recipient.into()).or_default();
+        *revision = revision
+            .checked_add(1)
+            .ok_or_else(|| io::Error::other("mailbox revision exhausted"))?;
+        Ok(())
+    }
 }
 
 pub(crate) struct Mailboxes {
@@ -114,6 +126,7 @@ impl Mailboxes {
                 sender: sender.into(),
                 text,
             });
+            ledger.record_delivery(recipient)?;
             Ok(id)
         })
     }
@@ -148,6 +161,7 @@ impl Mailboxes {
                     text,
                 });
             ledger.completions.insert(child.into(), sequence);
+            ledger.record_delivery(recipient)?;
             Ok(())
         })
     }
@@ -166,6 +180,20 @@ impl Mailboxes {
             .get(recipient)
             .map(|messages| messages.iter().take(8).cloned().collect())
             .unwrap_or_default())
+    }
+    /// Receipt activity survives acknowledgements and restart. Global notify
+    /// and acknowledgements do not count as new work for this recipient.
+    pub fn delivery_revision(&self, recipient: &str) -> io::Result<u64> {
+        if self.uncertain.load(Ordering::Acquire) {
+            return Err(io::Error::other("message ledger requires recovery"));
+        }
+        Ok(*self
+            .ledger
+            .lock()
+            .map_err(|_| io::Error::other("mailbox lock poisoned"))?
+            .deliveries
+            .get(recipient)
+            .unwrap_or(&0))
     }
     pub fn needs_completion(&self, child: &str, sequence: u64) -> io::Result<bool> {
         if self.uncertain.load(Ordering::Acquire) {

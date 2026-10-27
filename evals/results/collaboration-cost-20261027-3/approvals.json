@@ -1,0 +1,27 @@
+[
+  {
+    "id": "command-1793085574673759000-1",
+    "task_title": "reconcile_independent",
+    "command": "'/Users/jiangtao/Desktop/open-harness/apps/desktop/resources/workspace-runtime/python/bin/python3' -I -B .openharness-tmp/reconcile_independent.py",
+    "cwd": "/private/var/folders/rv/ghrq1zqn405dtldv_2vymry80000gn/T/openharness-continuity-FwTan2/workspace",
+    "execution_mode": "sandboxed",
+    "network_access": "denied",
+    "access": "read_only",
+    "allow": true,
+    "scope": "once",
+    "approved_by": "evaluation_driver",
+    "time": "2026-10-27T07:19:34.860Z"
+  },
+  {
+    "id": "command-1793085626416689000-1",
+    "command": "'/Users/jiangtao/Desktop/open-harness/apps/desktop/resources/workspace-runtime/node/bin/node' -e 'const fs=require(\"node:fs\"); const x=JSON.parse(fs.readFileSync(\"outputs/continuity.json\",\"utf8\")); if (!Array.isArray(x.refund_ids) || x.refund_ids.join(\",\") !== \"R301,R302,R303\" || x.applied_refund !== 60 || x.net_received !== 415 || x.unpaid_before_refunds !== 225 || !Array.isArray(x.evidence) || !x.evidence.some(s=>s.includes(\"CORRECTION-ORCHID\") && s.includes(\"event-4\") && s.includes(\"R303 已经人工核实为 settled\"))) process.exit(1); console.log(\"JSON parse and reconciliation/evidence assertions passed\");'",
+    "cwd": "/private/var/folders/rv/ghrq1zqn405dtldv_2vymry80000gn/T/openharness-continuity-FwTan2/workspace",
+    "execution_mode": "sandboxed",
+    "network_access": "denied",
+    "access": "read_only",
+    "allow": true,
+    "scope": "once",
+    "approved_by": "evaluation_driver",
+    "time": "2026-10-27T07:20:26.426Z"
+  }
+]

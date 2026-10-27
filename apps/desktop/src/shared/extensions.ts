@@ -70,6 +70,8 @@ export interface ExtensionApproval {
   operation: string
   arguments: unknown
   session_scope?: ControlScope
+  source_run_id?: string
+  task_title?: string
 }
 export type ControlScope =
   | { kind: 'browser' }
@@ -81,6 +83,8 @@ export interface ControlAccess {
   server_name: string
   scope: ControlScope
   remembered: boolean
+  source_run_id?: string
+  task_title?: string
 }
 export interface BundledPlugin {
   id: 'browser-use' | 'computer-use' | 'chrome-use'

@@ -15,6 +15,16 @@ pub struct ModelInfo {
     pub description: String,
     pub available: bool,
     pub context_window: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<ModelReasoning>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelReasoning {
+    pub default_effort: Option<String>,
+    pub supported_efforts: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capability: Option<agent_providers::ReasoningCapability>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -35,7 +45,13 @@ pub struct Delegation {
     pub parent_run_id: String,
     pub root_run_id: String,
     pub task_name: String,
-    pub write_paths: Vec<String>,
+    /// None inherits the parent's workspace permissions. An explicit list
+    /// restricts writes to leased files; an empty list is read-only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub write_paths: Option<Vec<String>>,
+    /// None follows the parent's model at each subsequent delegation turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_override: Option<UpdateRunModelInput>,
     pub spawn_call_id: String,
 }
 
@@ -62,12 +78,34 @@ pub struct RunSummary {
     #[serde(default)]
     pub compacting: bool,
     pub model_id: String,
+    /// None uses the registered model's reasoning settings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
+    /// Zero identifies selections persisted before model capability validation.
+    /// Only historical restoration may retain these legacy request semantics.
+    #[serde(default)]
+    pub reasoning_settings_version: u8,
+    /// Explicit boundary after which provider-native replay belongs to this binding.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_history_through: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_path: Option<String>,
+    /// Private, host-created files for a conversation without a selected project.
+    /// This is never accepted from a create request or listed as a user project.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_directory: Option<String>,
     #[serde(default)]
     pub permission_mode: agent_local::PermissionMode,
     pub created_at: String,
     pub updated_at: String,
+}
+
+impl RunSummary {
+    pub fn working_directory(&self) -> Option<&str> {
+        self.workspace_path
+            .as_deref()
+            .or(self.execution_directory.as_deref())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -186,6 +224,8 @@ pub struct CreateRunInput {
     pub files: Vec<agent_core::TextFileReference>,
     pub model_id: String,
     #[serde(default)]
+    pub reasoning_effort: Option<String>,
+    #[serde(default)]
     pub workspace_path: Option<String>,
     #[serde(default)]
     pub permission_mode: agent_local::PermissionMode,
@@ -203,6 +243,8 @@ pub struct ResumeRunInput {
 #[serde(deny_unknown_fields)]
 pub struct ApprovalInput {
     pub allow: bool,
+    #[serde(default)]
+    pub scope: agent_local::CommandApprovalScope,
 }
 
 #[derive(Debug, Deserialize)]
@@ -232,7 +274,25 @@ pub struct ConfigureModel {
     pub reasoning_mode: String,
     pub reasoning_effort: String,
     #[serde(default)]
+    pub reasoning_capability: Option<agent_providers::ReasoningCapability>,
+    #[serde(default)]
+    pub reasoning_default: Option<String>,
+    #[serde(default)]
     pub supports_images: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReplaceModelInput {
+    pub replacement_model_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateRunModelInput {
+    pub model_id: String,
+    /// Omitted/null resets to the chosen model's configured default.
+    pub reasoning_effort: Option<String>,
 }
 
 #[cfg(test)]

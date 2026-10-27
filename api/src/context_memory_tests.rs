@@ -95,6 +95,8 @@ impl Fixture {
             max_output_tokens: 4_096,
             reasoning_mode: "off".into(),
             reasoning_effort: "medium".into(),
+            reasoning_capability: None,
+            reasoning_default: None,
         })
         .unwrap();
         let memory = Arc::new(WikiMemory::new(
@@ -104,6 +106,9 @@ impl Fixture {
         let snapshot = Snapshot::new(
             RunDetail {
                 summary: RunSummary {
+                    reasoning_settings_version: 1,
+                    reasoning_effort: None,
+                    model_history_through: None,
                     delegation: None,
                     execution_policy: Default::default(),
                     compacting: false,
@@ -114,6 +119,7 @@ impl Fixture {
                     status: RunStatus::Running,
                     model_id: "fixture".into(),
                     workspace_path: None,
+                    execution_directory: None,
                     permission_mode: Default::default(),
                     created_at: String::new(),
                     updated_at: String::new(),

@@ -28,7 +28,7 @@ const execute = promisify(execFile)
 const EXTENSION_ID = 'keibjmjjimfgkikahpjgbfebiglbjkee'
 const HOST_NAME = 'dev.openharness.chrome'
 
-/** User-initiated Native Messaging registration. No Chrome profile is modified. */
+/** Explicit setup and maintenance of an existing connection. No Chrome profile is modified. */
 export class ChromeConnection {
   readonly configPath: string
   readonly extensionPath: string
@@ -163,8 +163,33 @@ export class ChromeConnection {
   }
 
   prepare(): Promise<void> {
+    return this.prepareConnection(false)
+  }
+
+  /** Refresh an opted-in installation without opening Chrome or reconnecting it.
+   * Unpacked extensions need one Chrome reload to use updated worker code.
+   */
+  async refreshExisting(): Promise<void> {
+    // Missing configuration or registration can be intentional. Startup must
+    // not install a connection or undo removal of its native host.
+    try {
+      await access(this.configPath)
+      await access(this.manifestPath())
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return
+      throw error
+    }
+    if (
+      this.options.platform === 'win32' &&
+      !(await windowsChromeHostRegistered(this.manifestPath()))
+    )
+      return
+    await this.prepareConnection(true)
+  }
+
+  private prepareConnection(existingOnly: boolean): Promise<void> {
     if (this.preparing) return this.preparing
-    this.preparing = this.register().finally(() => {
+    this.preparing = this.register(existingOnly).finally(() => {
       this.preparing = undefined
     })
     return this.preparing
@@ -186,7 +211,7 @@ export class ChromeConnection {
     return join(directory, `${HOST_NAME}.json`)
   }
 
-  private async register(): Promise<void> {
+  private async register(existingOnly: boolean): Promise<void> {
     if (!['darwin', 'linux', 'win32'].includes(this.options.platform))
       throw new Error('目前支持 Windows、macOS 和 Linux 上的 Chrome。')
     await ordinaryDirectory(this.options.root)
@@ -221,11 +246,12 @@ export class ChromeConnection {
         const previous = JSON.parse(await handle.readFile('utf8'))
         if (previous.extensionId === EXTENSION_ID && /^[a-f0-9]{64}$/.test(previous.token))
           token = previous.token
+        else if (existingOnly) throw new Error('Invalid existing connection')
       } finally {
         await handle.close()
       }
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT')
+      if (existingOnly || (error as NodeJS.ErrnoException).code !== 'ENOENT')
         throw new Error('Chrome 连接配置无效，请检查本地配置文件权限。')
     }
     await exportExtension(this.bundledExtensionPath, this.extensionPath)
@@ -354,6 +380,12 @@ async function copyExtension(source: string, target: string): Promise<void> {
 }
 
 async function exportExtension(source: string, target: string): Promise<void> {
+  const sourceDigest = await extensionDigest(source)
+  try {
+    if (sourceDigest === (await extensionDigest(target))) return
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+  }
   // Build the complete replacement first. Failed copies never disturb the
   // directory Chrome may already have loaded, and removed package files vanish.
   const stage = await mkdtemp(join(target, '..', '.extension-'))
@@ -379,6 +411,28 @@ async function exportExtension(source: string, target: string): Promise<void> {
   } finally {
     await rm(stage, { recursive: true, force: true })
   }
+}
+
+async function extensionDigest(directory: string): Promise<string> {
+  await ordinaryDirectory(directory)
+  const hash = createHash('sha256')
+  for (const entry of (await readdir(directory, { withFileTypes: true })).sort((a, b) =>
+    a.name.localeCompare(b.name),
+  )) {
+    if (entry.name === '.' || entry.name === '..' || /[/\\]/.test(entry.name))
+      throw new Error('Chrome 扩展包含无效文件路径。')
+    hash.update(JSON.stringify([entry.name, entry.isDirectory()]))
+    const path = join(directory, entry.name)
+    if (entry.isDirectory()) hash.update(await extensionDigest(path))
+    else if (entry.isFile())
+      hash.update(
+        createHash('sha256')
+          .update(await regularFile(path))
+          .digest('hex'),
+      )
+    else throw new Error('Chrome 扩展包含符号链接或无效文件。')
+  }
+  return hash.digest('hex')
 }
 
 async function privateDirectory(path: string, windows = false): Promise<void> {

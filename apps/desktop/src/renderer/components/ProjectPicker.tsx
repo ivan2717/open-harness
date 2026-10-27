@@ -4,11 +4,15 @@ import { ComposerMenu } from './ComposerMenu'
 
 export function ProjectPicker({
   project,
+  executionDirectory,
+  onRevealWorkspace,
   onChoose,
   onChange,
   disabled,
 }: {
   project?: ProjectSelection | null
+  executionDirectory?: string | null
+  onRevealWorkspace?: () => void
   onChoose?: () => void
   onChange?: (project: ProjectSelection | null) => void
   disabled?: boolean
@@ -52,6 +56,18 @@ export function ProjectPicker({
           >
             <FolderOpen size={16} />
             <span>选择项目</span>
+          </button>
+        ) : executionDirectory && !project ? (
+          <button
+            type="button"
+            className="composer-context-project"
+            aria-label="打开会话文件夹"
+            title={`此会话的脚本和生成文件保存在这里：${executionDirectory}`}
+            onClick={onRevealWorkspace}
+            disabled={!onRevealWorkspace}
+          >
+            <FolderOpen size={16} />
+            <span>会话文件</span>
           </button>
         ) : (
           <span
