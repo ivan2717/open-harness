@@ -126,14 +126,18 @@ jobs:
           restore-keys: windows-x64-checks-rust-
       - run: pnpm install --frozen-lockfile
       - name: Build Windows command sandbox helper
+        id: sandbox-helper
         run: cargo build -p agent-local --bin openharness-sandbox --locked
       - name: Check Windows local command permissions, sandbox, and lifecycle
         run: cargo test -p agent-local --all-targets --locked --no-fail-fast
       - name: Check Windows API execution and runtime shutdown
+        if: ${{ !cancelled() && steps.sandbox-helper.outcome == 'success' }}
         run: cargo test -p api --lib --test local_workspace --test parent_lifetime --locked --no-fail-fast
       - name: Check Windows launcher lifecycle
+        if: ${{ !cancelled() && steps.sandbox-helper.outcome == 'success' }}
         run: cargo test -p chrome-native-host --all-targets --locked
       - name: Check Windows desktop runtime and paths
+        if: ${{ !cancelled() && steps.sandbox-helper.outcome == 'success' }}
         run: >-
           pnpm exec vitest run
           scripts/workspace-runtime-node.test.mjs
@@ -145,6 +149,7 @@ jobs:
           src/main/chrome-connection.windows.test.ts
           src/main/chrome-windows.test.ts
       - name: Check Windows Chrome transport
+        if: ${{ !cancelled() && steps.sandbox-helper.outcome == 'success' }}
         run: node --test ../../plugins/chrome-use/tests/bridge.test.mjs ../../plugins/chrome-use/tests/launch.test.mjs ../../plugins/chrome-use/tests/controller.test.mjs
 
   windows:
