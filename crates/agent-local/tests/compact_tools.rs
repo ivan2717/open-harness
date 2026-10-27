@@ -362,16 +362,22 @@ async fn patch_undo_preserves_intervening_user_permission_changes() {
 async fn oversized_patch_response_is_rejected_before_any_mutation() {
     let fixture = Fixture::new();
     let tools = fixture.tools(PermissionMode::WorkspaceWrite);
+    // Windows rejects control characters in filenames before response sizing.
+    // Its canonical workspace path supports long paths, so use legal Unicode
+    // components to exceed the same UTF-8 response budget on that platform.
+    let prefix = if cfg!(windows) {
+        format!("{}/", vec!["文".repeat(80); 5].join("/"))
+    } else {
+        "\u{1}".repeat(200)
+    };
     let body = (0..64)
-        .map(|index| format!("*** Add File: {}{index}\n+new", "\u{1}".repeat(200)))
+        .map(|index| format!("*** Add File: {prefix}{index}\n+new"))
         .collect::<Vec<_>>()
         .join("\n");
+    let error = patch(&tools, &body).await.unwrap_err();
     assert!(
-        patch(&tools, &body)
-            .await
-            .unwrap_err()
-            .to_string()
-            .contains("result exceeds")
+        error.to_string().contains("result exceeds"),
+        "expected response-size rejection before mutation, got {error:?}"
     );
     assert_eq!(fs::read_dir(&fixture.root).unwrap().count(), 0);
     assert!(tools.review().unwrap().changes.is_empty());
