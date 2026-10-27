@@ -96,6 +96,20 @@ impl AppState {
                 ));
             }
         }
+        let update_binding = |detail: &mut RunDetail| {
+            detail.summary.model_id = replacement_id.to_owned();
+            // Explicit child selections are reused on every follow-up. Migrate
+            // the durable pin together with its current runtime binding.
+            if let Some(selection) = detail
+                .summary
+                .delegation
+                .as_mut()
+                .and_then(|delegation| delegation.model_override.as_mut())
+                .filter(|selection| selection.model_id == id)
+            {
+                selection.model_id = replacement_id.to_owned();
+            }
+        };
         for entry in entries {
             entry
                 .runtime
@@ -104,7 +118,7 @@ impl AppState {
                 .await;
             let mut detail = entry.snapshot.get();
             let run_id = detail.summary.id.clone();
-            detail.summary.model_id = replacement_id.to_owned();
+            update_binding(&mut detail);
             let restored = self.make_entry_with_snapshot(
                 detail,
                 0,
@@ -116,7 +130,7 @@ impl AppState {
             // binding before exposing the new runtime. On failure, both model
             // configurations remain available for earlier and remaining runs.
             entry.snapshot.update(|detail| {
-                detail.summary.model_id = replacement_id.to_owned();
+                update_binding(detail);
                 let context = detail.context.get_or_insert_with(initial_context);
                 context.window_tokens = policy.model_budget().context_window();
                 context.input_budget = policy.input_token_limit();

@@ -157,19 +157,30 @@ async fn opt_in_repeated_compaction_preserves_all_user_inputs_and_recoverable_ev
     let compactor = ForgetfulCompactor::default();
     let checkpoints = InMemoryContextCheckpointStore::new();
     let counter = ApproximateTokenCounter::new(1).unwrap();
+    let access = EventStoreHistoryAccess::new();
+    let history_tools = HistoryAccess::<InMemoryEventStore>::definitions(&access).to_vec();
+    let history_tool_tokens = counter.count_tokens(&ModelRequest {
+        instructions: String::new(),
+        messages: Vec::new(),
+        tools: history_tools.clone(),
+        max_output_tokens: None,
+        provider_context: None,
+    });
+    // Soft compaction keeps the latest complete tool step. Budget separately
+    // for that step, the verbatim user inputs and summary, then add the actual
+    // history schemas so description changes cannot consume retained evidence.
+    let compaction_target = 2_000 + history_tool_tokens;
     let policy = ContextPolicy::builder()
         .preserve_all_user_messages(true)
         .input_token_limit(16_000)
-        .compaction_threshold(5_000)
-        .compaction_target(3_500)
+        .compaction_threshold(compaction_target + 1_500)
+        .compaction_target(compaction_target)
         .recent_tail_tokens(1_500)
         .max_tool_output_chars(600)
         .build()
         .unwrap();
     let manager =
         CompactingContextManager::new(policy, compactor.clone(), checkpoints.clone(), counter);
-    let access = EventStoreHistoryAccess::new();
-    let history_tools = HistoryAccess::<InMemoryEventStore>::definitions(&access).to_vec();
     let mut expected_users = vec![initial];
     let mut previous_boundary = None;
     let mut latest_omission = None;
@@ -197,7 +208,12 @@ async fn opt_in_repeated_compaction_preserves_all_user_inputs_and_recoverable_ev
         assert_eq!(prepared.request.instructions, INSTRUCTIONS);
         assert_eq!(user_messages(&prepared.request), expected_users);
         assert_complete_tool_groups(&prepared.request);
-        assert!(counter.count_tokens(&prepared.request) <= policy.compaction_target());
+        assert!(
+            counter.count_tokens(&prepared.request) <= policy.compaction_target(),
+            "round {round}: context costs {} tokens, including {history_tool_tokens} schema tokens; target is {}",
+            counter.count_tokens(&prepared.request),
+            policy.compaction_target(),
+        );
         assert!(previous_boundary.is_none_or(|previous| omitted.through_sequence > previous));
         assert!(
             prepared

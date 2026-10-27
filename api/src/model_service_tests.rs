@@ -5,8 +5,10 @@ use agent_runtime::{
     ModelResponse,
 };
 use axum::{
+    Json, Router,
     body::{Body, to_bytes},
     http::{Request, StatusCode},
+    routing::post,
 };
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -37,6 +39,10 @@ fn input(window: usize) -> ConfigureModel {
 
 impl Fixture {
     async fn new() -> Self {
+        Self::with_base_url("http://127.0.0.1:1/v1").await
+    }
+
+    async fn with_base_url(base_url: &str) -> Self {
         let directory = std::env::temp_dir().join(format!(
             "openharness-model-replacement-{}-{}",
             std::process::id(),
@@ -45,8 +51,12 @@ impl Fixture {
         let state = AppState::open_with_delay(directory.clone(), None, Duration::ZERO)
             .await
             .unwrap();
-        let old = state.configure_model(input(8192)).await.unwrap();
-        let replacement = state.configure_model(input(1_000_000)).await.unwrap();
+        let mut original = input(8192);
+        original.base_url = base_url.into();
+        let mut updated = input(1_000_000);
+        updated.base_url = base_url.into();
+        let old = state.configure_model(original).await.unwrap();
+        let replacement = state.configure_model(updated).await.unwrap();
         Self {
             directory,
             state,
@@ -126,6 +136,165 @@ impl Fixture {
             .replace_model(&self.old.id, &self.replacement.id)
             .await
     }
+}
+
+async fn wait_for_completed_child(state: &AppState, id: &str) {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while state.entry(id).unwrap().background.load(Ordering::Acquire) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let detail = state.get(id).unwrap();
+    assert_eq!(
+        detail.summary.status,
+        RunStatus::Completed,
+        "{:?}",
+        detail.error
+    );
+}
+
+#[tokio::test]
+async fn replacing_capacity_migrates_pinned_child_models_and_preserves_followup_after_restart() {
+    let requests = Arc::new(std::sync::Mutex::new(Vec::<Value>::new()));
+    let recorded = requests.clone();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base_url = format!("http://{}/v1", listener.local_addr().unwrap());
+    let server = tokio::spawn(
+        axum::serve(
+            listener,
+            Router::new().route(
+                "/v1/chat/completions",
+                post(move |Json(body): Json<Value>| {
+                    recorded.lock().unwrap().push(body);
+                    async {
+                        Json(json!({
+                            "id":"capacity-child-response",
+                            "choices":[{"message":{"role":"assistant","content":"Verified child result"},"finish_reason":"stop"}],
+                            "usage":{"prompt_tokens":100,"completion_tokens":10}
+                        }))
+                    }
+                }),
+            ),
+        )
+        .into_future(),
+    );
+    let fixture = Fixture::with_base_url(&base_url).await;
+    let mut other_config = input(8192);
+    other_config.base_url = base_url.clone();
+    other_config.model = "other-model".into();
+    let other = fixture.state.configure_model(other_config).await.unwrap();
+    let parent = fixture.conversation("parent").await;
+    parent
+        .snapshot
+        .update(|detail| detail.summary.status = RunStatus::Running)
+        .unwrap();
+    let mut children = Vec::new();
+    for (task, model_id, effort) in [
+        ("migrated", fixture.old.id.as_str(), "low"),
+        ("unrelated", other.id.as_str(), "high"),
+    ] {
+        let spawned: Value = serde_json::from_str(
+            &fixture
+                .state
+                .collaboration_call(
+                    "parent",
+                    agent_runtime::ToolCall {
+                        id: format!("spawn-{task}"),
+                        name: "spawn_agent".into(),
+                        arguments: json!({
+                            "task_name":task,"task":"Check the evidence",
+                            "model":{"model_id":model_id,"reasoning_effort":effort}
+                        })
+                        .to_string(),
+                    },
+                )
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let id = spawned["agent_id"].as_str().unwrap().to_owned();
+        wait_for_completed_child(&fixture.state, &id).await;
+        children.push(id);
+    }
+    parent
+        .snapshot
+        .update(|detail| detail.summary.status = RunStatus::WaitingForInput)
+        .unwrap();
+    let unrelated_before = serde_json::to_value(fixture.state.get(&children[1]).unwrap()).unwrap();
+    fixture.replace().await.unwrap();
+
+    let migrated = fixture.state.get(&children[0]).unwrap().summary;
+    assert_eq!(migrated.model_id, fixture.replacement.id);
+    let selection = migrated.delegation.unwrap().model_override.unwrap();
+    assert_eq!(selection.model_id, fixture.replacement.id);
+    assert_eq!(selection.reasoning_effort.as_deref(), Some("low"));
+    assert_eq!(migrated.reasoning_effort.as_deref(), Some("low"));
+    assert_eq!(
+        serde_json::to_value(fixture.state.get(&children[1]).unwrap()).unwrap(),
+        unrelated_before
+    );
+    fixture.state.shutdown().await;
+
+    // Restore only the replacement and the unrelated connection. A stale pin
+    // cannot silently fall back to an old profile still registered in memory.
+    let restored = AppState::open_with_delay(fixture.directory.clone(), None, Duration::ZERO)
+        .await
+        .unwrap();
+    let mut replacement_config = input(1_000_000);
+    replacement_config.base_url = base_url.clone();
+    restored.configure_model(replacement_config).await.unwrap();
+    let mut other_config = input(8192);
+    other_config.base_url = base_url;
+    other_config.model = "other-model".into();
+    restored.configure_model(other_config).await.unwrap();
+    restored
+        .entry("parent")
+        .unwrap()
+        .snapshot
+        .update(|detail| detail.summary.status = RunStatus::Running)
+        .unwrap();
+    for (id, expected_model, effort) in [
+        (&children[0], &fixture.replacement.id, "low"),
+        (&children[1], &other.id, "high"),
+    ] {
+        let saved = restored.get(id).unwrap().summary;
+        assert_eq!(&saved.model_id, expected_model);
+        assert_eq!(
+            saved.delegation.unwrap().model_override.unwrap(),
+            crate::contracts::UpdateRunModelInput {
+                model_id: expected_model.clone(),
+                reasoning_effort: Some(effort.into()),
+            }
+        );
+        restored
+            .collaboration_call(
+                "parent",
+                agent_runtime::ToolCall {
+                    id: format!("followup-{id}"),
+                    name: "agent_control".into(),
+                    arguments: json!({
+                        "action":"followup","target":id,"message":"Recheck the evidence"
+                    })
+                    .to_string(),
+                },
+            )
+            .await
+            .unwrap();
+        wait_for_completed_child(&restored, id).await;
+        assert_eq!(&restored.get(id).unwrap().summary.model_id, expected_model);
+    }
+    {
+        let requests = requests.lock().unwrap();
+        assert_eq!(requests.len(), 4);
+        assert_eq!(requests[2]["model"], "fixture-model");
+        assert_eq!(requests[2]["reasoning_effort"], "low");
+        assert_eq!(requests[3]["model"], "other-model");
+        assert_eq!(requests[3]["reasoning_effort"], "high");
+    }
+    restored.shutdown().await;
+    server.abort();
 }
 
 impl Drop for Fixture {

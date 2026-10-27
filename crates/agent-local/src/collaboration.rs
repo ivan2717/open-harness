@@ -302,11 +302,11 @@ impl LocalTools {
             ));
         }
         if let Some(binding) = &self.collaboration {
-            if binding.allowed.is_some() {
+            if let Some(allowed) = &binding.allowed {
                 return Err(paths::denied(&format!(
                     "file-scoped run {} can only execute read-only sandboxed commands; write through file tools within {}. If the task needs a workspace-writing command, ask the coordinator to stop it and resume with write_paths:null to inherit its permission",
                     binding.owner,
-                    describe_paths(binding.allowed.as_ref().unwrap()),
+                    describe_paths(allowed),
                 )));
             }
             let leases = binding.access.inner.leases.lock().map_err(lock_error)?;
