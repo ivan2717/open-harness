@@ -39,10 +39,10 @@ fn input(window: usize) -> ConfigureModel {
 
 impl Fixture {
     async fn new() -> Self {
-        Self::with_base_url("http://127.0.0.1:1/v1").await
+        Self::with_base_url("http://127.0.0.1:1/v1", 8192).await
     }
 
-    async fn with_base_url(base_url: &str) -> Self {
+    async fn with_base_url(base_url: &str, context_window: usize) -> Self {
         let directory = std::env::temp_dir().join(format!(
             "openharness-model-replacement-{}-{}",
             std::process::id(),
@@ -51,7 +51,7 @@ impl Fixture {
         let state = AppState::open_with_delay(directory.clone(), None, Duration::ZERO)
             .await
             .unwrap();
-        let mut original = input(8192);
+        let mut original = input(context_window);
         original.base_url = base_url.into();
         let mut updated = input(1_000_000);
         updated.base_url = base_url.into();
@@ -157,6 +157,9 @@ async fn wait_for_completed_child(state: &AppState, id: &str) {
 
 #[tokio::test]
 async fn replacing_capacity_migrates_pinned_child_models_and_preserves_followup_after_restart() {
+    // Leave room for platform-specific command tool schemas so every mock
+    // request exercises a delegated turn. Compaction has its own test fixtures.
+    const TASK_CONTEXT_WINDOW: usize = 128_000;
     let requests = Arc::new(std::sync::Mutex::new(Vec::<Value>::new()));
     let recorded = requests.clone();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -180,8 +183,8 @@ async fn replacing_capacity_migrates_pinned_child_models_and_preserves_followup_
         )
         .into_future(),
     );
-    let fixture = Fixture::with_base_url(&base_url).await;
-    let mut other_config = input(8192);
+    let fixture = Fixture::with_base_url(&base_url, TASK_CONTEXT_WINDOW).await;
+    let mut other_config = input(TASK_CONTEXT_WINDOW);
     other_config.base_url = base_url.clone();
     other_config.model = "other-model".into();
     let other = fixture.state.configure_model(other_config).await.unwrap();
@@ -245,7 +248,7 @@ async fn replacing_capacity_migrates_pinned_child_models_and_preserves_followup_
     let mut replacement_config = input(1_000_000);
     replacement_config.base_url = base_url.clone();
     restored.configure_model(replacement_config).await.unwrap();
-    let mut other_config = input(8192);
+    let mut other_config = input(TASK_CONTEXT_WINDOW);
     other_config.base_url = base_url;
     other_config.model = "other-model".into();
     restored.configure_model(other_config).await.unwrap();

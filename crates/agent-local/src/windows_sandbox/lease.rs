@@ -19,9 +19,8 @@ use windows_sys::Win32::{
         PSID,
     },
     Storage::FileSystem::{
-        DELETE, FILE_ALL_ACCESS, FILE_APPEND_DATA, FILE_ATTRIBUTE_REPARSE_POINT,
-        FILE_GENERIC_EXECUTE, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_WRITE_ATTRIBUTES,
-        FILE_WRITE_DATA, FILE_WRITE_EA, WRITE_DAC, WRITE_OWNER,
+        DELETE, FILE_ALL_ACCESS, FILE_ATTRIBUTE_REPARSE_POINT, FILE_DELETE_CHILD,
+        FILE_GENERIC_EXECUTE, FILE_GENERIC_READ, FILE_GENERIC_WRITE,
     },
     System::Threading::{
         CreateMutexW, GetCurrentProcess, GetProcessTimes, OpenProcess,
@@ -90,7 +89,13 @@ impl Lease {
                     !name.eq_ignore_ascii_case(".git") && protected_paths::denied_component(name)
                 })
             });
-            let linked = fs::symlink_metadata(&item)?.is_file() && acl::links(&item)? > 1;
+            let metadata = fs::symlink_metadata(&item)?;
+            let linked = metadata.is_file() && acl::links(&item)? > 1;
+            if metadata.is_dir() {
+                // A parent grant must not bypass a protected child's own ACL.
+                // Normal files are deleted through their own DELETE grant.
+                grants.push((item.clone(), FILE_DELETE_CHILD, DENY_ACCESS));
+            }
             if secret || linked {
                 grants.push((item, FILE_ALL_ACCESS, DENY_ACCESS));
             } else {
@@ -108,6 +113,9 @@ impl Lease {
             }
             write_roots.push(path.clone());
             for item in walk(&path)? {
+                if fs::symlink_metadata(&item)?.is_dir() {
+                    grants.push((item.clone(), FILE_DELETE_CHILD, DENY_ACCESS));
+                }
                 let relative = item.strip_prefix(&path).unwrap_or(&item);
                 let secret = relative.components().any(|part| {
                     part.as_os_str().to_str().is_none_or(|name| {
@@ -129,21 +137,13 @@ impl Lease {
                     }
                     grants.push((
                         item.clone(),
-                        FILE_GENERIC_READ | FILE_GENERIC_EXECUTE | FILE_GENERIC_WRITE | DELETE,
+                        FILE_GENERIC_READ
+                            | FILE_GENERIC_EXECUTE
+                            | if git { 0 } else { FILE_GENERIC_WRITE | DELETE },
                         GRANT_ACCESS,
                     ));
                     if git {
-                        grants.push((
-                            item,
-                            FILE_WRITE_DATA
-                                | FILE_APPEND_DATA
-                                | FILE_WRITE_ATTRIBUTES
-                                | FILE_WRITE_EA
-                                | DELETE
-                                | WRITE_DAC
-                                | WRITE_OWNER,
-                            DENY_ACCESS,
-                        ));
+                        grants.push((item, acl::WRITE_RIGHTS, DENY_ACCESS));
                     }
                 }
             }
@@ -155,8 +155,8 @@ impl Lease {
                 }
             }
         }
-        // Explicitly deny workspace mutation for read-only commands, including
-        // projects whose pre-existing ACL grants writes to all app packages.
+        // Remove workspace write rights for read-only commands. ACL setup fails
+        // closed if ambient app-package grants would bypass this restriction.
         // Their private scratch is outside this tree and keeps its own grant.
         let read_only_workspace = !write_roots
             .iter()
@@ -167,7 +167,7 @@ impl Lease {
             }
         }
         // A managed runtime remains read-only even if a user chose a workspace
-        // containing it. Explicit denies win over workspace grants/inheritance.
+        // containing it. Restrictions remove this SID's workspace write grants.
         for root in &request.read_paths {
             let root = checked(root)?;
             if write_roots

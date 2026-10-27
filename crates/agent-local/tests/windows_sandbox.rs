@@ -365,6 +365,8 @@ fn sandbox_probe() {
         "secret was readable"
     );
     assert!(fs::write(root.join("workspace/.git/config"), "changed").is_err());
+    assert!(fs::remove_file(root.join("workspace/.git/config")).is_err());
+    assert!(fs::write(root.join("workspace/.git/new.txt"), "new metadata").is_err());
     assert_eq!(
         fs::read_to_string(root.join("workspace/.git/config")).unwrap(),
         "git metadata"
@@ -382,6 +384,7 @@ fn sandbox_probe() {
         "shared library"
     );
     assert!(fs::write(root.join("runtime/library.txt"), "runtime mutation").is_err());
+    assert!(fs::remove_file(root.join("workspace/managed-runtime/library.txt")).is_err());
     assert_eq!(
         fs::read_to_string(root.join("workspace/managed-runtime/library.txt")).unwrap(),
         "overlapping runtime"

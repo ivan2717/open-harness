@@ -245,9 +245,9 @@ for line in sys.stdin:
         result={'tools':[{'name':'computer_select_app','description':'Fixture selection','inputSchema':{'type':'object'}}]}
     elif method=='tools/call':
         if mode=='serialized':
-            with open(marker,'a') as output: output.write('start\n')
+            with open(marker,'a',newline='\n') as output: output.write('start\n')
             time.sleep(0.1)
-            with open(marker,'a') as output: output.write('end\n')
+            with open(marker,'a',newline='\n') as output: output.write('end\n')
         else: pathlib.Path(marker).write_text('called')
         if mode=='hang': time.sleep(30)
         result={'isError': mode=='error','content':[{'type':'text','text':'fixture app selection refused' if mode=='error' else 'selected'}]}
@@ -258,7 +258,8 @@ for line in sys.stdin:
     else: result={}
     print(json.dumps({'jsonrpc':'2.0','id':req['id'],'result':result}),flush=True)
 "#).unwrap();
-        json!({"command":"python3","args":["${PLUGIN_ROOT}/fixture.py",mode,marker]})
+        let python = if cfg!(windows) { "python" } else { "python3" };
+        json!({"command":python,"args":["-u","${PLUGIN_ROOT}/fixture.py",mode,marker]})
     };
     fs::write(
         source.join("mcp.json"),
@@ -712,6 +713,15 @@ async fn failed_new_selection_releases_grant_client_and_desktop_lease() {
             .unwrap()
             .unwrap();
         assert!(result.is_err(), "fixture mode {mode} must fail");
+        if mode == "error" {
+            assert!(
+                result
+                    .unwrap_err()
+                    .to_string()
+                    .contains("fixture app selection refused"),
+                "the error fixture must return its intentional tool failure",
+            );
+        }
         assert!(
             host.controls.lock().unwrap().list("run-a").is_empty(),
             "failed {mode} selection retained a grant"
@@ -1068,7 +1078,8 @@ async fn failed_child_selection_never_leaks_a_family_session_grant() {
     host.approvals
         .decide_scoped("child", &approval.id, true, true)
         .unwrap();
-    assert!(complete_control(child).await.is_err());
+    let error = complete_control(child).await.unwrap_err();
+    assert!(error.to_string().contains("fixture app selection refused"));
     let binding = serde_json::to_string(&host.server(server).unwrap()).unwrap();
     assert!(
         !host
