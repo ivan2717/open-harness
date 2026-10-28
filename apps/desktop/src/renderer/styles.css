@@ -1040,6 +1040,50 @@ details[open] > summary .details-chevron {
 .file-references button:hover:not(:disabled) {
   background: #e2e8db;
 }
+.file-references li.file-reference-image {
+  position: relative;
+  align-items: flex-start;
+  padding: 6px;
+  border-radius: 10px;
+}
+.file-references .file-reference-image button.file-reference-preview,
+.file-references button.file-reference-image-preview {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 5px;
+  padding: 0;
+  max-width: 136px;
+}
+.file-reference-image .file-reference-name {
+  max-width: 136px;
+  font-size: 11px;
+}
+.file-reference-thumbnail {
+  display: block;
+  width: 136px;
+  height: 88px;
+  object-fit: contain;
+  border-radius: 6px;
+  background: #fff;
+}
+.file-reference-full-image {
+  display: block;
+  max-width: 100%;
+  max-height: 72vh;
+  margin: auto;
+  object-fit: contain;
+}
+.file-reference-image button.file-reference-remove {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 22px;
+  height: 22px;
+  border: 1px solid #d5ddcf;
+  border-radius: 50%;
+  background: #fff;
+}
 .run-header-meta {
   display: flex;
   align-items: center;
@@ -1416,6 +1460,12 @@ details[open] > summary .details-chevron {
   flex: 1;
   min-width: 0;
 }
+.settings-model-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+}
 .settings-model-refresh {
   display: inline-flex;
   align-items: center;
@@ -1445,7 +1495,9 @@ details[open] > summary .details-chevron {
   .settings-model-row > .settings-model {
     flex-basis: 100%;
   }
-  .settings-model-refresh {
+  .settings-model-actions {
+    flex-direction: row;
+    gap: 12px;
     margin-left: auto;
   }
 }
@@ -1845,6 +1897,23 @@ details[open] > summary .details-chevron {
 .model-save:hover:not(:disabled) {
   background: #e3eadd;
   border-color: #cbd7c1;
+}
+.model-form-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.model-cancel {
+  padding: 9px 12px;
+  border-radius: 7px;
+  font-size: 13px;
+  color: #677267;
+}
+.model-cancel:hover:not(:disabled) {
+  background: #eef1eb;
+}
+.model-editor {
+  scroll-margin-top: 24px;
 }
 .model-form > .settings-footnote {
   margin-top: 12px;

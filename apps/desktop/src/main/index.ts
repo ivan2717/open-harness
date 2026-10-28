@@ -37,13 +37,21 @@ import { ModelVault } from './model-vault'
 import { fetchModelMetadata } from './model-metadata'
 import { resolveReasoningCapability } from '../shared/model-reasoning'
 import { refreshModelContext } from './model-context'
+import { getModelConfiguration, updateModelConfiguration } from './model-edit'
 import { resolveModelLimits } from '../shared/model-limits'
 import { importClipboardFiles, importFilePaths } from './file-references'
+import { importImages } from './image-references'
 import {
   installMessageResourceBridge,
   registerMessageResourceScheme,
 } from './message-resource-bridge'
-import type { AppConfig, ConfigureModelInput, ModelInfo, RunSummary } from '../shared/contracts'
+import type {
+  AppConfig,
+  ConfigureModelInput,
+  ModelInfo,
+  RunSummary,
+  UpdateModelInput,
+} from '../shared/contracts'
 
 const dataDirectory = process.env.OPENHARNESS_DESKTOP_DATA_DIR
 if (dataDirectory) {
@@ -96,6 +104,10 @@ function assertSender(event: IpcMainInvokeEvent | IpcMainEvent): void {
 }
 
 function installBridge(): void {
+  const importAttachment = (name: string, bytes: Buffer) => {
+    if (!backend) throw new Error('本地服务正在启动，请稍后添加。')
+    return backend.importAttachment(name, bytes)
+  }
   ipcMain.handle(channels.bundledPlugins, async (event) => {
     assertSender(event)
     return bundledPlugins!.list()
@@ -207,15 +219,19 @@ function installBridge(): void {
       buttonLabel: '添加引用',
       properties: ['openFile', 'multiSelections'],
     })
-    return importFilePaths(result.canceled ? [] : result.filePaths)
+    return importFilePaths(result.canceled ? [] : result.filePaths, importAttachment)
   })
   ipcMain.handle(channels.importFiles, async (event, paths: unknown) => {
     assertSender(event)
-    return importFilePaths(paths)
+    return importFilePaths(paths, importAttachment)
   })
-  ipcMain.handle(channels.pasteFiles, async (event) => {
+  ipcMain.handle(channels.importImages, (event, images: unknown) => {
     assertSender(event)
-    return importClipboardFiles(() => clipboard.read())
+    return importImages(images)
+  })
+  ipcMain.handle(channels.pasteFiles, async (event, selection: unknown) => {
+    assertSender(event)
+    return importClipboardFiles(() => clipboard.read(), importAttachment, selection)
   })
   ipcMain.handle(channels.chooseWorkspace, async (event) => {
     assertSender(event)
@@ -248,6 +264,20 @@ function installBridge(): void {
       await workspaces.verify(mapped.body.workspace_path)
     }
     await modelsReady
+    const modelConfigurationRoute = /^\/api\/models\/([a-zA-Z0-9_-]+)\/configuration$/.exec(
+      mapped.path,
+    )
+    if (modelConfigurationRoute) {
+      if (!modelVault) throw new Error('模型配置尚未就绪')
+      return mapped.method === 'GET'
+        ? getModelConfiguration(modelConfigurationRoute[1], modelVault)
+        : updateModelConfiguration(
+            modelConfigurationRoute[1],
+            mapped.body as UpdateModelInput,
+            backend,
+            modelVault,
+          )
+    }
     const refreshContext = /^\/api\/models\/([a-zA-Z0-9_-]+)\/context\/refresh$/.exec(mapped.path)
     if (refreshContext) {
       if (!modelVault) throw new Error('模型配置尚未就绪')

@@ -1,9 +1,10 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
-import { randomBytes } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import { win32 } from 'node:path'
-import type { ApiRequest } from './protocol'
+import { fileReferences, type ApiRequest } from './protocol'
 import { consumeSse } from './sse'
-import type { RunDetail } from '../shared/contracts'
+import type { RunDetail, StoredFileReference } from '../shared/contracts'
+import { MAX_ATTACHMENT_SOURCE_BYTES, MAX_REFERENCE_FILES } from '../shared/file-references'
 
 export function backendSandboxEnvironment(
   binary: string,
@@ -179,6 +180,113 @@ export class Backend {
       throw new Error(message)
     }
     return body
+  }
+
+  /** Store original bytes locally; only the returned reference enters the prompt. */
+  async importAttachment(name: string, bytes: Buffer): Promise<StoredFileReference> {
+    if (bytes.length > MAX_ATTACHMENT_SOURCE_BYTES) throw new Error('文件超过 100 MiB。')
+    const origin = await this.origin()
+    const response = await fetch(`${origin}/api/attachments?${new URLSearchParams({ name })}`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${this.token}`,
+        'Content-Type': 'application/octet-stream',
+      },
+      body: new Uint8Array(bytes),
+      signal: AbortSignal.timeout(60_000),
+      redirect: 'error',
+    }).catch(() => {
+      throw new Error('未能保存原文件，请重新添加。')
+    })
+    const body: unknown = await response.json().catch(() => null)
+    if (!response.ok) {
+      throw new Error(
+        body && typeof body === 'object' && 'error' in body && typeof body.error === 'string'
+          ? body.error
+          : `保存原文件失败（${response.status}）。`,
+      )
+    }
+    const file = fileReferences([body])?.[0]
+    if (
+      !file?.attachment ||
+      file.name !== name ||
+      file.attachment.size !== bytes.length ||
+      file.attachment.id !== createHash('sha256').update(bytes).digest('hex')
+    )
+      throw new Error('原文件保存结果无效，请重新添加。')
+    return file as StoredFileReference
+  }
+
+  /** Retrieve only a file already saved with the specified user message. */
+  async attachmentContent(runId: string, messageId: string, fileIndex: number): Promise<Buffer> {
+    if (
+      ![runId, messageId].every((id) => /^[a-zA-Z0-9_-]{1,128}$/.test(id)) ||
+      !Number.isSafeInteger(fileIndex) ||
+      fileIndex < 0 ||
+      fileIndex >= MAX_REFERENCE_FILES
+    )
+      throw new Error('原文件引用无效。')
+    const origin = await this.origin()
+    const response = await fetch(
+      `${origin}/api/runs/${runId}/messages/${messageId}/files/${fileIndex}/content`,
+      {
+        headers: { Authorization: `Bearer ${this.token}` },
+        signal: AbortSignal.timeout(60_000),
+        redirect: 'error',
+      },
+    ).catch(() => {
+      throw new Error('未能读取原文件，请重试。')
+    })
+    if (!response.ok || !response.body) throw new Error(`读取原文件失败（${response.status}）。`)
+    const reader = response.body.getReader()
+    const chunks: Buffer[] = []
+    let size = 0
+    try {
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        size += value.byteLength
+        if (size > MAX_ATTACHMENT_SOURCE_BYTES) throw new Error('原文件超过 100 MiB。')
+        chunks.push(Buffer.from(value))
+      }
+    } catch (error) {
+      await reader.cancel().catch(() => undefined)
+      throw error
+    } finally {
+      reader.releaseLock()
+    }
+    return Buffer.concat(chunks, size)
+  }
+
+  /** Only the main process sends bytes from explicitly selected local files. */
+  async extractDocument(name: string, bytes: Buffer): Promise<string> {
+    const origin = await this.origin()
+    let response: Response
+    try {
+      response = await fetch(`${origin}/api/documents/extract?${new URLSearchParams({ name })}`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${this.token}`,
+          'Content-Type': 'application/octet-stream',
+        },
+        body: new Uint8Array(bytes),
+        signal: AbortSignal.timeout(60_000),
+        redirect: 'error',
+      })
+    } catch {
+      throw new Error('文档解析未完成，请重试或拆分文档后添加。')
+    }
+    const body: unknown = await response.json().catch(() => null)
+    if (!response.ok) {
+      throw new Error(
+        body && typeof body === 'object' && 'error' in body && typeof body.error === 'string'
+          ? body.error
+          : `文档解析失败（${response.status}）。`,
+      )
+    }
+    if (!body || typeof body !== 'object' || !('text' in body) || typeof body.text !== 'string')
+      throw new Error('文档解析结果无效，请重新添加。')
+    return body.text
   }
 
   async watch(

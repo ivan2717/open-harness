@@ -47,6 +47,24 @@ impl JsonlEventStore {
         &self.directory
     }
 
+    /// Read a validated, bounded range without hydrating image sidecars. Intended
+    /// for maintenance that inspects durable references rather than model input.
+    pub async fn load_range_metadata(
+        &self,
+        run_id: &str,
+        sequences: Range<u64>,
+    ) -> Result<Option<StoredRun>, EventStoreError> {
+        let directory = self.directory.clone();
+        let index = self.run_index(run_id)?;
+        let run_id = run_id.to_owned();
+        tokio::task::spawn_blocking(move || {
+            let mut index = index.lock().map_err(|_| EventStoreError::LockPoisoned)?;
+            load_jsonl_range_metadata(&directory, &run_id, sequences, &mut index)
+        })
+        .await
+        .map_err(EventStoreError::Task)?
+    }
+
     fn run_index(&self, run_id: &str) -> Result<Arc<Mutex<JsonlRunIndex>>, EventStoreError> {
         let mut runs = self
             .runs
@@ -447,6 +465,39 @@ fn load_jsonl_range_with_images(
     index: &mut JsonlRunIndex,
     all_images: bool,
 ) -> Result<Option<StoredRun>, EventStoreError> {
+    let Some(mut stored) = load_jsonl_range_metadata(directory, run_id, sequences, index)? else {
+        return Ok(None);
+    };
+    let path = jsonl_path(directory, run_id);
+    let events = stored.events;
+    let latest = events.iter().rposition(|event| {
+        matches!(&event.event,
+        RunEvent::ToolCallSucceeded { images, .. } if !images.is_empty())
+    });
+    let events = events
+        .into_iter()
+        .enumerate()
+        .map(|(position, event)| {
+            if all_images
+                || Some(position) == latest
+                || event.event.files().iter().any(|file| file.image.is_some())
+            {
+                super::images::hydrate(&path, event)
+            } else {
+                super::images::retain_reference(&path, event)
+            }
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    stored.events = events;
+    Ok(Some(stored))
+}
+
+fn load_jsonl_range_metadata(
+    directory: &Path,
+    run_id: &str,
+    sequences: Range<u64>,
+    index: &mut JsonlRunIndex,
+) -> Result<Option<StoredRun>, EventStoreError> {
     let path = jsonl_path(directory, run_id);
     refresh_jsonl_index(&path, run_id, index)?;
     let Some(agent_id) = &index.agent_id else {
@@ -473,21 +524,6 @@ fn load_jsonl_range_with_images(
             }
         }
     }
-    let latest = events.iter().rposition(|event| {
-        matches!(&event.event,
-        RunEvent::ToolCallSucceeded { images, .. } if !images.is_empty())
-    });
-    let events = events
-        .into_iter()
-        .enumerate()
-        .map(|(position, event)| {
-            if all_images || Some(position) == latest {
-                super::images::hydrate(&path, event)
-            } else {
-                super::images::retain_reference(&path, event)
-            }
-        })
-        .collect::<Result<Vec<_>, _>>()?;
     Ok(Some(StoredRun {
         run_id: run_id.to_owned(),
         agent_id: agent_id.clone(),

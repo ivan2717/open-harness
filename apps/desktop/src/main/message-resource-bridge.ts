@@ -49,9 +49,10 @@ export function installMessageResourceBridge({
     assertSender(event)
     const resource = store.resource(id)
     const archived = store.archivePath(id)
+    const exportName = store.exportName(id)
     const exportCopy = async (): Promise<string> => {
       const folder = await mkdtemp(join(tmpdir(), 'openharness-preview-'))
-      const path = join(folder, resource.name)
+      const path = join(folder, exportName)
       await copyFile(archived, path)
       return path
     }
@@ -73,7 +74,7 @@ export function installMessageResourceBridge({
     } else if (action === 'save') {
       const result = await dialog.showSaveDialog(window(), {
         title: '另存为',
-        defaultPath: resource.name,
+        defaultPath: exportName,
         buttonLabel: '保存',
       })
       if (!result.canceled && result.filePath) await copyFile(archived, result.filePath)

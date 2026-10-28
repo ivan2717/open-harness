@@ -8,6 +8,7 @@ use serde_json::json;
 use std::{future::Future, pin::Pin};
 
 mod admission;
+mod attachments;
 mod control;
 mod handoff;
 mod identity;

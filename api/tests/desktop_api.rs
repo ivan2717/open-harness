@@ -630,7 +630,7 @@ async fn file_only_messages_use_filenames_for_titles_and_invalid_files_do_not_cr
         json!([{"name":"notes.md", "path":"bad\npath", "text":"x"}]),
         json!([{"name":"notes.md", "text":"binary\u{0000}value"}]),
         json!([{"name":"notes.md", "text":"x".repeat(256 * 1024 + 1)}]),
-        json!((0..9).map(|_| file.clone()).collect::<Vec<_>>()),
+        json!((0..65).map(|_| file.clone()).collect::<Vec<_>>()),
         json!(
             (0..3)
                 .map(|_| json!({"name":"notes.md", "text":"x".repeat(200 * 1024)}))
@@ -664,4 +664,167 @@ async fn file_only_messages_use_filenames_for_titles_and_invalid_files_do_not_cr
     assert_eq!(created["messages"][0]["files"][0]["name"], "notes.md");
     assert!(!created.to_string().contains("FILE_BODY_SENTINEL"));
     state.shutdown().await;
+}
+
+fn screenshot_file() -> Value {
+    json!({"name":"screenshot.png", "image":{"mime_type":"image/png", "data_base64":"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZcZkAAAAASUVORK5CYII="}})
+}
+
+#[tokio::test]
+async fn image_inputs_require_vision_and_validate_rasters_before_admission() {
+    let directory = Directory::new();
+    let state = state(&directory).await;
+    let app = api::app(state.clone());
+    let (status, error) = request(
+        app.clone(),
+        "POST",
+        "/api/runs",
+        Some(json!({"prompt":"", "model_id":"local-demo", "files":[screenshot_file()]})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(error.to_string().contains("图片输入"));
+    let mut combined = screenshot_file();
+    combined["text"] = json!("both representations are invalid");
+    let mut malformed = screenshot_file();
+    malformed["image"]["data_base64"] = json!("not an image");
+    let mut reference = screenshot_file();
+    reference["image"]["data_base64"] = json!(format!("sha256:{}", "a".repeat(64)));
+    for files in [
+        json!([combined]),
+        json!([malformed]),
+        json!([reference]),
+        json!(vec![screenshot_file(); 5]),
+    ] {
+        let (status, _) = request(
+            app.clone(),
+            "POST",
+            "/api/runs",
+            Some(json!({"prompt":"test", "model_id":"local-demo", "files":files})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+    // This valid raster is >4 MiB as JSON. It reaches image capability
+    // validation rather than the unrelated default route's 4 MiB body limit.
+    let original: agent_core::ModelImage =
+        serde_json::from_value(screenshot_file()["image"].clone()).unwrap();
+    let mut bytes = original.decoded_bytes().unwrap();
+    bytes.resize(4 * 1024 * 1024, 0);
+    let large = agent_core::ModelImage::from_bytes("image/png", &bytes).unwrap();
+    let (status, _) = request(app, "POST", "/api/runs", Some(json!({"prompt":"", "model_id":"local-demo", "files":[{"name":"large.png","image":large}]}))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(state.list().is_empty());
+    state.shutdown().await;
+}
+
+#[tokio::test]
+async fn screenshot_api_uses_vision_content_and_restores_snapshot_previews() {
+    use std::sync::{Arc, Mutex};
+    let directory = Directory::new();
+    let requests = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let captured = requests.clone();
+    let mock = Router::new().route("/v1/chat/completions", axum::routing::post(move |axum::Json(body): axum::Json<Value>| {
+        let captured = captured.clone();
+        async move {
+            captured.lock().unwrap().push(body);
+            axum::Json(json!({"id":"r1", "choices":[{"index":0,"message":{"role":"assistant","content":"I received the screenshot."},"finish_reason":"stop"}], "usage":{"prompt_tokens":150,"completion_tokens":10,"total_tokens":160}}))
+        }
+    }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base_url = format!("http://{}/v1", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        axum::serve(listener, mock).await.unwrap();
+    });
+    let initial = state(&directory).await;
+    let app = api::app(initial.clone());
+    let (status, model) = request(app.clone(), "POST", "/api/models", Some(json!({
+        "protocol":"chat_completions", "base_url":base_url,"api_key":"fixture-only", "model":"vision-fixture", "context_window":128000,"max_output_tokens":4096,"supports_images":true,"reasoning_mode":"off","reasoning_effort":"high"
+    }))).await;
+    assert_eq!(status, StatusCode::OK, "{model}");
+    assert_eq!(model["supports_images"], true);
+    let file = screenshot_file();
+    let (status, created) = request(
+        app,
+        "POST",
+        "/api/runs",
+        Some(json!({"prompt":"Read this", "model_id":model["id"], "files":[file]})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    let id = created["id"].as_str().unwrap().to_owned();
+    assert_eq!(created["messages"][0]["files"][0]["mime_type"], "image/png");
+    assert_eq!(created["messages"][0]["files"][0]["size"], 68);
+    assert!(!created.to_string().contains("data_base64"));
+    let completed = settled(&initial, &id).await;
+    assert_eq!(
+        completed.summary.status,
+        RunStatus::WaitingForInput,
+        "{:?}",
+        completed.error
+    );
+    {
+        let captured = requests.lock().unwrap();
+        let content = captured[0]["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["role"] == "user")
+            .unwrap()["content"]
+            .as_array()
+            .unwrap();
+        assert!(content.iter().any(|b| b["type"] == "image_url"));
+        assert!(
+            content
+                .iter()
+                .filter(|b| b["type"] == "text")
+                .all(|b| !b["text"].as_str().unwrap().contains("iVBOR"))
+        );
+    }
+    let (status, _) = request(
+        api::app(initial.clone()),
+        "POST",
+        &format!("/api/runs/{id}/input"),
+        Some(json!({"message":"Compare again", "files":[screenshot_file()]})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    settled(&initial, &id).await;
+    initial.shutdown().await;
+    let reopened = state(&directory).await;
+    let detail = reopened.get(&id).unwrap();
+    let users: Vec<_> = detail
+        .messages
+        .iter()
+        .filter(|m| m.role == "user")
+        .collect();
+    assert_eq!(users.len(), 2);
+    for message in users {
+        assert_eq!(message.files[0].mime_type.as_deref(), Some("image/png"));
+        assert_eq!(message.files[0].size, 68);
+        let (status, original) = request(
+            api::app(reopened.clone()),
+            "GET",
+            &format!("/api/runs/{id}/messages/{}/files/0", message.id),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(original, screenshot_file());
+    }
+    let stored = fs::read_dir(directory.0.join("events"))
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .find(|p| p.extension().is_some_and(|e| e == "jsonl"))
+        .unwrap();
+    assert!(!fs::read_to_string(stored).unwrap().contains("iVBOR"));
+    assert_eq!(
+        fs::read_dir(directory.0.join("events/images"))
+            .unwrap()
+            .count(),
+        1,
+        "identical pixels are stored only once"
+    );
+    reopened.shutdown().await;
+    server.abort();
 }

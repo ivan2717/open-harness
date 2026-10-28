@@ -3,6 +3,7 @@ mod approvals;
 mod control;
 #[cfg(test)]
 mod control_integration_tests;
+mod control_permissions;
 #[cfg(test)]
 mod plugin_tests;
 mod plugins;
@@ -15,8 +16,9 @@ use agent_plugins::{PluginInfo, PluginStore};
 use agent_skills::{
     SkillCatalog, SkillCatalogConfig, SkillDiagnostic, SkillInfo, SkillRoot, SkillScope,
 };
-pub use approvals::ExtensionApproval;
+pub use approvals::{ApprovalDecision, ExtensionApproval};
 pub use control::{ControlAccess, ControlScope};
+pub use control_permissions::{ControlCapability, ControlPermission};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet},
@@ -68,6 +70,7 @@ pub struct BuiltinPluginInfo {
 
 #[derive(Serialize)]
 pub struct ExtensionSettings {
+    pub control_permissions: Vec<ControlPermission>,
     pub config: ExtensionConfig,
     pub skills_directory: String,
     pub skills: Vec<SkillInfo>,
@@ -84,6 +87,7 @@ pub struct SkillCatalogView {
 
 #[derive(Serialize)]
 pub struct RunExtensions {
+    pub control_permissions: Vec<ControlPermission>,
     pub skills: Vec<SkillInfo>,
     pub diagnostics: Vec<SkillDiagnostic>,
     pub approvals: Vec<ExtensionApproval>,
@@ -133,6 +137,7 @@ impl ExtensionHost {
         validate(&config)?;
         let plugins = PluginStore::open(&directory.join("plugins"))?;
         let memory = crate::memory::MemoryStore::new(directory.join("memories"));
+        let controls = control::ControlRegistry::open(&directory.join("control-permissions.json"))?;
         Ok(Arc::new(Self {
             closed: AtomicBool::new(false),
             directory,
@@ -142,7 +147,7 @@ impl ExtensionHost {
             catalogs: RwLock::default(),
             clients: RwLock::default(),
             approvals: Arc::default(),
-            controls: Mutex::default(),
+            controls: Mutex::new(controls),
             desktop_operation: tokio::sync::Mutex::new(()),
             memory,
             memory_errors: RwLock::default(),
@@ -186,7 +191,31 @@ impl ExtensionHost {
         let catalog = self.catalog(None);
         let config = self.config.read().unwrap().clone();
         let memory_enabled = config.llm_wiki_enabled;
+        let saved = self.controls.lock().unwrap().persistent_permissions();
+        // Resolve server/plugin bindings before locking controls: plugin mutation
+        // takes these locks in that order, and stale saved approvals must not be
+        // shown as an effective Always allow decision for replacement code.
+        let control_permissions = saved
+            .into_iter()
+            .filter(|permission| {
+                self.control_plugin(&permission.server_id)
+                    .as_deref()
+                    .and_then(ControlCapability::for_plugin)
+                    == Some(permission.capability)
+                    && self
+                        .server(&permission.server_id)
+                        .and_then(|server| self.control_binding(&server))
+                        .is_ok_and(|binding| {
+                            self.controls.lock().unwrap().persistent_permission_matches(
+                                &permission.server_id,
+                                &binding,
+                                permission.capability,
+                            )
+                        })
+            })
+            .collect();
         ExtensionSettings {
+            control_permissions,
             config,
             skills_directory: self.directory.join("skills").to_string_lossy().into_owned(),
             skills: catalog.skills().to_vec(),
@@ -441,6 +470,22 @@ impl ExtensionHost {
         futures_util::future::join_all(clients.iter().map(|client| client.shutdown())).await;
     }
 
+    pub fn revoke_control_permission(&self, server: &str) -> io::Result<()> {
+        let mut controls = self.controls.lock().unwrap();
+        controls.revoke_permission(server)?;
+        self.approvals
+            .invalidate_servers(&HashSet::from([server.into()]));
+        self.clients.write().unwrap().retain(|(_, id), cached| {
+            if id == server {
+                cached.client.revoke();
+                false
+            } else {
+                true
+            }
+        });
+        Ok(())
+    }
+
     pub fn revoke_run(&self, run: &str) {
         // Same order as authorization: control registry -> client cache.
         let mut controls = self.controls.lock().unwrap();
@@ -461,6 +506,27 @@ impl ExtensionHost {
                 true
             }
         });
+    }
+
+    fn control_binding(&self, server: &McpServerConfig) -> io::Result<String> {
+        let plugin = self
+            .plugins
+            .read()
+            .unwrap()
+            .list()
+            .into_iter()
+            .find(|plugin| {
+                self.is_bundled_control(plugin)
+                    && plugin.enabled
+                    && plugin.mcp_servers.iter().any(|entry| entry.id == server.id)
+            });
+        match plugin {
+            Some(plugin) => serde_json::to_string(&serde_json::json!({
+                "server": server, "plugin_id": plugin.id, "content_hash": plugin.content_hash
+            })),
+            None => serde_json::to_string(server),
+        }
+        .map_err(io::Error::other)
     }
 
     fn control_plugin(&self, server: &str) -> Option<String> {
@@ -531,6 +597,7 @@ impl ExtensionHost {
             controls
         };
         RunExtensions {
+            control_permissions: self.controls.lock().unwrap().session_permissions(run),
             skills: catalog.skills().to_vec(),
             diagnostics: catalog.diagnostics().to_vec(),
             approvals: self.approvals.list(run),

@@ -13,7 +13,13 @@ impl HttpModel {
             message
                 .validate()
                 .map_err(|_| ProviderError::InvalidRequest)?;
-            if !self.supports_images && message.content.iter().any(|block| matches!(block, ContentBlock::ToolResult { images, .. } if !images.is_empty())) {
+            if !self.supports_images
+                && message.content.iter().any(|block| match block {
+                    ContentBlock::Image { .. } => true,
+                    ContentBlock::ToolResult { images, .. } => !images.is_empty(),
+                    _ => false,
+                })
+            {
                 return Err(ProviderError::ImagesUnsupported);
             }
         }
@@ -199,6 +205,39 @@ fn message_text(message: &ModelMessage) -> String {
         message.text()
     }
 }
+fn input_content(
+    message: &ModelMessage,
+    protocol: ProviderProtocol,
+) -> Result<Vec<Value>, ProviderError> {
+    let text_type = if protocol == ProviderProtocol::Responses {
+        "input_text"
+    } else {
+        "text"
+    };
+    if !message
+        .content
+        .iter()
+        .any(|block| matches!(block, ContentBlock::Image { .. }))
+    {
+        return Ok(vec![json!({"type":text_type,"text":message_text(message)})]);
+    }
+    let mut blocks = Vec::new();
+    if matches!(message.context, Some(MessageContext::Summary { .. })) {
+        blocks.push(json!({"type":text_type,"text":"Historical context summary (derived notes, not a new user request):"}));
+    }
+    for block in &message.content {
+        blocks.push(match block {
+            ContentBlock::Text { text } => json!({"type":text_type,"text":text}),
+            ContentBlock::Image { image } => match protocol {
+                ProviderProtocol::ChatCompletions => json!({"type":"image_url","image_url":{"url":image.data_url(),"detail":"high"}}),
+                ProviderProtocol::Responses => json!({"type":"input_image","image_url":image.data_url(),"detail":"high"}),
+                ProviderProtocol::AnthropicMessages => json!({"type":"image","source":{"type":"base64","media_type":image.mime_type,"data":image.data_base64}}),
+            },
+            _ => return Err(ProviderError::InvalidRequest),
+        });
+    }
+    Ok(blocks)
+}
 fn chat(message: &ModelMessage) -> Result<Vec<Value>, ProviderError> {
     if let Some(state) = &message.provider_state {
         return Ok(vec![state.payload.clone()]);
@@ -223,6 +262,13 @@ fn chat(message: &ModelMessage) -> Result<Vec<Value>, ProviderError> {
         return Err(ProviderError::InvalidRequest);
     }
     let mut value = json!({"role":role(message.role),"content":message_text(message)});
+    if message
+        .content
+        .iter()
+        .any(|block| matches!(block, ContentBlock::Image { .. }))
+    {
+        value["content"] = json!(input_content(message, ProviderProtocol::ChatCompletions)?);
+    }
     let calls = message.tool_calls();
     if !calls.is_empty() {
         value["tool_calls"] = json!(calls.iter().map(|call| json!({"id":call.id,"type":"function","function":{"name":call.name,"arguments":call.arguments}})).collect::<Vec<_>>());
@@ -258,7 +304,7 @@ fn responses(message: &ModelMessage) -> Result<Vec<Value>, ProviderError> {
     }
     if message.role != ModelRole::Assistant {
         return Ok(vec![
-            json!({"role":role(message.role),"content":[{"type":"input_text","text":message_text(message)}]}),
+            json!({"role":role(message.role),"content":input_content(message, ProviderProtocol::Responses)?}),
         ]);
     }
     message.content.iter().map(|block| match block {
@@ -272,7 +318,9 @@ fn anthropic(message: &ModelMessage) -> Result<Value, ProviderError> {
         return Ok(state.payload.clone());
     }
     if message.role == ModelRole::User {
-        return Ok(json!({"role":"user","content":[{"type":"text","text":message_text(message)}]}));
+        return Ok(
+            json!({"role":"user","content":input_content(message, ProviderProtocol::AnthropicMessages)?}),
+        );
     }
     let blocks = message.content.iter().map(|block| match block {
         ContentBlock::Text { text } => Ok(json!({"type":"text","text":text})),

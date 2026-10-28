@@ -2,6 +2,7 @@ import type { ModelCapacity, ResolvedModelLimits } from './model-limits'
 import type { ReasoningCapability } from './model-reasoning'
 export type { ReasoningCapability, ReasoningOption } from './model-reasoning'
 import type {
+  ControlApprovalDecision,
   ExtensionConfig,
   ExtensionSettings,
   McpCatalog,
@@ -37,6 +38,7 @@ export interface ModelInfo {
   description: string
   available: boolean
   context_window: number
+  supports_images?: boolean
   reasoning?: {
     default_effort: string | null
     supported_efforts: string[]
@@ -77,6 +79,15 @@ export type ResolvedModelConfiguration = Omit<
   context_window: number
   max_output_tokens: number
 }
+
+/** Editable settings without returning the saved credential to the renderer. */
+export type ModelConfiguration = Omit<ResolvedModelConfiguration, 'api_key'> & {
+  id: string
+  has_api_key: boolean
+}
+
+/** An omitted or blank key keeps the credential for the same service origin. */
+export type UpdateModelInput = Omit<ConfigureModelInput, 'api_key'> & { api_key?: string }
 
 export interface ConfigureModelResult {
   model: ModelInfo
@@ -188,7 +199,7 @@ export interface CreateRunInput {
   prompt: string
   model_id: string
   reasoning_effort?: string
-  files?: TextFileReference[]
+  files?: FileReference[]
   workspace_path?: string
   permission_mode?: PermissionMode
 }
@@ -204,16 +215,39 @@ export interface TextFileReference {
   name: string
   path?: string
   text: string
+  image?: never
+  attachment?: never
 }
+
+/** A captured image, independent of the clipboard or original file. */
+export interface ImageFileReference {
+  name: string
+  path?: string
+  image: { mime_type: string; data_base64: string }
+  text?: never
+  attachment?: never
+}
+
+/** Original bytes retained locally; the model reads selected portions through file tools. */
+export interface StoredFileReference {
+  name: string
+  path?: string
+  attachment: { id: string; size: number }
+  text?: never
+  image?: never
+}
+
+export type FileReference = TextFileReference | ImageFileReference | StoredFileReference
 
 export interface FileReferenceInfo {
   name: string
   path?: string
   size: number
+  mime_type?: string
 }
 
 export interface FileImportResult {
-  files: TextFileReference[]
+  files: FileReference[]
   errors: string[]
 }
 
@@ -292,10 +326,10 @@ export interface DesktopBridge {
   approveExtension(
     id: string,
     approvalId: string,
-    allow: boolean,
-    session?: boolean,
+    decision: ControlApprovalDecision,
   ): Promise<RunExtensions>
   revokeControl(id: string): Promise<RunExtensions>
+  revokeControlPermission(serverId: string): Promise<ExtensionSettings>
   openSkillsDirectory(): Promise<void>
   resolveResource(reference: ResourceReference): Promise<ResolvedResource>
   resourceAction(id: string, action: ResourceAction): Promise<void>
@@ -308,7 +342,7 @@ export interface DesktopBridge {
   updateRunModel(id: string, input: UpdateRunModelInput): Promise<RunDetail>
   chooseFiles(): Promise<FileImportResult>
   importFiles(files: File[]): Promise<FileImportResult>
-  pasteFiles(): Promise<FileImportResult>
+  pasteFiles(files?: File[]): Promise<FileImportResult>
   chooseWorkspace(): Promise<string | null>
   openWorkspace(path: string): Promise<string>
   revealWorkspace(id: string): Promise<void>
@@ -322,13 +356,15 @@ export interface DesktopBridge {
   revokeCommandGrants(id: string): Promise<WorkspaceReview>
   stopCommand(id: string, commandId: string): Promise<WorkspaceReview>
   revertFile(id: string, path: string): Promise<WorkspaceReview>
-  resumeRun(id: string, message?: string, files?: TextFileReference[]): Promise<RunDetail>
+  resumeRun(id: string, message?: string, files?: FileReference[]): Promise<RunDetail>
   cancelRun(id: string): Promise<RunDetail>
   compactRun(id: string): Promise<RunDetail>
   cancelCompaction(id: string): Promise<RunDetail>
   configureModel(input: ConfigureModelInput): Promise<ConfigureModelResult>
+  getModelConfiguration(id: string): Promise<ModelConfiguration>
+  updateModelConfiguration(id: string, input: UpdateModelInput): Promise<ConfigureModelResult>
   refreshModelContext(id: string): Promise<ConfigureModelResult>
-  submitInput(id: string, message: string, files?: TextFileReference[]): Promise<RunDetail>
+  submitInput(id: string, message: string, files?: FileReference[]): Promise<RunDetail>
   watchRun(
     id: string,
     listener: (snapshot: RunDetail) => void,

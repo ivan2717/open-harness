@@ -77,6 +77,16 @@ per-request output budget are automatic. **高级设置** offers optional overri
 **恢复容量自动设置**; changing the model, endpoint or protocol clears those overrides.
 Saving may read the provider's model metadata, but makes no generation or token
 counting request. It selects the configured model for new conversations.
+Saved model cards offer **编辑配置**. The form loads the existing connection,
+image capability, reasoning choices and limits; **保存修改** updates that profile
+and its idle conversations rather than creating another entry. API keys are never
+returned to the form: leave the password field blank to retain the saved key.
+Changing to another service origin requires an explicit key for that service.
+Active runs, compaction and commands must finish before editing their model.
+History remains available after an edit; incompatible provider replay state is
+excluded, and unsupported conversation reasoning overrides use the new default.
+**取消编辑** leaves the configuration unchanged. Test this workflow with
+`pnpm run test:e2e:model-edit` (isolated local fixtures, no paid model requests).
 Real-model conversations support follow-up
 messages and the harness's history-read tools; synthetic diagnostic tools are
 only used by the offline demo.
@@ -146,19 +156,46 @@ decision to the service.
 Project and permission remain fixed; start a new task to change them.
 
 Use **＋ → 添加文件** (hover or focus for its “添加文件或使用技能” hint), drag local files into the composer, or copy files in the
-file manager and paste with Cmd+V / Ctrl+V to add references. Ordinary text pastes
-remain text. References appear as removable filename chips, survive settings
-navigation, and remain in the draft if sending fails. Unsent file snapshots are
-kept only for the current app session; sent snapshots are saved in the run log.
-Text and code files must be valid UTF-8: up to 8 files, 256 KiB each and 512 KiB
-combined per message. Directories, symlinks, images, PDF and other binary formats
-are rejected explicitly. Files can be sent without a project or accompanying text.
+file manager and paste with Cmd+V / Ctrl+V to add references. Clipboard screenshots
+can be pasted directly without saving a file first. Ordinary text pastes remain
+text; mixed image/text clipboard content keeps both. References appear as removable
+filename chips or image thumbnails, survive settings
+navigation, and remain in the draft if sending fails. Unsent draft references are
+kept only for the current app session; sent attachments are saved with the conversation.
+Ordinary file attachments retain their original bytes in a local content-addressed store.
+Identical originals share one copy. At startup, abandoned originals older than seven
+days are collected only after a complete, validated history scan proves they are
+unreferenced. Originals referenced by conversation history are retained; uncertain
+or damaged history skips cleanup.
+Their names, sizes and immutable references enter the prompt; their full contents do not.
+The agent uses `read_file` / `search_files` on `attachment:<id>` to read or search the
+needed sections. UTF-8 text and PDF, DOCX, XLSX and PPTX have built-in readers; the
+current document parser accepts sources up to 32 MiB, independently of attachment
+storage. Other formats remain available as original files and report their reading
+requirements instead of being treated as text. No automatic OCR, macros, formulas
+or external references run on import. This local flow does not use provider-native
+`input_file` uploads. Older conversations containing extracted text snapshots remain
+readable and retain their original snapshot/export behavior.
+Up to 64 attachments may be added per message. Ordinary original files are limited
+to 100 MiB each; the former 256 KiB per-file / 512 KiB total text limits apply only
+to legacy inline snapshots, not new imports. Files above the storage limit are
+rejected explicitly, never silently truncated.
+PNG, JPEG, WebP and GIF images are decoded locally into PNG/JPEG snapshots
+(animated images use the first frame). Each message supports up to 4 images
+within the 64-attachment limit. Sources are limited to 32 MiB and 32 megapixels;
+snapshots are resized to at most 4 megapixels and 8,192 pixels per edge, with a
+5 MiB encoded limit. Images have an enlargeable preview and require a model with
+**此模型支持图片输入** enabled. Their pixels are sent through the selected provider's
+image-input protocol, never as text or a local path. Sent pixels live in
+content-addressed sidecars; list responses, events and text history carry metadata
+instead of base64. Directories and symlinks are rejected explicitly.
+Files can be sent without a project or accompanying text.
 Attaching a file does not grant access to its parent directory or permission to
-modify it. The model reads the captured content, even if the original later changes.
-Snapshots participate in token estimation, context compression and history search;
-the chat displays filenames and sizes without expanding their full content. Open
-a sent reference to preview the exact saved text, even if its original path no
-longer exists.
+modify it. The agent reads the saved original even if the source later changes or
+is deleted. Attachment metadata and the portions actually read participate in
+token estimation and context compression. The chat displays filenames and sizes
+without expanding full contents. Sent references can preview, open or save the
+captured original; legacy extracted-document snapshots export as text.
 
 Automatic limits are resolved in the desktop main process before they reach the
 Rust runtime. Provider metadata takes priority over a small directory of verified
@@ -313,7 +350,8 @@ resources survive app restarts and later source edits/deletions. A file that has
 never been resolved is still dependent on its original path. User-input previews
 come from the authoritative event snapshot rather than rereading that path.
 HTML and executable files are never executed by the message renderer. Input
-attachments remain UTF-8 snapshots; output previews do not add model vision,
+document attachments remain UTF-8 snapshots; image attachments use the model's
+explicit vision capability. Output previews do not add model vision,
 audio/video understanding, or native provider file-generation APIs.
 
 The design follows [DeepSeek Harness's separation of assistant Markdown and
@@ -592,13 +630,23 @@ Both executors only control a selected running app and its observed window.
 Native Linux desktop input, secure-field typing and cross-app shortcuts are
 not supported. For concurrent background web work, use the Chrome plugin.
 
-At first use, approve **允许本次** or **允许本会话** in the conversation. A browser
-grant covers its isolated session. An application grant records its exact bundle
-ID (macOS) or executable-derived identity (Windows) and PID; first use of another application needs approval, and returning to a
-previously approved unchanged process reuses its session grant. Chrome grants
-cover one tab and one origin; navigation to a new origin needs another approval. The inline
-**电脑与浏览器控制** strip identifies the current target and provides **停止控制**.
-This revokes authorization, cancels pending work and closes its owned executor.
+At first use, choose **允许**, **始终允许**, or **取消**. **允许** grants the
+selected built-in capability (Chrome, the isolated browser, or computer control)
+to this conversation and its collaboration tasks. New task-owned tabs, websites,
+and application selections within that capability do not need repeated approval.
+**始终允许** saves that capability approval for future conversations and app
+restarts; revoke it in the plugin's settings card. These saved permissions are
+bound to the trusted server configuration and do not authorize arbitrary MCP
+servers. **取消** declines this pending operation without saving a denial.
+Existing user browser tabs still require explicit sharing in the extension;
+task tab ownership, application identity validation, and OS permissions continue
+to apply. The inline
+**电脑与浏览器控制** strip identifies the authorized capabilities and provides **停止控制**.
+This revokes the current conversation's authorization, cancels pending work and
+closes its owned executor. During the current app session, a saved permission
+cannot silently resume control in that stopped conversation; another explicit
+approval is required. After restarting the app, continuing a task can use a saved
+**始终允许** permission again; revoke the saved permission in settings to disable it.
 Stopping a run or quitting the app also ends owned control. Stopping does not
 reverse clicks or typing already delivered, and failed/uncertain actions are
 not automatically replayed. Computer targets are exclusive across conversations.
@@ -753,10 +801,11 @@ return source locations and continuation cursors for documents. Directory search
 scans text and reports skipped document files; search a document path to inspect
 its extracted content. Plain text
 reads support files up to 32 MiB; edit/review limits remain independent. OCR,
-image/audio input attachments and full document layout rendering are not included.
+audio input attachments and full document layout rendering are not included.
 Image-bearing browser/computer tool observations are supported separately as described above.
-The attachment picker still imports UTF-8 snapshots; use the project tools for
-these document formats.
+The attachment picker, drag/drop and file clipboard also extract these document
+formats into saved text snapshots. For larger documents, project tools offer
+paginated reading and search without adding the entire text to the initial message.
 
 `pnpm run test:e2e:extensions` exercises real Electron IPC, the Rust API, document
 fixtures, local Skills and a stateful stdio MCP peer. It covers settings CRUD,

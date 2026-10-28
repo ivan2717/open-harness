@@ -15,6 +15,13 @@ connect. Do not require the user to start Chrome manually. If setup is missing,
 explain the specific extension connection step. Do not fall back to foreground computer typing without user intent. This
 connection does not require Screen Recording or Accessibility permissions.
 
+Open Harness handles capability approval: Allow applies to this conversation and
+its collaborative tasks; Always allow also applies to future conversations until
+revoked in settings. Within that permission, opening task tabs and selecting
+other websites does not require another capability approval. Cancel does not
+grant access; respect that decision instead of immediately repeating the request.
+This permission does not share the user's existing private tabs.
+
 For a URL established by the user's task, use `chrome_open`. It creates and
 selects a background tab with `active: false` inside this conversation's
 `Open Harness` tab group; subsequent opens reuse that group. Read it with
@@ -22,12 +29,13 @@ selects a background tab with `active: false` inside this conversation's
 asking the user to create one. Groups organize pages, not grant access: a user
 tab dragged into the group stays private, and shared user tabs stay in place.
 For an existing tab, use `chrome_tabs`, which exposes only explicitly shared tabs
-and this session's tabs. Use `chrome_select_tab` with its exact `tab_id` and
-`origin`. Do not guess IDs, read other tabs, or broaden a grant. An origin change
-requires fresh approval and selecting the new origin. Existing user tabs also
-need the new origin shared in the popup; agent-created tabs do not need that
-extra popup step. Never activate tabs or
-windows just to operate them.
+and this conversation's task tabs. Use `chrome_select_tab` with its exact `tab_id`
+and `origin`. Do not guess IDs or read other tabs. After `origin_changed` or
+`selection_required`, call `chrome_tabs` and select the same existing tab with
+its actual new origin, then use the fresh snapshot. Do not repeat `chrome_open`
+or ask for another website approval for an agent-created task tab. Existing user
+tabs still need a changed origin shared in the extension popup. Never activate
+tabs or windows just to operate them.
 
 If Chrome has no normal window, opening a task creates an unfocused window.
 Its only tab is necessarily active within that window; the window itself does
@@ -53,6 +61,8 @@ cookies are shared. Do not promise isolation of account changes. The user can
 revoke tab sharing or disconnect at any time. `chrome_release` detaches control
 without closing a tab; `close_owned: true` may close only a tab created by this
 session when its task is done, if it is inactive, still in its task group and
-on the authorized origin. Check `closed` in the result; never close a whole
+on the selected origin. Check `closed` in the result; never close a whole
 group. Moving an agent tab out of its group revokes control. Disconnect leaves
-pages available for review; it does not restore grants on reconnect.
+pages available for review; reconnecting does not restore tab ownership,
+sharing or snapshots. A saved capability permission does not restore those
+transport resources either.

@@ -138,7 +138,13 @@ async fn denied_cancelled_and_stale_approvals_never_launch_servers() {
         }
         let result = task.await;
         if action != "cancel" {
-            assert!(result.unwrap().unwrap_err().to_string().contains("denied"));
+            assert!(
+                result
+                    .unwrap()
+                    .unwrap_err()
+                    .to_string()
+                    .contains("cancelled")
+            );
         }
         assert!(host.approvals.list("run-a").is_empty());
         assert!(host.approvals.decide("run-a", &view.id, true).is_err());

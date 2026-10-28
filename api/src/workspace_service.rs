@@ -459,9 +459,14 @@ impl AppState {
             }
         });
         crate::input::validate(&message, &files)?;
+        self.validate_stored_attachments(&files).await?;
         let _gate = self.inner.model_gate.lock().await;
         self.ensure_accepting_work()?;
         let entry = self.entry(id)?;
+        crate::input::validate_images(
+            &files,
+            entry.runtime.model().capabilities().supports_images,
+        )?;
         let _operation = entry.operations.lock().await;
         let detail = entry.snapshot.get();
         if !entry.runtime.model().available() {

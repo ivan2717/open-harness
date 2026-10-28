@@ -167,7 +167,8 @@ async function approval(page, id, allow) {
     .toBe(1)
   const pending = (await page.evaluate((id) => window.harness.runExtensions(id), id)).approvals[0]
   await page.evaluate(
-    ({ id, approvalId, allow }) => window.harness.approveExtension(id, approvalId, allow),
+    ({ id, approvalId, allow }) =>
+      window.harness.approveExtension(id, approvalId, allow ? 'allow' : 'cancel'),
     { id, approvalId: pending.id, allow },
   )
   return pending
@@ -449,11 +450,11 @@ try {
     assert.deepEqual(request.tools, first.tools, 'tool definitions remain stable within a turn')
   }
   await page.evaluate((id) => window.harness.submitInput(id, 'MCP'), run.id)
-  await expect(page.getByRole('button', { name: '允许本次', exact: true })).toBeVisible({
+  await expect(page.getByRole('button', { name: '允许', exact: true })).toBeVisible({
     timeout: 20_000,
   })
   await page.screenshot({ path: resolve('test-results/desktop-mcp-approval.png') })
-  await page.getByRole('button', { name: '允许本次', exact: true }).click()
+  await page.getByRole('button', { name: '允许', exact: true }).click()
   await approval(page, run.id, true)
   const mcp = await settled(page, run.id)
   const outputs = mcp.messages

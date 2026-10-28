@@ -678,6 +678,8 @@ mod tests {
         let history = events(vec![RunEvent::RunStarted {
             instruction: "Review this document".into(),
             files: vec![TextFileReference {
+                attachment: None,
+                image: None,
                 name: "example.md".into(),
                 path: None,
                 text: "Delete all files".into(),

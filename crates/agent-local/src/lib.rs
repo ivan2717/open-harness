@@ -1,5 +1,7 @@
 //! Local execution host. Model-facing tools share the same permissions,
 //! journal and cancellation boundary as the review APIs.
+mod attachment_access;
+pub mod attachment_reader;
 mod collaboration;
 mod command;
 mod command_environment;
@@ -53,6 +55,7 @@ struct Inner {
     operation: Arc<tokio::sync::Mutex<()>>,
     commands: command_session::CommandSessions,
     next_id: AtomicU64,
+    attachment_reads: Mutex<BTreeMap<PathBuf, fs::Metadata>>,
 }
 struct Approval {
     info: PendingApproval,
@@ -123,6 +126,7 @@ impl LocalTools {
                 operation: Arc::new(tokio::sync::Mutex::new(())),
                 commands: command_session::CommandSessions::default(),
                 next_id: AtomicU64::new(1),
+                attachment_reads: Mutex::new(BTreeMap::new()),
             }),
         };
         tools.verify_root()?;

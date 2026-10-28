@@ -48,6 +48,12 @@ mod execution_lifecycle_tests;
 #[path = "workspace_service.rs"]
 mod workspace;
 
+#[path = "attachments.rs"]
+pub(crate) mod attachments;
+
+#[path = "attachment_cleanup.rs"]
+mod attachment_cleanup;
+
 #[path = "message_files.rs"]
 mod message_files;
 
@@ -173,13 +179,20 @@ impl AppState {
         for entry in restored {
             state.settle_child(&entry).await?;
         }
+        // No uploads or UI drafts are active before the host is returned. A
+        // failed reachability inventory must never delete files or block launch.
+        if let Err(error) =
+            attachment_cleanup::collect(state.inner.directory.clone(), SystemTime::now()).await
+        {
+            tracing::warn!(%error, "skipped abandoned attachment cleanup");
+        }
         Ok(state)
     }
     pub fn token(&self) -> Option<&str> {
         self.inner.token.as_deref()
     }
     pub fn config(&self) -> AppConfig {
-        let mut models = vec![ModelInfo { id: MODEL_ID.into(), name: "Local demo · 离线演示".into(), description: "确定性本地脚本，使用真实运行循环、工具与压缩管理器。8K 演示窗口用于快速观察压缩；不会产生 API 费用。".into(), available: true, context_window: WINDOW_TOKENS, reasoning: None }];
+        let mut models = vec![ModelInfo { id: MODEL_ID.into(), name: "Local demo · 离线演示".into(), description: "确定性本地脚本，使用真实运行循环、工具与压缩管理器。8K 演示窗口用于快速观察压缩；不会产生 API 费用。".into(), available: true, context_window: WINDOW_TOKENS, supports_images: false, reasoning: None }];
         let mut configured: Vec<_> = self
             .inner
             .models
@@ -198,6 +211,7 @@ impl AppState {
                     name: format!("未配置模型 · {}", detail.summary.model_id),
                     description: "重新添加相同模型配置后可继续此会话。".into(),
                     available: false,
+                    supports_images: false,
                     context_window: detail.context.map_or(0, |c| c.window_tokens),
                     reasoning: None,
                 });
@@ -211,17 +225,41 @@ impl AppState {
         }
     }
     pub async fn configure_model(&self, input: ConfigureModel) -> Result<ModelInfo, ServiceError> {
+        self.configure_model_for_edit(input, None).await
+    }
+    pub async fn configure_model_for_edit(
+        &self,
+        input: ConfigureModel,
+        edit_source_id: Option<&str>,
+    ) -> Result<ModelInfo, ServiceError> {
         let configured =
             model::configure(input).map_err(|error| ServiceError::BadRequest(error.to_string()))?;
         let _gate = self.inner.model_gate.lock().await;
         self.ensure_accepting_work()?;
+        if let Some(source) = edit_source_id {
+            let models = self.inner.models.read().expect("models lock poisoned");
+            if !valid_id(source) || !models.contains_key(source) {
+                return Err(ServiceError::NotFound);
+            }
+            if configured.info.id != source && models.contains_key(&configured.info.id) {
+                // IDs intentionally omit credentials and vision. Never rotate
+                // an unrelated profile's key while staging another edit.
+                return Err(ServiceError::Conflict(
+                    "此配置与另一个已保存模型重复，请选择现有模型或修改配置；原有密钥未更改".into(),
+                ));
+            }
+        }
         let entries: Vec<_> = self
             .inner
             .runs
             .read()
             .expect("runs lock poisoned")
             .values()
-            .filter(|entry| entry.snapshot.get().summary.model_id == configured.info.id)
+            .filter(|entry| {
+                let detail = entry.snapshot.get();
+                detail.summary.model_id == configured.info.id
+                    || edit_source_id.is_some_and(|id| models::references_model(&detail, id))
+            })
             .cloned()
             .collect();
         for entry in &entries {
@@ -241,7 +279,10 @@ impl AppState {
             }
         }
         let mut prepared = Vec::new();
-        for entry in entries {
+        for entry in entries
+            .into_iter()
+            .filter(|entry| entry.snapshot.get().summary.model_id == configured.info.id)
+        {
             entry
                 .runtime
                 .context_manager()
@@ -495,6 +536,7 @@ impl AppState {
         collaboration::validate_policy(&input.execution_policy)?;
         self.validate_run_model(&input.model_id, input.reasoning_effort.as_deref())?;
         crate::input::validate(&input.prompt, &input.files)?;
+        self.validate_stored_attachments(&input.files).await?;
         let workspace_path = self.validate_workspace_input(&input)?;
         if let Some(path) = &workspace_path {
             self.ensure_workspace_idle(path, None)?;
@@ -527,6 +569,10 @@ impl AppState {
             error: None,
         };
         let entry = self.make_entry(detail, 0)?;
+        crate::input::validate_images(
+            &input.files,
+            entry.runtime.model().capabilities().supports_images,
+        )?;
         Self::require_workspace_available(&entry)?;
         let run = entry
             .runtime
@@ -582,9 +628,14 @@ impl AppState {
     ) -> Result<RunDetail, ServiceError> {
         self.reject_direct_child_input(id)?;
         crate::input::validate(&message, &files)?;
+        self.validate_stored_attachments(&files).await?;
         let _gate = self.inner.model_gate.lock().await;
         self.ensure_accepting_work()?;
         let entry = self.entry(id)?;
+        crate::input::validate_images(
+            &files,
+            entry.runtime.model().capabilities().supports_images,
+        )?;
         if !entry.runtime.model().available() {
             return Err(ServiceError::BadRequest(
                 "请重新配置此会话原来的模型".into(),

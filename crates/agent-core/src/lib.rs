@@ -13,4 +13,6 @@ pub use tool_output::{
     IMAGE_TOKEN_ALLOWANCE, ImageError, MAX_IMAGE_BYTES, MAX_IMAGE_PIXELS, MAX_TOOL_IMAGES,
     ModelImage, ToolOutput,
 };
-pub use user_input::{TextFileReference, format_user_input};
+pub use user_input::{
+    AttachmentReference, FileReference, TextFileReference, format_user_input, user_input_message,
+};

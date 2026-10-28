@@ -35,6 +35,14 @@ export function PluginSettings({
   const catalog = useBundledPluginCatalog()
   const action = usePluginActions()
   const save = useSaveExtensions()
+  const revokePermission = useMutation({
+    scope: { id: 'extension-config' },
+    mutationFn: (serverId: string) => window.harness.revokeControlPermission(serverId),
+    onSuccess: (data) => {
+      client.setQueryData(extensionSettingsOptions.queryKey, data)
+      void client.invalidateQueries({ queryKey: ['run-extensions'] })
+    },
+  })
   const install = useMutation({
     scope: { id: 'extension-config' },
     mutationFn: (id: BundledPlugin['id']) => window.harness.installBundledPlugin(id),
@@ -51,6 +59,10 @@ export function PluginSettings({
   const bundled = catalog.data ?? []
   function card(plugin: PluginInfo | undefined, bundle?: BundledPlugin) {
     const id = plugin?.id ?? bundle!.id
+    const permissions = (settings?.control_permissions ?? []).filter((permission) =>
+      plugin?.mcp_servers.some((server) => server.id === permission.server_id),
+    )
+    const hasControl = ['chrome-use', 'browser-use', 'computer-use'].includes(id)
     return (
       <PluginCard
         key={id}
@@ -69,6 +81,28 @@ export function PluginSettings({
       >
         {bundle && (
           <BundledPluginSetup plugin={bundle} installed={plugin} disabled={busy || !settings} />
+        )}
+        {plugin && hasControl && (
+          <div className="plugin-control-permissions" aria-label="控制授权">
+            {permissions.length ? (
+              permissions.map((permission) => (
+                <div className="plugin-control-permission" key={permission.server_id}>
+                  <span>控制授权 · 始终允许</span>
+                  <button
+                    type="button"
+                    className="extension-text-button"
+                    aria-label={`取消始终允许 ${permission.server_name}`}
+                    disabled={busy}
+                    onClick={() => revokePermission.mutate(permission.server_id)}
+                  >
+                    取消始终允许
+                  </button>
+                </div>
+              ))
+            ) : (
+              <span>控制授权 · 每个会话首次使用时询问</span>
+            )}
+          </div>
         )}
       </PluginCard>
     )
@@ -128,8 +162,9 @@ export function PluginSettings({
       {action.isError && <InlineError message={pluginErrorMessage(action.error)} />}
       {install.isError && <InlineError message={pluginErrorMessage(install.error)} />}
       {save.isError && <InlineError message={errorMessage(save.error)} />}
+      {revokePermission.isError && <InlineError message={errorMessage(revokePermission.error)} />}
       <p className="settings-footnote">
-        安装外部插件不会连接服务或运行脚本。启用后，Agent 可按需发现工具；外部操作仍需单独批准。
+        安装外部插件不会连接服务或运行脚本。启用后，Agent 可按需发现工具，工具使用遵循你授予的权限。
       </p>
     </section>
   )

@@ -1,37 +1,73 @@
 import { useState, type FormEvent } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { ChevronRight } from 'lucide-react'
-import type { ConfigureModelInput } from '../../shared/contracts'
+import type {
+  ConfigureModelInput,
+  ConfigureModelResult,
+  ModelConfiguration,
+} from '../../shared/contracts'
 import { resolveModelLimits, type ModelCapacity } from '../../shared/model-limits'
 import {
   resolveReasoningCapability,
   validateReasoningCapability,
   type ReasoningCapability,
 } from '../../shared/model-reasoning'
-import { configOptions } from '../lib/queries'
+import { configOptions, runsOptions } from '../lib/queries'
 import { errorMessage } from '../lib/format'
-import { availableReasoningOptions } from '../lib/reasoning-settings'
+import { availableReasoningOptions, editableReasoningCapability } from '../lib/reasoning-settings'
+import { taskModels } from '../lib/task-models'
 import { useUiStore } from '../state/ui-store'
 import { InlineError } from './Feedback'
 import { ModelReasoningCompatibility, ModelReasoningDefault } from './ModelReasoningSettings'
 
-export function ModelSettings() {
+export function ModelSettings({
+  initial,
+  onSaved,
+  onCancel,
+}: {
+  initial?: ModelConfiguration
+  onSaved?: (result: ConfigureModelResult) => void
+  onCancel?: () => void
+}) {
   const client = useQueryClient()
   const select = useUiStore((state) => state.setSelectedModel)
-  const [protocol, setProtocol] = useState<ConfigureModelInput['protocol']>('chat_completions')
-  const [reasoningOverride, setReasoningOverride] = useState<ReasoningCapability>()
-  const [discoveredReasoning, setDiscoveredReasoning] = useState<ReasoningCapability>()
-  const [reasoningDefault, setReasoningDefault] = useState('')
+  const initialCapability = initial ? editableReasoningCapability(initial) : undefined
+  const [protocol, setProtocol] = useState<ConfigureModelInput['protocol']>(
+    initial?.protocol ?? 'chat_completions',
+  )
+  const [reasoningOverride, setReasoningOverride] = useState<ReasoningCapability | undefined>(
+    initialCapability?.source === 'manual' || initialCapability?.source === 'legacy'
+      ? initialCapability
+      : undefined,
+  )
+  const [discoveredReasoning, setDiscoveredReasoning] = useState<ReasoningCapability | undefined>(
+    initialCapability?.source === 'manual' || initialCapability?.source === 'legacy'
+      ? undefined
+      : initialCapability,
+  )
+  const [reasoningDefault, setReasoningDefault] = useState(
+    initial?.reasoning_default === undefined && initial && initial.reasoning_mode !== 'off'
+      ? initial.reasoning_effort
+      : (initial?.reasoning_default ?? ''),
+  )
   const [formError, setFormError] = useState<string>()
   const [key, setKey] = useState('')
-  const [baseUrl, setBaseUrl] = useState('')
-  const [modelName, setModelName] = useState('')
-  const [contextOverride, setContextOverride] = useState('')
-  const [outputOverride, setOutputOverride] = useState('')
+  const [baseUrl, setBaseUrl] = useState(initial?.base_url ?? '')
+  const [modelName, setModelName] = useState(initial?.model ?? '')
+  const [contextOverride, setContextOverride] = useState(
+    initial ? String(initial.context_window) : '',
+  )
+  const [outputOverride, setOutputOverride] = useState(
+    initial ? String(initial.max_output_tokens) : '',
+  )
+  const [supportsImages, setSupportsImages] = useState(initial?.supports_images ?? false)
   const [capacity, setCapacity] = useState<ModelCapacity>()
   const save = useMutation({
-    mutationFn: (input: ConfigureModelInput) => window.harness.configureModel(input),
-    onSuccess: async (result, input) => {
+    mutationFn: (input: ConfigureModelInput) =>
+      initial
+        ? window.harness.updateModelConfiguration(initial.id, input)
+        : window.harness.configureModel(input),
+    onSuccess: (result, input) => {
       setKey('')
       if (
         result.capacity ||
@@ -45,8 +81,22 @@ export function ModelSettings() {
           ? discovered
           : undefined,
       )
-      select(result.model.id)
-      await client.invalidateQueries({ queryKey: configOptions.queryKey })
+      const state = useUiStore.getState()
+      const config = client.getQueryData(configOptions.queryKey)
+      if (
+        !initial ||
+        state.selectedModel === initial.id ||
+        (config && taskModels(config, state.selectedModel).selected?.id === initial.id)
+      )
+        select(result.model.id)
+    },
+    onSettled: async (result) => {
+      await Promise.all([
+        client.invalidateQueries({ queryKey: configOptions.queryKey }),
+        client.invalidateQueries({ queryKey: runsOptions.queryKey }),
+        client.invalidateQueries({ queryKey: ['run'] }),
+      ])
+      if (result) onSaved?.(result)
     },
   })
   const customWindow = Number(contextOverride)
@@ -67,6 +117,7 @@ export function ModelSettings() {
   const customized = contextOverride !== '' || outputOverride !== ''
   const capability =
     reasoningOverride ??
+    discoveredReasoning ??
     resolveReasoningCapability(
       { protocol, base_url: baseUrl, model: modelName },
       discoveredReasoning,
@@ -95,7 +146,6 @@ export function ModelSettings() {
   }
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    const data = new FormData(event.currentTarget)
     setFormError(undefined)
     try {
       if (
@@ -120,15 +170,21 @@ export function ModelSettings() {
       // capability and an independent default, including a null service default.
       reasoning_mode: 'off',
       reasoning_effort: 'medium',
-      ...(reasoningOverride ? { reasoning_capability: reasoningOverride } : {}),
+      ...(reasoningOverride || (initial && discoveredReasoning)
+        ? { reasoning_capability: reasoningOverride ?? discoveredReasoning }
+        : {}),
       reasoning_default: selectedReasoning || null,
-      supports_images: data.get('supports_images') === 'on',
+      supports_images: supportsImages,
     })
   }
   return (
     <section className="settings-section">
-      <h2>接入模型</h2>
-      <p>填写模型连接信息，容量与输出预算会自动设置。</p>
+      <h2>{initial ? '编辑模型' : '接入模型'}</h2>
+      <p>
+        {initial
+          ? '修改连接信息和模型能力，保存后应用于使用该模型的空闲会话。'
+          : '填写模型连接信息，容量与输出预算会自动设置。'}
+      </p>
       <form className="model-form" onSubmit={submit}>
         <fieldset disabled={save.isPending}>
           <label>
@@ -180,24 +236,34 @@ export function ModelSettings() {
             <input
               name="api_key"
               type="password"
-              required
+              required={!initial?.has_api_key}
               maxLength={4096}
               autoComplete="off"
+              placeholder={initial?.has_api_key ? '已保存，留空保持不变' : undefined}
+              aria-describedby={initial?.has_api_key ? 'model-api-key-help' : undefined}
               value={key}
               onChange={(event) => {
                 setKey(event.target.value)
-                setDiscoveredReasoning(undefined)
-                setReasoningDefault('')
                 save.reset()
               }}
             />
           </label>
+          {initial?.has_api_key && (
+            <p id="model-api-key-help" className="model-limit-note">
+              原密钥不会显示。修改为其他服务地址时，请填写对应的密钥。
+            </p>
+          )}
           <label className="model-capability-option">
             <input
               type="checkbox"
               name="supports_images"
               aria-labelledby="model-image-support-label"
               aria-describedby="model-image-support-help"
+              checked={supportsImages}
+              onChange={(event) => {
+                setSupportsImages(event.target.checked)
+                save.reset()
+              }}
             />
             <span className="model-capability-copy">
               <span id="model-image-support-label">此模型支持图片输入</span>
@@ -234,6 +300,7 @@ export function ModelSettings() {
               resolved={capability}
               onChange={(value) => {
                 setReasoningOverride(value)
+                if (!value) setDiscoveredReasoning(undefined)
                 setReasoningDefault('')
                 setFormError(undefined)
                 save.reset()
@@ -291,16 +358,23 @@ export function ModelSettings() {
               </button>
             </div>
           </details>
-          <button className="model-save" type="submit">
-            {save.isPending ? '正在保存…' : '保存并使用'}
-          </button>
+          <div className="model-form-actions">
+            <button className="model-save" type="submit">
+              {save.isPending ? '正在保存…' : initial ? '保存修改' : '保存并使用'}
+            </button>
+            {onCancel && (
+              <button type="button" className="model-cancel" onClick={onCancel}>
+                取消编辑
+              </button>
+            )}
+          </div>
         </fieldset>
         <p className="settings-footnote">
           密钥由系统加密后保存在此设备上。系统加密不可用时，仅在本次应用会话中使用。保存时可能读取模型信息，不会发起生成或计数请求。
         </p>
         {save.isError && <InlineError message={errorMessage(save.error)} />}
         {formError && <InlineError message={formError} />}
-        {save.isSuccess && (
+        {save.isSuccess && !initial && (
           <p role="status" className="settings-footnote">
             {save.data.persisted
               ? '模型已接入，密钥已加密保存。'

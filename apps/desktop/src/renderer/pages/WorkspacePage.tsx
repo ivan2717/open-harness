@@ -31,13 +31,13 @@ import { useCreateRun } from '../lib/use-create-run'
 import { useUiStore } from '../state/ui-store'
 import type {
   CommandApprovalScope,
-  TextFileReference,
+  FileReference,
   UpdateRunModelInput,
 } from '../../shared/contracts'
 
 interface UserMessageInput {
   message?: string
-  files?: TextFileReference[]
+  files?: FileReference[]
 }
 
 function InspectorToggle({ onOpen }: { onOpen?: () => void }) {

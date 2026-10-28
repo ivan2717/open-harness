@@ -235,4 +235,33 @@ describe('unified plugin settings', () => {
     expect(card).toContain('运行前需设置环境变量：SERVICE_TOKEN')
     expect(button(card, '测试连接')).not.toContain('disabled=')
   })
+  it('places persistent control permission and revocation inside its installed plugin card', () => {
+    const chrome = plugin('chrome-use', 'Chrome', {
+      mcp_servers: [
+        {
+          id: 'plugin_chrome_use_chrome',
+          name: 'Chrome',
+          enabled: true,
+          transport: { type: 'stdio', command: 'node', args: [], env_vars: [] },
+        },
+      ],
+    })
+    const configured = settings([chrome])
+    configured.control_permissions = [
+      {
+        server_id: 'plugin_chrome_use_chrome',
+        server_name: 'Chrome',
+        capability: 'chrome',
+      },
+    ]
+    const html = render({ settings: configured, catalog: [catalog[2]] })
+    const card = article(html, 'Chrome')
+    expect(card).toContain('控制授权 · 始终允许')
+    expect(button(card, 'aria-label="取消始终允许 Chrome"')).not.toContain('disabled=')
+    expect(card).not.toContain('每个会话首次使用时询问')
+    configured.control_permissions = []
+    const cleared = article(render({ settings: configured, catalog: [catalog[2]] }), 'Chrome')
+    expect(cleared).toContain('每个会话首次使用时询问')
+    expect(cleared).not.toContain('取消始终允许')
+  })
 })

@@ -283,6 +283,7 @@ pub fn configure(input: ConfigureModel) -> Result<ConfiguredModel, ProviderError
         ),
         available: true,
         context_window: input.context_window,
+        supports_images: input.supports_images,
         reasoning: None,
     };
     let mut model = HttpModel::new(ProviderConfig {

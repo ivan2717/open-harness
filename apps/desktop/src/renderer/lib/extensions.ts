@@ -7,6 +7,7 @@ export const extensionSettingsOptions = queryOptions({
   queryKey: ['extension-settings'],
   queryFn: () => window.harness.extensionSettings(),
   staleTime: 30_000,
+  refetchOnMount: 'always',
   retry: 1,
 })
 

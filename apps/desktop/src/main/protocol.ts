@@ -3,18 +3,22 @@ import type {
   ConfigureModelInput,
   CreateRunInput,
   ResolvedModelConfiguration,
-  TextFileReference,
+  FileReference,
   UpdateRunModelInput,
+  UpdateModelInput,
 } from '../shared/contracts'
 import { MODEL_TOKEN_LIMIT, resolveModelLimits } from '../shared/model-limits'
 import { validReasoningId, validateReasoningCapability } from '../shared/model-reasoning'
-import type { ExtensionConfig } from '../shared/extensions'
+import type { ControlApprovalDecision, ExtensionConfig } from '../shared/extensions'
 import { extensionConfiguration, pluginIdentifier } from './extension-protocol'
 import {
   MAX_REFERENCE_FILES,
+  MAX_ATTACHMENT_SOURCE_BYTES,
   MAX_FILE_REFERENCE_BYTES,
   MAX_REFERENCE_TOTAL_BYTES,
+  MAX_IMAGE_REFERENCE_FILES,
 } from '../shared/file-references'
+import { imageSnapshotBytes } from './image-validation'
 
 export const channels = {
   openSkillsDirectory: 'openharness:skills:open-directory',
@@ -35,6 +39,7 @@ export const channels = {
   revealWorkspace: 'openharness:workspace:reveal',
   chooseFiles: 'openharness:files:choose',
   importFiles: 'openharness:files:import',
+  importImages: 'openharness:images:import',
   pasteFiles: 'openharness:files:paste',
   watchStart: 'openharness:watch:start',
   watchStop: 'openharness:watch:stop',
@@ -52,10 +57,10 @@ export type BridgeRequest =
       operation: 'approveExtension'
       id: string
       approvalId: string
-      allow: boolean
-      session?: boolean
+      decision: ControlApprovalDecision
     }
   | { operation: 'revokeControl'; id: string }
+  | { operation: 'revokeControlPermission'; serverId: string }
   | { operation: 'config' | 'listRuns' }
   | {
       operation: 'getRun' | 'getWorkspace' | 'cancelRun' | 'compactRun' | 'cancelCompaction'
@@ -71,12 +76,14 @@ export type BridgeRequest =
   | { operation: 'revokeCommandGrants'; id: string }
   | { operation: 'stopCommand'; id: string; commandId: string }
   | { operation: 'revertFile'; id: string; path: string }
-  | { operation: 'resumeRun'; id: string; message?: string; files?: TextFileReference[] }
+  | { operation: 'resumeRun'; id: string; message?: string; files?: FileReference[] }
   | { operation: 'configureModel'; input: ConfigureModelInput }
+  | { operation: 'getModelConfiguration'; id: string }
+  | { operation: 'updateModelConfiguration'; id: string; input: UpdateModelInput }
   | { operation: 'refreshModelContext'; id: string }
   | { operation: 'createRun'; input: CreateRunInput }
   | { operation: 'updateRunModel'; id: string; input: UpdateRunModelInput }
-  | { operation: 'submitInput'; id: string; message: string; files?: TextFileReference[] }
+  | { operation: 'submitInput'; id: string; message: string; files?: FileReference[] }
 
 export interface ApiRequest {
   path: string
@@ -86,14 +93,16 @@ export interface ApiRequest {
   body?:
     | ExtensionConfig
     | CreateRunInput
-    | ConfigureModelInput
+    | (ConfigureModelInput & { edit_source_id?: string })
+    | UpdateModelInput
     | UpdateRunModelInput
-    | { message?: string; files?: TextFileReference[] }
+    | { message?: string; files?: FileReference[] }
     | { path: string }
     | { allow: boolean; scope?: CommandApprovalScope }
+    | { decision: ControlApprovalDecision }
     | { enabled: boolean }
     | { source_path: string; expected_id?: string }
-    | { replacement_model_id: string }
+    | { replacement_model_id: string; allow_configuration_change?: boolean }
 }
 
 function object(value: unknown): Record<string, unknown> {
@@ -115,11 +124,12 @@ function boundedText(value: unknown, maximum: number, field: string): string {
 }
 
 /** Paths in these snapshots are descriptive; they never grant filesystem access. */
-export function fileReferences(value: unknown): TextFileReference[] | undefined {
+export function fileReferences(value: unknown): FileReference[] | undefined {
   if (value === undefined) return undefined
   if (!Array.isArray(value) || value.length > MAX_REFERENCE_FILES)
-    throw new Error('每条消息最多引用 8 个文件。')
+    throw new Error('每条消息最多引用 64 个文件。')
   let total = 0
+  let images = 0
   return value.map((item: unknown) => {
     const file = object(item)
     if (
@@ -137,11 +147,39 @@ export function fileReferences(value: unknown): TextFileReference[] | undefined 
         /[\u0000-\u001f\u007f-\u009f]/.test(file.path))
     )
       throw new Error('文件路径无效。')
+    if (file.attachment !== undefined) {
+      if (file.image !== undefined || file.text !== undefined)
+        throw new Error('原文件附件不能同时包含图片或文字快照。')
+      const attachment = object(file.attachment)
+      if (
+        typeof attachment.id !== 'string' ||
+        !/^[a-f0-9]{64}$/.test(attachment.id) ||
+        !Number.isSafeInteger(attachment.size) ||
+        Number(attachment.size) < 0 ||
+        Number(attachment.size) > MAX_ATTACHMENT_SOURCE_BYTES
+      )
+        throw new Error('原文件附件引用无效，请重新添加。')
+      return {
+        name: file.name,
+        ...(file.path ? { path: file.path as string } : {}),
+        attachment: { id: attachment.id, size: Number(attachment.size) },
+      }
+    }
+    if (file.image !== undefined) {
+      if (file.text !== undefined) throw new Error('图片附件不能同时包含文字快照。')
+      const { bytes, mimeType } = imageSnapshotBytes(file.image)
+      if (++images > MAX_IMAGE_REFERENCE_FILES) throw new Error('每条消息最多添加 4 张图片。')
+      return {
+        name: file.name,
+        ...(file.path ? { path: file.path as string } : {}),
+        image: { mime_type: mimeType, data_base64: bytes.toString('base64') },
+      }
+    }
     if (
       typeof file.text !== 'string' ||
       /[\u0000-\u0008\u000b-\u000c\u000e-\u001f\u007f-\u009f]/.test(file.text)
     )
-      throw new Error('仅支持 UTF-8 文本文件；暂不支持图片、PDF 或二进制文件。')
+      throw new Error('文件正文包含无法处理的控制字符，请重新导出文件。')
     const bytes = new TextEncoder().encode(file.text).byteLength
     if (bytes > MAX_FILE_REFERENCE_BYTES) throw new Error('单个引用文件不能超过 256 KiB。')
     total += bytes
@@ -150,7 +188,7 @@ export function fileReferences(value: unknown): TextFileReference[] | undefined 
   })
 }
 
-function userText(value: unknown, files?: TextFileReference[]): string {
+function userText(value: unknown, files?: FileReference[]): string {
   if (typeof value !== 'string' || [...value].length > 4000 || (!value.trim() && !files?.length))
     throw new Error('请输入消息或添加文件引用，正文最多 4,000 个字符。')
   return value
@@ -255,6 +293,23 @@ export function modelConfiguration(value: unknown): ConfigureModelInput {
   return configuration
 }
 
+export function modelUpdateConfiguration(value: unknown): UpdateModelInput {
+  const input = object(value)
+  if (
+    input.api_key !== undefined &&
+    (typeof input.api_key !== 'string' || input.api_key.length > 4096)
+  )
+    throw new Error('Invalid API key')
+  const api_key = typeof input.api_key === 'string' ? input.api_key.trim() : undefined
+  // Validate every non-secret field identically to model creation. The sentinel
+  // is discarded here and can never reach discovery, persistence or the backend.
+  const { api_key: _key, ...configuration } = modelConfiguration({
+    ...input,
+    api_key: api_key || 'retained-in-main-process',
+  })
+  return { ...configuration, ...(api_key ? { api_key } : {}) }
+}
+
 /** Saved configurations and the Rust API always receive final, validated numbers. */
 export function resolvedModelConfiguration(value: unknown): ResolvedModelConfiguration {
   const configuration = modelConfiguration(value)
@@ -307,16 +362,21 @@ export function apiRequest(value: unknown): ApiRequest {
     case 'refreshRunSkills':
       return { path: `/api/runs/${identifier(request.id)}/extensions/refresh`, method: 'POST' }
     case 'approveExtension':
-      if (typeof request.allow !== 'boolean') throw new Error('Invalid approval decision')
-      if (request.session !== undefined && typeof request.session !== 'boolean')
-        throw new Error('Invalid approval scope')
+      if (
+        request.decision !== 'allow' &&
+        request.decision !== 'always' &&
+        request.decision !== 'cancel'
+      )
+        throw new Error('Invalid approval decision')
       return {
         path: `/api/runs/${identifier(request.id)}/extensions/approvals/${identifier(request.approvalId)}`,
         method: 'POST',
-        body: {
-          allow: request.allow,
-          ...(request.session === undefined ? {} : { session: request.session }),
-        },
+        body: { decision: request.decision },
+      }
+    case 'revokeControlPermission':
+      return {
+        path: `/api/extensions/control-permissions/${identifier(request.serverId)}`,
+        method: 'DELETE',
       }
     case 'revokeControl':
       return { path: `/api/runs/${identifier(request.id)}/extensions/control`, method: 'DELETE' }
@@ -375,6 +435,14 @@ export function apiRequest(value: unknown): ApiRequest {
       return { path: `/api/runs/${identifier(request.id)}/compact/cancel`, method: 'POST' }
     case 'configureModel':
       return { path: '/api/models', method: 'POST', body: modelConfiguration(request.input) }
+    case 'getModelConfiguration':
+      return { path: `/api/models/${identifier(request.id)}/configuration`, method: 'GET' }
+    case 'updateModelConfiguration':
+      return {
+        path: `/api/models/${identifier(request.id)}/configuration`,
+        method: 'PATCH',
+        body: modelUpdateConfiguration(request.input),
+      }
     case 'refreshModelContext':
       return { path: `/api/models/${identifier(request.id)}/context/refresh`, method: 'POST' }
     case 'updateRunModel': {

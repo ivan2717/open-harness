@@ -59,7 +59,7 @@ fn grant(host: &ExtensionHost, run: &str, server_id: &str, scope: ControlScope) 
             run,
             server_id,
             server_id,
-            &serde_json::to_string(&server).unwrap(),
+            &host.control_binding(&server).unwrap(),
             scope,
             true,
         )
@@ -233,8 +233,9 @@ fn control_package(root: &Path, id: &str, mode: &str, marker: &Path) -> PathBuf 
     let server = if mode == "missing" {
         json!({"command":"control-test-must-never-be-started","args":[]})
     } else {
-        fs::write(source.join("fixture.py"), r#"import json,sys,time,pathlib
+        fs::write(source.join("fixture.py"), r#"import json,sys,time,pathlib,urllib.parse
 mode,marker=sys.argv[1:3]
+next_tab=42
 for line in sys.stdin:
     req=json.loads(line)
     if 'id' not in req: continue
@@ -250,10 +251,16 @@ for line in sys.stdin:
             with open(marker,'a',newline='\n') as output: output.write('end\n')
         else: pathlib.Path(marker).write_text('called')
         if mode=='hang': time.sleep(30)
+        if mode=='open_pause' and req['params']['arguments'].get('url','').endswith('/pending'):
+            time.sleep(30)
         result={'isError': mode=='error','content':[{'type':'text','text':'fixture app selection refused' if mode=='error' else 'selected'}]}
         if req['params']['name']=='chrome_open' and mode.startswith('open_'):
             origin='https://redirect.example' if mode=='open_redirect' else 'https://example.com'
-            meta={'created':True,'selected':True,'tab_id':0 if mode=='open_invalid' else 42,'origin':origin,'url':origin+'/task'}
+            if mode in ('open_dynamic','open_pause'):
+                parsed=urllib.parse.urlsplit(req['params']['arguments']['url'])
+                origin=parsed.scheme+'://'+parsed.netloc
+            meta={'created':True,'selected':True,'tab_id':0 if mode=='open_invalid' else next_tab,'origin':origin,'url':origin+'/task'}
+            next_tab+=1
             result={'content':[{'type':'text','text':json.dumps(meta)}]}
     else: result={}
     print(json.dumps({'jsonrpc':'2.0','id':req['id'],'result':result}),flush=True)
@@ -896,7 +903,7 @@ async fn abandoned_selection_cannot_revoke_a_replacement_grant() {
     let fixture = Fixture::new();
     let host = fixture.host();
     let config = host.server("desktop").unwrap();
-    let binding = serde_json::to_string(&config).unwrap();
+    let binding = host.control_binding(&config).unwrap();
     let old_grant = host
         .controls
         .lock()
@@ -982,7 +989,7 @@ async fn children_inherit_only_successful_session_grants_and_keep_independent_cl
     }
     assert_eq!(host.clients.read().unwrap().len(), 3);
     let config = host.server(server).unwrap();
-    let binding = serde_json::to_string(&config).unwrap();
+    let binding = host.control_binding(&config).unwrap();
     let child_client = host.client("child-a", &config).unwrap();
     host.revoke_run("child-a");
     assert!(
@@ -1080,7 +1087,7 @@ async fn failed_child_selection_never_leaks_a_family_session_grant() {
         .unwrap();
     let error = complete_control(child).await.unwrap_err();
     assert!(error.to_string().contains("fixture app selection refused"));
-    let binding = serde_json::to_string(&host.server(server).unwrap()).unwrap();
+    let binding = host.control_binding(&host.server(server).unwrap()).unwrap();
     assert!(
         !host
             .controls
@@ -1090,3 +1097,6 @@ async fn failed_child_selection_never_leaks_a_family_session_grant() {
     );
     host.shutdown().await;
 }
+
+#[path = "capability_integration_tests.rs"]
+mod capability_tests;

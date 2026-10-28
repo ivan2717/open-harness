@@ -13,6 +13,9 @@ use axum::{
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
+#[path = "model_profile_edit_tests.rs"]
+mod configuration_edits;
+
 struct Fixture {
     directory: PathBuf,
     state: AppState,

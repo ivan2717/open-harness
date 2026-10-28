@@ -7,9 +7,14 @@ import type {
   RunSummary,
   WorkspaceReview,
   FileImportResult,
+  ModelConfiguration,
 } from '../shared/contracts'
 import { channels, type BridgeRequest } from '../main/protocol'
-import { MAX_REFERENCE_FILES } from '../shared/file-references'
+import {
+  MAX_REFERENCE_FILES,
+  MAX_IMAGE_REFERENCE_FILES,
+  MAX_IMAGE_SOURCE_BYTES,
+} from '../shared/file-references'
 import type { ResolvedResource } from '../shared/message-resources'
 import type { RunMemory } from '../shared/memory'
 import type {
@@ -22,6 +27,26 @@ import type {
 const invoke = <T>(request: BridgeRequest): Promise<T> =>
   ipcRenderer.invoke(channels.invoke, request) as Promise<T>
 let nextSubscription = 0
+
+async function importedImages(files: File[]): Promise<FileImportResult> {
+  if (files.length > MAX_IMAGE_REFERENCE_FILES) throw new Error('每条消息最多添加 4 张图片。')
+  const images = []
+  const errors: string[] = []
+  for (const file of files) {
+    const name = file.name || '截图.png'
+    try {
+      if (!file.size || file.size > MAX_IMAGE_SOURCE_BYTES)
+        throw new Error('图片超过 32 MiB 或内容为空。')
+      images.push({ name, bytes: new Uint8Array(await file.arrayBuffer()) })
+    } catch (error) {
+      errors.push(`${name}：${error instanceof Error ? error.message : '无法读取图片。'}`)
+    }
+  }
+  const result = images.length
+    ? ((await ipcRenderer.invoke(channels.importImages, images)) as FileImportResult)
+    : { files: [], errors: [] }
+  return { files: result.files, errors: [...errors, ...result.errors] }
+}
 
 const bridge: DesktopBridge = {
   installPlugin: (expectedId, sourceKind = 'directory') =>
@@ -41,9 +66,11 @@ const bridge: DesktopBridge = {
   runExtensions: (id) => invoke<RunExtensions>({ operation: 'runExtensions', id }),
   runMemory: (id) => invoke<RunMemory>({ operation: 'runMemory', id }),
   refreshRunSkills: (id) => invoke<RunExtensions>({ operation: 'refreshRunSkills', id }),
-  approveExtension: (id, approvalId, allow, session) =>
-    invoke<RunExtensions>({ operation: 'approveExtension', id, approvalId, allow, session }),
+  approveExtension: (id, approvalId, decision) =>
+    invoke<RunExtensions>({ operation: 'approveExtension', id, approvalId, decision }),
   revokeControl: (id) => invoke<RunExtensions>({ operation: 'revokeControl', id }),
+  revokeControlPermission: (serverId) =>
+    invoke<ExtensionSettings>({ operation: 'revokeControlPermission', serverId }),
   bundledPlugins: () => ipcRenderer.invoke(channels.bundledPlugins),
   installBundledPlugin: (id) => ipcRenderer.invoke(channels.installBundledPlugin, id),
   prepareBrowser: () => ipcRenderer.invoke(channels.prepareBrowser),
@@ -68,13 +95,48 @@ const bridge: DesktopBridge = {
   chooseFiles: () => ipcRenderer.invoke(channels.chooseFiles) as Promise<FileImportResult>,
   importFiles: (files) => {
     if (!Array.isArray(files) || files.length > MAX_REFERENCE_FILES)
-      return Promise.reject(new Error('每次最多添加 8 个文件。'))
+      return Promise.reject(new Error('每次最多添加 64 个文件。'))
     return ipcRenderer.invoke(
       channels.importFiles,
       files.map((file) => webUtils.getPathForFile(file)),
     ) as Promise<FileImportResult>
   },
-  pasteFiles: () => ipcRenderer.invoke(channels.pasteFiles) as Promise<FileImportResult>,
+  pasteFiles: async (files = []) => {
+    if (!Array.isArray(files) || files.length > MAX_REFERENCE_FILES)
+      throw new Error('每次最多添加 64 个文件。')
+    const images = files.filter((file) => /^image\//i.test(file.type))
+    const selection = files.length
+      ? {
+          files: files.map((file) => ({
+            name: file.name,
+            size: file.size,
+            image: /^image\//i.test(file.type),
+          })),
+          skipImages: images.length > 0,
+        }
+      : undefined
+    // Clipboard screenshots are memory Files. Never require a disk path for them.
+    if (images.length) {
+      const result = await importedImages(images)
+      const otherFiles = files.filter((file) => !/^image\//i.test(file.type))
+      if (otherFiles.length) {
+        const native = (await ipcRenderer.invoke(
+          channels.pasteFiles,
+          selection,
+        )) as FileImportResult
+        const other =
+          native.files.length || native.errors.length
+            ? native
+            : await bridge.importFiles(otherFiles)
+        result.files.push(...other.files)
+        result.errors.push(...other.errors)
+      }
+      return result
+    }
+    const native = (await ipcRenderer.invoke(channels.pasteFiles, selection)) as FileImportResult
+    if (native.files.length || native.errors.length || !files.length) return native
+    return bridge.importFiles(files)
+  },
   getWorkspace: (id) => invoke<WorkspaceReview>({ operation: 'getWorkspace', id }),
   approveCommand: (id, approvalId, allow, scope) =>
     invoke<WorkspaceReview>({ operation: 'approveCommand', id, approvalId, allow, scope }),
@@ -88,6 +150,10 @@ const bridge: DesktopBridge = {
   compactRun: (id) => invoke<RunDetail>({ operation: 'compactRun', id }),
   cancelCompaction: (id) => invoke<RunDetail>({ operation: 'cancelCompaction', id }),
   configureModel: (input) => invoke<ConfigureModelResult>({ operation: 'configureModel', input }),
+  getModelConfiguration: (id) =>
+    invoke<ModelConfiguration>({ operation: 'getModelConfiguration', id }),
+  updateModelConfiguration: (id, input) =>
+    invoke<ConfigureModelResult>({ operation: 'updateModelConfiguration', id, input }),
   refreshModelContext: (id) =>
     invoke<ConfigureModelResult>({ operation: 'refreshModelContext', id }),
   submitInput: (id, message, files) =>

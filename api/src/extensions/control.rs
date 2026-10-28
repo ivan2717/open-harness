@@ -1,4 +1,5 @@
 //! Ephemeral UI-control grants. Never restored from conversation history.
+use super::control_permissions::{CapabilityPermissions, ControlCapability, ControlPermission};
 use serde::Serialize;
 use std::{collections::HashMap, io};
 
@@ -38,9 +39,11 @@ pub struct ControlAccess {
 
 #[derive(Default)]
 pub struct ControlRegistry {
+    permissions: CapabilityPermissions,
     /// Host-owned delegation binding. A model can never choose its approval family.
     families: HashMap<String, String>,
     epochs: HashMap<String, u64>,
+    server_runs: HashMap<String, std::collections::HashSet<String>>,
     access: HashMap<(String, String), ControlAccess>,
     // Active selection and remembered permissions are separate. Returning to
     // an explicitly approved application/tab must not erase other approvals.
@@ -50,6 +53,56 @@ pub struct ControlRegistry {
 }
 
 impl ControlRegistry {
+    pub fn open(path: &std::path::Path) -> io::Result<Self> {
+        Ok(Self {
+            permissions: CapabilityPermissions::open(path)?,
+            ..Default::default()
+        })
+    }
+    pub fn persistent_permissions(&self) -> Vec<ControlPermission> {
+        self.permissions.list()
+    }
+    pub fn persistent_permission_matches(
+        &self,
+        server: &str,
+        binding: &str,
+        capability: ControlCapability,
+    ) -> bool {
+        self.permissions
+            .persistent_matches(server, binding, capability)
+    }
+    pub fn session_permissions(&self, run: &str) -> Vec<ControlPermission> {
+        self.permissions.session_list(self.authorization_scope(run))
+    }
+    pub fn revoke_permission(&mut self, server: &str) -> io::Result<()> {
+        self.permissions.revoke(server)?;
+        self.invalidate_servers(&std::collections::HashSet::from([server.into()]));
+        Ok(())
+    }
+    pub fn capability_permits(
+        &self,
+        run: &str,
+        server: &str,
+        binding: &str,
+        capability: ControlCapability,
+    ) -> bool {
+        self.permissions
+            .permits(self.authorization_scope(run), server, binding, capability)
+    }
+    pub fn remember_capability(
+        &mut self,
+        run: &str,
+        server: &str,
+        name: &str,
+        binding: &str,
+        capability: ControlCapability,
+        always: bool,
+    ) -> io::Result<()> {
+        let root = self.authorization_scope(run).to_owned();
+        self.permissions
+            .remember(&root, server, name, binding, capability, always)
+    }
+
     pub fn bind_scope(&mut self, run: &str, root: &str) {
         self.families.insert(run.into(), root.into());
     }
@@ -68,6 +121,13 @@ impl ControlRegistry {
         }
         members
     }
+    pub fn operation_epoch(&mut self, run: &str, server: &str) -> u64 {
+        self.server_runs
+            .entry(server.into())
+            .or_default()
+            .insert(run.into());
+        self.epoch(run)
+    }
     pub fn epoch(&self, run: &str) -> u64 {
         self.epochs.get(run).copied().unwrap_or_default()
     }
@@ -85,6 +145,16 @@ impl ControlRegistry {
         scope: Option<&ControlScope>,
     ) -> bool {
         if let Some(scope) = scope {
+            let capability = match scope {
+                ControlScope::Browser => ControlCapability::Browser,
+                ControlScope::Application { .. } => ControlCapability::Computer,
+                ControlScope::ChromeTab { .. } | ControlScope::ChromeNewTab { .. } => {
+                    ControlCapability::Chrome
+                }
+            };
+            if self.capability_permits(run, server, binding, capability) {
+                return true;
+            }
             return self
                 .remembered
                 .get(&(self.authorization_scope(run).into(), server.into()))
@@ -314,6 +384,7 @@ impl ControlRegistry {
         self.access.retain(|(owner, _), _| !members.contains(owner));
         if scope == run {
             self.remembered.retain(|(owner, _), _| owner != run);
+            self.permissions.stop(run);
         }
         if self.desktop_owner.as_deref() == Some(scope.as_str())
             && !self.access.iter().any(|((owner, _), item)| {
@@ -325,12 +396,18 @@ impl ControlRegistry {
         }
     }
     pub fn invalidate_servers(&mut self, changed: &std::collections::HashSet<String>) {
+        self.permissions.invalidate(changed);
         let runs: std::collections::HashSet<_> = self
             .access
             .keys()
             .chain(self.remembered.keys())
             .filter(|(_, server)| changed.contains(server))
             .map(|(run, _)| run.clone())
+            .chain(
+                changed
+                    .iter()
+                    .flat_map(|server| self.server_runs.get(server).into_iter().flatten().cloned()),
+            )
             .collect();
         for run in runs {
             *self.epochs.entry(run.clone()).or_default() += 1;

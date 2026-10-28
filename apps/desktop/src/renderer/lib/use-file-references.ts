@@ -1,11 +1,63 @@
 import { useState } from 'react'
 import type { FileImportResult } from '../../shared/contracts'
-import { MAX_REFERENCE_FILES, MAX_REFERENCE_TOTAL_BYTES } from '../../shared/file-references'
+import {
+  MAX_REFERENCE_FILES,
+  MAX_REFERENCE_TOTAL_BYTES,
+  MAX_IMAGE_REFERENCE_FILES,
+  fileReferenceSize,
+} from '../../shared/file-references'
 import { useUiStore, type DraftFileReference } from '../state/ui-store'
 import { errorMessage } from './format'
 
 const emptyFiles: DraftFileReference[] = []
-const encoder = new TextEncoder()
+
+export function mergeDraftReferences(
+  existing: DraftFileReference[],
+  result: FileImportResult,
+): { files: DraftFileReference[]; errors: string[] } {
+  const files = [...existing]
+  let textSize = files.reduce(
+    (total, file) => total + (file.image || file.attachment ? 0 : fileReferenceSize(file)),
+    0,
+  )
+  let imageCount = files.filter((file) => file.image).length
+  const errors = [...result.errors]
+  for (const file of result.files) {
+    if (
+      files.some((old) =>
+        file.path
+          ? old.path === file.path
+          : file.image
+            ? old.image?.mime_type === file.image.mime_type &&
+              old.image?.data_base64 === file.image.data_base64
+            : file.attachment
+              ? old.attachment?.id === file.attachment.id && old.name === file.name
+              : !old.image && !old.attachment && old.name === file.name && old.text === file.text,
+      )
+    )
+      continue
+    if (files.length >= MAX_REFERENCE_FILES) {
+      errors.push('每条消息最多添加 64 个附件。')
+      break
+    }
+    if (file.image) {
+      if (imageCount >= MAX_IMAGE_REFERENCE_FILES) {
+        errors.push('每条消息最多添加 4 张图片。')
+        continue
+      }
+      imageCount += 1
+    } else if (!file.attachment) {
+      const bytes = fileReferenceSize(file)
+      if (textSize + bytes > MAX_REFERENCE_TOTAL_BYTES) {
+        errors.push(`添加 ${file.name} 后正文超出 512 KB 总量，请移除部分文件。`)
+        continue
+      }
+      textSize += bytes
+    }
+    files.push({ ...file, id: crypto.randomUUID() })
+  }
+  return { files, errors: [...new Set(errors)] }
+}
 
 export function useFileReferences(draftKey: string) {
   const files = useUiStore((state) => state.draftFiles[draftKey] ?? emptyFiles)
@@ -19,30 +71,9 @@ export function useFileReferences(draftKey: string) {
     try {
       const result = await read()
       const state = useUiStore.getState()
-      const current = [...(state.draftFiles[draftKey] ?? [])]
-      let size = current.reduce((total, file) => total + encoder.encode(file.text).byteLength, 0)
-      const errors = [...result.errors]
-      for (const file of result.files) {
-        if (
-          current.some((old) =>
-            file.path ? old.path === file.path : old.name === file.name && old.text === file.text,
-          )
-        )
-          continue
-        const bytes = encoder.encode(file.text).byteLength
-        if (current.length >= MAX_REFERENCE_FILES) {
-          errors.push('每条消息最多引用 8 个文件。')
-          break
-        }
-        if (size + bytes > MAX_REFERENCE_TOTAL_BYTES) {
-          errors.push(`添加 ${file.name} 后超出 512 KB 总量，请移除部分文件。`)
-          continue
-        }
-        size += bytes
-        current.push({ ...file, id: crypto.randomUUID() })
-      }
-      state.setDraftFiles(draftKey, current)
-      setError([...new Set(errors)].join(' ') || null)
+      const merged = mergeDraftReferences(state.draftFiles[draftKey] ?? [], result)
+      state.setDraftFiles(draftKey, merged.files)
+      setError(merged.errors.join(' ') || null)
       return result.files.length > 0 || result.errors.length > 0
     } catch (cause) {
       setError(errorMessage(cause))

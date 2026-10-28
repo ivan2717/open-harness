@@ -15,6 +15,8 @@ pub struct ModelInfo {
     pub description: String,
     pub available: bool,
     pub context_window: usize,
+    #[serde(default)]
+    pub supports_images: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<ModelReasoning>,
 }
@@ -148,13 +150,15 @@ pub struct ToolImageInfo {
     pub mime_type: String,
 }
 
-/// Display metadata only; the durable user event owns the immutable text snapshot.
+/// Display metadata only; the durable user event owns the immutable attachment.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct FileReferenceInfo {
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
     pub size: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mime_type: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -285,6 +289,10 @@ pub struct ConfigureModel {
 #[serde(deny_unknown_fields)]
 pub struct ReplaceModelInput {
     pub replacement_model_id: String,
+    /// Explicit profile edits may change the provider and reasoning contract.
+    /// Capacity refreshes retain their stricter replay-compatible behavior.
+    #[serde(default)]
+    pub allow_configuration_change: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

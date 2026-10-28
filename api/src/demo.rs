@@ -79,6 +79,7 @@ impl Model for DemoModel {
                 ContentBlock::Reasoning { .. } => ModelBlockKind::Reasoning,
                 ContentBlock::ToolCall { .. } => ModelBlockKind::ToolCall,
                 ContentBlock::ToolResult { .. } => ModelBlockKind::ToolResult,
+                ContentBlock::Image { .. } => unreachable!("demo produces only assistant output"),
             };
             sink.emit(ModelStreamEvent::BlockStart { index, kind });
             if let ContentBlock::Text { text } | ContentBlock::Reasoning { text } = &block {

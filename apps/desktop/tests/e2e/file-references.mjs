@@ -15,17 +15,49 @@ await mkdir(artifacts, { recursive: true })
 const firstPath = join(directory, '计划 sample.ts')
 const secondPath = join(directory, 'clipboard-notes.md')
 const thirdPath = join(directory, 'resume.txt')
-const imagePath = join(directory, 'unsupported.png')
+const unsupportedPath = join(directory, 'unsupported.zip')
 const largePath = join(directory, 'too-large.txt')
 const firstText = 'export const plan = "CREATE_FILE_VERSION_1";\n// 发送时保留这个快照。\n'
 const secondText = '# PASTE_FILE_SNAPSHOT\nThese notes came from the native file clipboard.\n'
 const thirdText = 'RESUME_FILE_SNAPSHOT\nContinue from the recorded state.\n'
+const pdfFiles = [
+  { name: '选择 report.PDF', token: 'SELECTED_PDF_SNAPSHOT' },
+  { name: 'dropped-report.pdf', token: 'DROPPED_PDF_SNAPSHOT' },
+  { name: 'pasted-report.pdf', token: 'PASTED_PDF_SNAPSHOT' },
+].map((file) => ({ ...file, path: join(directory, file.name) }))
+const changedPdfToken = 'CHANGED_PDF_MUST_NOT_REPLACE_IMPORTED_SNAPSHOT'
+
+// Every PDF byte is synthetic; the fixture never needs a user's documents.
+function minimalPdf(text) {
+  const escaped = text.replaceAll('\\', '\\\\').replaceAll('(', '\\(').replaceAll(')', '\\)')
+  const content = `BT /F1 12 Tf 20 100 Td (${escaped}) Tj ET`
+  const objects = [
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 600 200] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>',
+    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
+    `<< /Length ${Buffer.byteLength(content)} >>\nstream\n${content}\nendstream`,
+  ]
+  let pdf = '%PDF-1.4\n'
+  const offsets = []
+  for (const [index, object] of objects.entries()) {
+    offsets.push(Buffer.byteLength(pdf))
+    pdf += `${index + 1} 0 obj\n${object}\nendobj\n`
+  }
+  const xref = Buffer.byteLength(pdf)
+  pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`
+  for (const offset of offsets) pdf += `${String(offset).padStart(10, '0')} 00000 n \n`
+  pdf += `trailer\n<< /Root 1 0 R /Size ${objects.length + 1} >>\nstartxref\n${xref}\n%%EOF\n`
+  return Buffer.from(pdf)
+}
+
 await Promise.all([
   writeFile(firstPath, firstText),
   writeFile(secondPath, secondText),
   writeFile(thirdPath, thirdText),
-  writeFile(imagePath, Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])),
+  writeFile(unsupportedPath, Buffer.from([80, 75, 3, 4])),
   writeFile(largePath, 'x'.repeat(256 * 1024 + 1)),
+  ...pdfFiles.map((file) => writeFile(file.path, minimalPdf(file.token))),
 ])
 
 const calls = []
@@ -184,6 +216,47 @@ function userBodies(request) {
     .join('\n')
 }
 
+async function previewPdfSnapshot(page) {
+  const file = pdfFiles[0]
+  await page.getByRole('button', { name: `预览文件 ${file.name}`, exact: true }).click()
+  const preview = page.getByRole('dialog', { name: file.name, exact: true })
+  await expect(preview.getByRole('button', { name: '另存为', exact: true })).toBeVisible()
+  const saved = await page.evaluate(async (name) => {
+    const id = window.location.hash.split('/runs/')[1]
+    const run = await window.harness.getRun(id)
+    const message = run.messages.find((message) =>
+      message.files?.some((file) => file.name === name),
+    )
+    const resource = await window.harness.resolveResource({
+      runId: id,
+      messageId: message.id,
+      fileIndex: message.files.findIndex((file) => file.name === name),
+    })
+    return {
+      kind: resource.kind,
+      mimeType: resource.mimeType,
+      name: resource.name,
+    }
+  }, file.name)
+  assert.equal(saved.kind, 'file')
+  assert.equal(saved.mimeType, 'application/pdf')
+  const savedPath = join(directory, `saved-${file.name}`)
+  await application.evaluate(({ dialog }, path) => {
+    dialog.showSaveDialog = async (...args) => {
+      globalThis.__attachmentExportName = args.at(-1).defaultPath
+      return { canceled: false, filePath: path }
+    }
+  }, savedPath)
+  await preview.getByRole('button', { name: '另存为', exact: true }).click()
+  await expect
+    .poll(async () => [...(await readFile(savedPath).catch(() => Buffer.alloc(0)))])
+    .toEqual([...minimalPdf(file.token)])
+  assert.equal(await application.evaluate(() => globalThis.__attachmentExportName), file.name)
+  await expect(preview).not.toContainText(changedPdfToken)
+  await preview.getByRole('button', { name: '关闭预览', exact: true }).click()
+  await expect(preview).toHaveCount(0)
+}
+
 try {
   let page = await launch()
   // This fixture counts attachment/resume requests, not Wiki compilation calls.
@@ -205,7 +278,7 @@ try {
   const draftFiles = () => page.locator('.composer .file-references li')
   const addContent = page.getByRole('button', { name: '添加内容', exact: true })
   await expect(addContent).toBeVisible()
-  await addContent.hover()
+  await addContent.focus()
   await expect(page.getByRole('tooltip')).toContainText('添加文件或使用技能')
   const tooltipId = await page.getByRole('tooltip').getAttribute('id')
   assert(tooltipId)
@@ -228,12 +301,14 @@ try {
   await page.getByRole('link', { name: '会话', exact: true }).click()
   await expect(draftFiles()).toHaveCount(1)
 
-  await diskFileEvent(page, [imagePath])
-  await expect(page.getByRole('alert')).toContainText('暂不支持')
-  await expect(draftFiles()).toHaveCount(1)
+  await diskFileEvent(page, [unsupportedPath])
+  await expect(page.getByRole('alert')).toHaveCount(0)
+  await expect(draftFiles()).toHaveCount(2)
+  await page.getByRole('button', { name: '移除文件 unsupported.zip', exact: true }).click()
   await diskFileEvent(page, [largePath])
-  await expect(page.getByRole('alert')).toContainText('256')
-  await expect(draftFiles()).toHaveCount(1)
+  await expect(page.getByRole('alert')).toHaveCount(0)
+  await expect(draftFiles()).toHaveCount(2)
+  await page.getByRole('button', { name: '移除文件 too-large.txt', exact: true }).click()
   await diskFileEvent(page, [firstPath])
   await expect(page.getByRole('alert')).toHaveCount(0)
   assert(
@@ -265,7 +340,18 @@ try {
   assert.equal(detail.workspace_path, undefined)
   assert.equal(detail.messages[0].files[0].size, Buffer.byteLength(firstText))
   assert(!JSON.stringify(detail).includes('CREATE_FILE_VERSION_1'))
-  assert(userBodies(calls[0]).includes('CREATE_FILE_VERSION_1'))
+  assert(!userBodies(calls[0]).includes('CREATE_FILE_VERSION_1'))
+  assert(userBodies(calls[0]).includes('attachment:'))
+  const firstSaved = await page.evaluate(async (id) => {
+    const run = await window.harness.getRun(id)
+    const resource = await window.harness.resolveResource({
+      runId: id,
+      messageId: run.messages[0].id,
+      fileIndex: 0,
+    })
+    return resource.text
+  }, id)
+  assert.equal(firstSaved, firstText)
   assert(!userBodies(calls[0]).includes('CREATE_FILE_VERSION_2'))
   await expect(draftFiles()).toHaveCount(0)
   await expect(page.locator('.message-user .file-references li')).toHaveCount(1)
@@ -301,6 +387,37 @@ try {
     false,
     'ordinary web links must retain native paste even with a URI-list representation',
   )
+
+  // Exercise every attachment entry point against the real original-file store.
+  await application.evaluate(({ dialog }, path) => {
+    dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [path] })
+  }, pdfFiles[0].path)
+  await addContent.click()
+  await page.getByRole('menuitem', { name: '添加文件', exact: true }).click()
+  await expect(draftFiles()).toHaveCount(2)
+  await expect(draftFiles().last()).toContainText(pdfFiles[0].name)
+  await diskFileEvent(page, [pdfFiles[1].path])
+  await expect(draftFiles()).toHaveCount(3)
+  await expect(draftFiles().last()).toContainText(pdfFiles[1].name)
+  await diskFileEvent(page, [pdfFiles[2].path], 'paste')
+  await expect(draftFiles()).toHaveCount(4)
+  await expect(draftFiles().last()).toContainText(pdfFiles[2].name)
+  await page.getByRole('button', { name: `移除文件 ${pdfFiles[2].name}`, exact: true }).click()
+  await expect(draftFiles()).toHaveCount(3)
+  await application.evaluate(async ({ clipboard, ClipboardItem }, uri) => {
+    await clipboard.write([new ClipboardItem({ 'text/uri-list': uri })])
+  }, pathToFileURL(pdfFiles[2].path).href)
+  await followup.focus()
+  await page.keyboard.press(process.platform === 'darwin' ? 'Meta+v' : 'Control+v')
+  await expect(draftFiles()).toHaveCount(4)
+  await expect(draftFiles().last()).toContainText(pdfFiles[2].name)
+  await expect(followup).toHaveValue('prefix 普通粘贴文本 NORMAL_PASTE')
+  await expect(page.getByRole('alert')).toHaveCount(0)
+  const unsentWorkspace = await page.evaluate(() => localStorage.getItem('open-harness-workspace'))
+  for (const file of pdfFiles)
+    assert(!unsentWorkspace.includes(file.token), 'unsent PDF contents must not enter localStorage')
+  await Promise.all(pdfFiles.map((file) => writeFile(file.path, minimalPdf(changedPdfToken))))
+
   await page.getByRole('button', { name: '开始运行', exact: true }).click()
   await expect.poll(() => calls.length).toBe(2)
   detail = await settled(page, id)
@@ -308,7 +425,25 @@ try {
     detail.messages.filter((message) => message.role === 'user')[1].files[0].name,
     'clipboard-notes.md',
   )
-  assert(userBodies(calls[1]).includes('PASTE_FILE_SNAPSHOT'))
+  assert(!userBodies(calls[1]).includes('PASTE_FILE_SNAPSHOT'))
+  const importedPdfs = detail.messages
+    .filter((message) => message.role === 'user')[1]
+    .files.slice(1)
+  assert.deepEqual(
+    importedPdfs.map((file) => file.name),
+    pdfFiles.map((file) => file.name),
+  )
+  const pdfBody = userBodies(calls[1])
+  for (const [index, file] of pdfFiles.entries()) {
+    assert(!pdfBody.includes(file.token), `PDF body must be read on demand: ${file.name}`)
+    assert(pdfBody.includes(file.name))
+    assert(importedPdfs[index].size > Buffer.byteLength(file.token))
+    assert(!JSON.stringify(detail).includes(file.token), 'run detail must return PDF metadata only')
+  }
+  assert(pdfBody.includes('attachment:'), 'the model needs a tool-readable original reference')
+  assert(!pdfBody.includes('%PDF-1.4'), 'the provider must receive text, not raw PDF bytes')
+  assert(!pdfBody.includes(changedPdfToken), 'sending must retain the imported PDF snapshot')
+  await previewPdfSnapshot(page)
 
   holdNext = true
   await followup.fill('Pause this request so the next message exercises resume.')
@@ -322,8 +457,9 @@ try {
   await expect.poll(() => calls.length).toBe(4)
   detail = await settled(page, id)
   assert(detail.events.some((event) => event.type === 'run_resumed'))
-  assert(userBodies(calls.at(-1)).includes('RESUME_FILE_SNAPSHOT'))
-  await expect(page.locator('.message-user .file-references li')).toHaveCount(3)
+  assert(!userBodies(calls.at(-1)).includes('RESUME_FILE_SNAPSHOT'))
+  assert(userBodies(calls.at(-1)).includes('resume.txt'))
+  await expect(page.locator('.message-user .file-references li')).toHaveCount(6)
   await page.screenshot({ path: join(artifacts, 'desktop-file-references-conversation.png') })
   await closeApplication()
 
@@ -335,7 +471,8 @@ try {
     window.location.hash = `/runs/${id}`
   }, id)
   detail = await settled(page, id)
-  await expect(page.locator('.message-user .file-references li')).toHaveCount(3)
+  await expect(page.locator('.message-user .file-references li')).toHaveCount(6)
+  await previewPdfSnapshot(page)
   assert.equal(
     detail.messages.find((message) => message.role === 'user').files[0].size,
     Buffer.byteLength(firstText),
@@ -347,15 +484,25 @@ try {
   await expect.poll(() => calls.length).toBe(5)
   await settled(page, id)
   const afterRestart = userBodies(calls.at(-1))
-  for (const token of ['CREATE_FILE_VERSION_1', 'PASTE_FILE_SNAPSHOT', 'RESUME_FILE_SNAPSHOT'])
-    assert(afterRestart.includes(token), `saved snapshot missing: ${token}`)
+  for (const token of [
+    'CREATE_FILE_VERSION_1',
+    'PASTE_FILE_SNAPSHOT',
+    'RESUME_FILE_SNAPSHOT',
+    ...pdfFiles.map((file) => file.token),
+  ])
+    assert(!afterRestart.includes(token), `original bytes must remain outside the prompt: ${token}`)
   assert(!afterRestart.includes('CREATE_FILE_VERSION_2'))
+  assert(!afterRestart.includes(changedPdfToken))
+  assert(!afterRestart.includes('%PDF-1.4'))
   const events = await readFile(
     join(dataDirectory, 'runtime', 'events', `run-${Buffer.from(id).toString('hex')}.jsonl`),
     'utf8',
   )
-  assert(events.includes('CREATE_FILE_VERSION_1'))
+  assert(!events.includes('CREATE_FILE_VERSION_1'))
+  assert(events.includes('attachment'))
   assert(!events.includes('CREATE_FILE_VERSION_2'))
+  for (const file of pdfFiles) assert(!events.includes(file.token))
+  assert(!events.includes(changedPdfToken))
   assert.deepEqual(errors, [], 'renderer must not report uncaught errors')
   assert.deepEqual(fixtureErrors, [])
   console.log(
@@ -363,7 +510,7 @@ try {
       result: 'passed',
       run_id: id,
       provider_requests: calls.length,
-      snapshots: 3,
+      snapshots: 6,
       data_directory: dataDirectory,
     }),
   )

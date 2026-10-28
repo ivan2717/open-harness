@@ -92,6 +92,8 @@ fn assert_source_slice(hit: &Value, source: &str) {
 #[tokio::test]
 async fn user_source_keeps_original_inputs_and_attachments_without_derived_copies() {
     let attached = TextFileReference {
+        attachment: None,
+        image: None,
         name: "records.txt".into(),
         path: Some("source/records.txt".into()),
         text: "original NEEDLE attachment".into(),

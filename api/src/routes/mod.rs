@@ -18,17 +18,35 @@ use axum::{
     routing::{delete, get, patch, post},
 };
 use std::{convert::Infallible, time::Duration};
+mod attachments;
+mod documents;
 mod health_router;
 mod plugins;
 
 pub(crate) fn router(state: AppState) -> Router {
     Router::new()
         .merge(health_router::health_router())
+        .route(
+            "/documents/extract",
+            post(documents::extract).layer(DefaultBodyLimit::max(
+                agent_local::documents::MAX_DOCUMENT_BYTES,
+            )),
+        )
+        .route(
+            "/attachments",
+            post(attachments::upload).layer(DefaultBodyLimit::max(
+                crate::service::attachments::MAX_ATTACHMENT_BYTES,
+            )),
+        )
         .route("/config", get(config))
         .route("/models", post(configure_model))
         .route("/models/{id}/replace", post(replace_model))
         .route("/extensions", get(extension_settings).post(save_extensions))
         .route("/extensions/skills", get(skill_catalog))
+        .route(
+            "/extensions/control-permissions/{id}",
+            delete(revoke_control_permission),
+        )
         .route("/extensions/mcp/{id}/test", post(test_mcp))
         .route("/plugins/install", post(plugins::install))
         .route("/plugins/{id}/enabled", post(plugins::enable))
@@ -41,7 +59,12 @@ pub(crate) fn router(state: AppState) -> Router {
             "/runs/{id}/extensions/approvals/{approval}",
             post(approve_extension),
         )
-        .route("/runs", get(list).post(create))
+        .route(
+            "/runs",
+            get(list)
+                .post(create)
+                .layer(DefaultBodyLimit::max(32 * 1024 * 1024)),
+        )
         .route("/runs/{id}", get(detail))
         .route("/runs/{id}/model", patch(update_run_model))
         .route(
@@ -52,9 +75,19 @@ pub(crate) fn router(state: AppState) -> Router {
             "/runs/{id}/messages/{message_id}/files/{index}",
             get(message_file),
         )
+        .route(
+            "/runs/{id}/messages/{message_id}/files/{index}/content",
+            get(attachments::download),
+        )
         .route("/runs/{id}/cancel", post(cancel))
-        .route("/runs/{id}/input", post(input))
-        .route("/runs/{id}/resume", post(resume))
+        .route(
+            "/runs/{id}/input",
+            post(input).layer(DefaultBodyLimit::max(32 * 1024 * 1024)),
+        )
+        .route(
+            "/runs/{id}/resume",
+            post(resume).layer(DefaultBodyLimit::max(32 * 1024 * 1024)),
+        )
         .route("/runs/{id}/workspace", get(workspace))
         .route(
             "/runs/{id}/workspace/commands/{command}/stop",
@@ -163,16 +196,33 @@ async fn approve_extension(
     Path((id, approval)): Path<(String, String)>,
     Json(input): Json<ExtensionApprovalInput>,
 ) -> Result<Json<crate::extensions::RunExtensions>, ServiceError> {
-    state
-        .approve_extension_scoped(&id, &approval, input.allow, input.session)
-        .map(Json)
+    match input {
+        ExtensionApprovalInput::Decision { decision } => {
+            state.decide_extension(&id, &approval, decision)
+        }
+        ExtensionApprovalInput::Legacy { allow, session } => {
+            state.approve_extension_scoped(&id, &approval, allow, session)
+        }
+    }
+    .map(Json)
 }
 #[derive(serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ExtensionApprovalInput {
-    allow: bool,
-    #[serde(default)]
-    session: bool,
+#[serde(untagged, deny_unknown_fields)]
+enum ExtensionApprovalInput {
+    Decision {
+        decision: crate::extensions::ApprovalDecision,
+    },
+    Legacy {
+        allow: bool,
+        #[serde(default)]
+        session: bool,
+    },
+}
+async fn revoke_control_permission(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<crate::extensions::ExtensionSettings>, ServiceError> {
+    state.revoke_control_permission(&id).map(Json)
 }
 async fn revoke_control(
     State(state): State<AppState>,
@@ -182,9 +232,21 @@ async fn revoke_control(
 }
 async fn configure_model(
     State(state): State<AppState>,
-    Json(input): Json<ConfigureModel>,
+    Json(input): Json<ConfigureModelRequest>,
 ) -> Result<Json<ModelInfo>, ServiceError> {
-    state.configure_model(input).await.map(Json)
+    state
+        .configure_model_for_edit(input.configuration, input.edit_source_id.as_deref())
+        .await
+        .map(Json)
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ConfigureModelRequest {
+    #[serde(default)]
+    edit_source_id: Option<String>,
+    #[serde(flatten)]
+    configuration: ConfigureModel,
 }
 async fn replace_model(
     State(state): State<AppState>,
@@ -192,7 +254,11 @@ async fn replace_model(
     Json(input): Json<ReplaceModelInput>,
 ) -> Result<Json<ModelInfo>, ServiceError> {
     state
-        .replace_model(&id, &input.replacement_model_id)
+        .replace_model_configuration(
+            &id,
+            &input.replacement_model_id,
+            input.allow_configuration_change,
+        )
         .await
         .map(Json)
 }

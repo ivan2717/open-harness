@@ -251,7 +251,15 @@ fn user_message(id: String, text: &str, files: &[TextFileReference]) -> ChatMess
         .map(|file| FileReferenceInfo {
             name: file.name.clone(),
             path: file.path.clone(),
-            size: file.text.len(),
+            size: file.attachment.as_ref().map_or_else(
+                || {
+                    file.image.as_ref().map_or(file.text.len(), |image| {
+                        image.decoded_bytes().map_or(0, |bytes| bytes.len())
+                    })
+                },
+                |attachment| attachment.size as usize,
+            ),
+            mime_type: file.image.as_ref().map(|image| image.mime_type.clone()),
         })
         .collect();
     message

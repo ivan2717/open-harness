@@ -215,6 +215,34 @@ describe('desktop bridge request boundary', () => {
       apiRequest({ operation: 'createRun', input: { prompt: '😀'.repeat(4001), model_id: 'm' } }),
     ).toThrow('4,000')
   })
+  it('preserves original-file metadata on all input routes and refuses invalid or mixed references', () => {
+    const files = [
+      {
+        name: 'large.pdf',
+        path: '/tmp/large.pdf',
+        attachment: { id: 'a'.repeat(64), size: 90 * 1024 * 1024 },
+      },
+    ]
+    expect(
+      apiRequest({ operation: 'createRun', input: { prompt: '', model_id: 'm', files } }).body,
+    ).toEqual({ prompt: '', model_id: 'm', files })
+    for (const operation of ['submitInput', 'resumeRun'])
+      expect(apiRequest({ operation, id: 'run-1', message: '', files }).body).toEqual({
+        message: '',
+        files,
+      })
+    for (const file of [
+      { ...files[0], text: 'injected' },
+      { ...files[0], image: {} },
+      { ...files[0], attachment: { id: '../outside', size: 1 } },
+      { ...files[0], attachment: { id: 'a'.repeat(64), size: -1 } },
+      { ...files[0], attachment: { id: 'a'.repeat(64), size: 101 * 1024 * 1024 } },
+    ])
+      expect(() =>
+        apiRequest({ operation: 'createRun', input: { prompt: '', model_id: 'm', files: [file] } }),
+      ).toThrow()
+  })
+
   it('rejects malformed and oversized attachment snapshots at the IPC boundary', () => {
     for (const files of [
       {},
@@ -227,7 +255,7 @@ describe('desktop bridge request boundary', () => {
       [{ name: 'file', path: '/tmp/bad\u0085path', text: 'a' }],
       [{ name: 'file', text: 42 }],
       [{ name: 'file', text: '中'.repeat(90_000) }],
-      Array.from({ length: 9 }, () => ({ name: 'file', text: '' })),
+      Array.from({ length: 65 }, () => ({ name: 'file', text: '' })),
       Array.from({ length: 3 }, () => ({ name: 'file', text: 'a'.repeat(256 * 1024) })),
     ])
       expect(() =>
@@ -236,6 +264,32 @@ describe('desktop bridge request boundary', () => {
     expect(() =>
       apiRequest({ operation: 'submitInput', id: 'run-1', message: '', files: [] }),
     ).toThrow()
+  })
+
+  it('preserves image snapshots on all user input routes and rejects mixed or invalid payloads', () => {
+    const image = {
+      mime_type: 'image/png',
+      data_base64:
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jq1sAAAAASUVORK5CYII=',
+    }
+    const files = [{ name: '截图.png', image }]
+    expect(
+      apiRequest({ operation: 'createRun', input: { prompt: '', model_id: 'm', files } }).body,
+    ).toEqual({ prompt: '', model_id: 'm', files })
+    for (const operation of ['submitInput', 'resumeRun'])
+      expect(apiRequest({ operation, id: 'run-1', message: '', files }).body).toEqual({
+        message: '',
+        files,
+      })
+    for (const invalid of [
+      [{ ...files[0], text: 'cannot hide pixels in a text reference' }],
+      [{ ...files[0], image: { ...image, mime_type: 'image/jpeg' } }],
+      [{ ...files[0], image: { ...image, data_base64: image.data_base64 + '\n' } }],
+      Array(5).fill(files[0]),
+    ])
+      expect(() =>
+        apiRequest({ operation: 'submitInput', id: 'run-1', message: '', files: invalid }),
+      ).toThrow()
   })
 })
 

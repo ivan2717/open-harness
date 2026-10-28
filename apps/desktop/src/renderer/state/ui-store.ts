@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
-import type { PermissionMode, TextFileReference } from '../../shared/contracts'
+import type { PermissionMode, FileReference } from '../../shared/contracts'
 
 export type InspectorTab = 'context' | 'timeline' | 'memory'
 
@@ -9,7 +9,7 @@ export interface ProjectSelection {
   permission: PermissionMode
 }
 
-export interface DraftFileReference extends TextFileReference {
+export type DraftFileReference = FileReference & {
   id: string
 }
 

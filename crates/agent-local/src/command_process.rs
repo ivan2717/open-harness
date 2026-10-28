@@ -75,7 +75,10 @@ impl CommandProcess {
             }
         }
         write_paths.push(temporary.clone());
-        let runtime = RuntimeEnvironment::load()?;
+        let mut runtime = RuntimeEnvironment::load()?;
+        // These are exact immutable files authorized by the host from durable
+        // user attachments, never their parent directory or model-chosen paths.
+        runtime.read_paths.extend(tools.attachment_read_paths()?);
         #[cfg(not(windows))]
         let mut command = {
             // EOF on the separate supervision pipe kills the process group,

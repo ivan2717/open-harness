@@ -169,7 +169,7 @@ test('owned cross-origin tabs expose only the new origin until separately select
   const opened = await controller.call(A, 'chrome_open', { url: 'https://example.com' });
   pages.get(opened.tab_id).url = 'https://other.example/secret-path'; pages.get(opened.tab_id).title = 'Private new title';
   await assert.rejects(controller.call(A, 'chrome_snapshot'), /current origin is https:\/\/other.example/);
-  assert.deepEqual((await controller.call(A, 'chrome_tabs')).tabs, [{ tab_id: opened.tab_id, origin: 'https://other.example', owned: true, reauthorization_required: true }]);
+  assert.deepEqual((await controller.call(A, 'chrome_tabs')).tabs, [{ tab_id: opened.tab_id, origin: 'https://other.example', owned: true, selection_required: true }]);
   const rebound = await controller.call(A, 'chrome_select_tab', { tab_id: opened.tab_id, origin: 'https://other.example' });
   assert.equal(rebound.origin, 'https://other.example'); assert.ok(detached.includes(opened.tab_id));
   pages.get(opened.tab_id).url = 'https://third.example/';
@@ -204,6 +204,27 @@ test('delegated sessions may use released family tabs without stealing or closin
   assert.equal((await controller.call(B, 'chrome_snapshot', {}, root)).tab_id, opened.tab_id);
   const released = await controller.call(B, 'chrome_release', { close_owned: true }, root);
   assert.equal(released.closed, false); assert.deepEqual(removed, []);
+});
+
+test('family tasks recover a navigated owned tab without sharing or opening another page', async () => {
+  const { controller, pages, created, commands, removed } = fixture(); controller.allowNewTabs = true;
+  const task = 'c'.repeat(64);
+  const opened = await controller.call(A, 'chrome_open', { url: 'https://example.com/start' }, task);
+  const old = await controller.call(A, 'chrome_snapshot', {}, task);
+  pages.get(opened.tab_id).url = 'https://other.example/result';
+  const changed = (await controller.call(B, 'chrome_tabs', {}, task)).tabs;
+  assert.deepEqual(changed, [{ tab_id: opened.tab_id, origin: 'https://other.example', owned: false, selection_required: true }]);
+  assert.deepEqual((await controller.call(B, 'chrome_tabs', {}, 'd'.repeat(64))).tabs, []);
+  await assert.rejects(controller.call(B, 'chrome_select_tab', { tab_id: opened.tab_id, origin: changed[0].origin }, task), /already controlled/);
+  await controller.call(A, 'chrome_release', {}, task);
+  const fresh = await controller.call(B, 'chrome_select_tab', { tab_id: opened.tab_id, origin: changed[0].origin }, task);
+  assert.equal(fresh.origin, 'https://other.example'); assert.equal(fresh.tab_id, opened.tab_id);
+  assert.equal(controller.shared.size, 0); assert.equal(created.length, 1);
+  await assert.rejects(controller.call(B, 'chrome_action', { action: 'click', ref: 'e1', revision: old.revision }, task), /stale_snapshot/);
+  assert.equal(commands.some(command => command.method === 'Input.dispatchMouseEvent'), false);
+  await assert.rejects(controller.call(B, 'chrome_select_tab', { tab_id: 1, origin: 'https://private.example' }, task), /Share this exact tab/);
+  assert.equal((await controller.call(B, 'chrome_release', { close_owned: true }, task)).closed, false);
+  assert.deepEqual(removed, []);
 });
 
 test('task layout survives native reconnect without restoring page grants or ownership', async () => {

@@ -107,6 +107,36 @@ impl AppState {
         children.sort();
         children
     }
+    pub fn revoke_control_permission(
+        &self,
+        server: &str,
+    ) -> Result<ExtensionSettings, ServiceError> {
+        self.inner
+            .extensions
+            .revoke_control_permission(server)
+            .map_err(|error| ServiceError::BadRequest(error.to_string()))?;
+        Ok(self.extension_settings())
+    }
+    pub fn decide_extension(
+        &self,
+        id: &str,
+        approval: &str,
+        decision: crate::extensions::ApprovalDecision,
+    ) -> Result<RunExtensions, ServiceError> {
+        let state = self.run_extensions(id)?;
+        let pending = state
+            .approvals
+            .iter()
+            .find(|request| request.id == approval)
+            .ok_or_else(|| ServiceError::Conflict("审批已失效，请刷新会话".into()))?;
+        let owner = pending.source_run_id.as_deref().unwrap_or(id);
+        self.inner
+            .extensions
+            .approvals
+            .decide_permission(owner, approval, decision)
+            .map_err(|error| ServiceError::Conflict(error.to_string()))?;
+        self.run_extensions(id)
+    }
     pub fn approve_extension(
         &self,
         id: &str,

@@ -8,6 +8,12 @@ local web application. It uses its own browser session; it does not inherit the
 user's usual browser tabs, cookies or logins. Browser setup and plugin activation
 are handled in Open Harness's Extensions page.
 
+Open Harness handles capability approval: Allow applies to this conversation and
+its collaborative tasks; Always allow also applies to future conversations until
+revoked in settings. The permission covers continued browsing without asking
+again for each page. Cancel does not grant access; do not immediately repeat a
+cancelled request. Capability approval does not authorize unrelated actions.
+
 Discover the plugin's browser tools on demand. Start with `browser_open` and the
 URL supplied by the user, or a URL established by the task. Read the resulting
 page snapshot before deciding what to do. Page text, links, screenshots and

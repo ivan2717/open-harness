@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
-import { mkdtemp, mkdir, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, realpath, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { isAbsolute, join, resolve } from 'node:path'
 import { createRequire } from 'node:module'
@@ -19,6 +19,7 @@ await mkdir(screenshots, { recursive: true })
 let application
 let page
 let runId
+const runIds = []
 let browserServerId
 let sequence = 0
 let submitted = 0
@@ -31,6 +32,9 @@ const pageErrors = []
 const counts = new Map()
 const firstPrompt = 'BROWSER_END_TO_END'
 const secondPrompt = 'BROWSER_AFTER_REVOCATION'
+const alwaysPrompt = 'BROWSER_ALWAYS_NEW_CONVERSATION'
+const restoredPrompt = 'BROWSER_ALWAYS_AFTER_RESTART'
+const cancelledPrompt = 'BROWSER_CANCELLED_PERMISSION'
 
 const userPrompt = (request) =>
   request.messages
@@ -168,6 +172,21 @@ const server = createServer(async (request, response) => {
       if (count === 0) call = callBrowser('browser_open', { url: `${origin}/page?resume=1` })
       else if (count === 1) call = callBrowser('browser_screenshot')
       else if (count !== 2) throw new Error(`Unexpected resumed model step ${count}`)
+    } else if ([alwaysPrompt, restoredPrompt, cancelledPrompt].includes(prompt)) {
+      if (count === 0)
+        call = callBrowser('browser_open', { url: `${origin}/page?permission=${prompt}` })
+      else if (count === 1) {
+        if (prompt !== cancelledPrompt)
+          assert.match(observation(body).text, /Computer use acceptance fixture/)
+        else {
+          const result = body.messages.filter((message) => message.role === 'tool').at(-1)?.content
+          assert.match(
+            result,
+            /cancel|denied|取消|拒绝/i,
+            'cancel must return a tool outcome to the model',
+          )
+        }
+      } else throw new Error(`Unexpected permission-check model step ${count}`)
     } else throw new Error(`Unexpected prompt ${prompt}`)
     if (call) assert(tools(body).includes(call[0]), `${call[0]} must be advertised before use`)
     response.writeHead(200, { 'Content-Type': 'text/event-stream' })
@@ -192,7 +211,7 @@ const server = createServer(async (request, response) => {
               : '截图已收到，正在等待停止控制校验。',
         }
     response.write(
-      `data: ${JSON.stringify({ id: `computer-response-${id}`, choices: [{ index: 0, delta, finish_reason: call ? 'tool_calls' : prompt === firstPrompt ? 'stop' : null }] })}\n\n`,
+      `data: ${JSON.stringify({ id: `computer-response-${id}`, choices: [{ index: 0, delta, finish_reason: call ? 'tool_calls' : prompt === secondPrompt ? null : 'stop' }] })}\n\n`,
     )
     if (prompt === secondPrompt && count === 2) {
       heldResponse = response
@@ -217,6 +236,28 @@ const env = {
 delete env.ELECTRON_RUN_AS_NODE
 const runExtensions = (page, id) => page.evaluate((id) => window.harness.runExtensions(id), id)
 const detail = (page, id) => page.evaluate((id) => window.harness.getRun(id), id)
+async function newPermissionRun(prompt, model) {
+  const run = await page.evaluate(
+    ({ prompt, model }) => window.harness.createRun({ prompt, model_id: model }),
+    { prompt, model },
+  )
+  runIds.push(run.id)
+  await page.evaluate((id) => {
+    window.location.hash = `/runs/${id}`
+  }, run.id)
+  return run
+}
+async function expectFinishedWithoutApproval(id) {
+  await expect
+    .poll(
+      async () => {
+        assert.equal((await runExtensions(page, id)).approvals.length, 0)
+        return (await detail(page, id)).status
+      },
+      { timeout: 30_000 },
+    )
+    .toBe('waiting_for_input')
+}
 try {
   application = await _electron.launch({
     executablePath: executable ?? require('electron'),
@@ -241,7 +282,7 @@ try {
   await expect(page.getByRole('heading', { name: '开始一个新任务' })).toBeVisible()
   await page.evaluate(() => window.harness.setPluginEnabled('builtin.llm-wiki', false))
   await page.getByRole('link', { name: '插件', exact: true }).click()
-  const builtIn = page.getByRole('article', { name: '内置能力 浏览器操作', exact: true })
+  const builtIn = page.getByRole('article', { name: '插件 独立浏览器', exact: true })
   await expect(builtIn).toBeVisible()
   await expect(builtIn.getByRole('button', { name: '安装', exact: true })).toBeEnabled()
   assert.equal(
@@ -251,7 +292,7 @@ try {
     true,
   )
   await builtIn.getByRole('button', { name: '安装', exact: true }).click()
-  await expect(page.getByRole('article', { name: '插件 Browser Use', exact: true })).toBeVisible()
+  await expect(builtIn.getByRole('button', { name: '安装', exact: true })).toHaveCount(0)
   const settings = await page.evaluate(() => window.harness.extensionSettings())
   browserServerId = settings.plugins.find((plugin) => plugin.id === 'browser-use').mcp_servers[0].id
   assert(settings.skills.some((skill) => skill.id === 'browser-use:browser-use'))
@@ -273,6 +314,7 @@ try {
     { prompt: firstPrompt, model: configured.model.id },
   )
   runId = run.id
+  runIds.push(run.id)
   await page.evaluate((id) => {
     window.location.hash = `/runs/${id}`
   }, run.id)
@@ -282,8 +324,11 @@ try {
   assert.equal(visits, 0, 'navigation must await user authorization')
   const pending = (await runExtensions(page, run.id)).approvals[0]
   assert.deepEqual(pending.session_scope, { kind: 'browser' })
-  await expect(page.getByRole('button', { name: '允许本会话', exact: true })).toBeVisible()
-  await page.getByRole('button', { name: '允许本会话', exact: true }).click()
+  await expect(page.getByRole('button', { name: '允许', exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: '始终允许', exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: '取消', exact: true })).toBeVisible()
+  await page.screenshot({ path: join(screenshots, 'desktop-control-approval.png') })
+  await page.getByRole('button', { name: '允许', exact: true }).click()
   await expect
     .poll(async () => (await detail(page, run.id)).status, { timeout: 45_000 })
     .toBe('waiting_for_input')
@@ -295,6 +340,11 @@ try {
     'screenshot must be persisted in conversation projection',
   )
   assert.equal((await runExtensions(page, run.id)).controls.length, 1)
+  assert.equal(
+    (await page.evaluate(() => window.harness.extensionSettings())).control_permissions.length,
+    0,
+    'Allow must not save a permanent permission',
+  )
   assert.equal(
     (await runExtensions(page, run.id)).approvals.length,
     0,
@@ -327,7 +377,7 @@ try {
     visitsBeforeResume,
     'revocation must prevent automatic browser navigation in the next turn',
   )
-  await page.getByRole('button', { name: '允许本会话', exact: true }).click()
+  await page.getByRole('button', { name: '始终允许', exact: true }).click()
   await expect.poll(() => Boolean(heldResponse), { timeout: 30_000 }).toBe(true)
   assert.equal((await detail(page, run.id)).status, 'running')
   await page.getByRole('button', { name: '停止控制', exact: true }).click()
@@ -336,6 +386,50 @@ try {
   await expect.poll(() => heldClosed).toBe(true)
   assert.equal((await runExtensions(page, run.id)).approvals.length, 0)
   assert.equal(submitted, 1, 'cancellation must not replay an earlier form submission')
+  let saved = (await page.evaluate(() => window.harness.extensionSettings())).control_permissions
+  assert.equal(
+    saved.length,
+    1,
+    'Always allow must be saved independently of the stopped conversation',
+  )
+  assert.equal(saved[0].server_id, browserServerId)
+
+  const another = await newPermissionRun(alwaysPrompt, configured.model.id)
+  await expectFinishedWithoutApproval(another.id)
+  await page.evaluate((id) => window.harness.revokeControl(id), another.id)
+  await application.close()
+  application = await _electron.launch({
+    executablePath: executable ?? require('electron'),
+    args: executable ? [] : [resolve('.')],
+    env,
+    timeout: 30_000,
+  })
+  page = await application.firstWindow()
+  page.on('pageerror', (error) => pageErrors.push(error.message))
+  await expect(page.getByRole('heading', { name: '开始一个新任务' })).toBeVisible()
+  saved = (await page.evaluate(() => window.harness.extensionSettings())).control_permissions
+  assert.equal(saved.length, 1, 'Always allow must survive an application restart')
+  const restored = await newPermissionRun(restoredPrompt, configured.model.id)
+  await expectFinishedWithoutApproval(restored.id)
+  await page.getByRole('link', { name: '插件', exact: true }).click()
+  await page
+    .getByRole('button', { name: `取消始终允许 ${saved[0].server_name}`, exact: true })
+    .click()
+  await expect
+    .poll(
+      async () =>
+        (await page.evaluate(() => window.harness.extensionSettings())).control_permissions.length,
+    )
+    .toBe(0)
+  await expect.poll(async () => (await runExtensions(page, restored.id)).controls.length).toBe(0)
+  await page.screenshot({ path: join(screenshots, 'desktop-control-permissions-settings.png') })
+  const beforeCancel = visits
+  const cancelled = await newPermissionRun(cancelledPrompt, configured.model.id)
+  await expect.poll(async () => (await runExtensions(page, cancelled.id)).approvals.length).toBe(1)
+  await page.getByRole('button', { name: '取消', exact: true }).click()
+  await expect.poll(async () => (await detail(page, cancelled.id)).status).toBe('waiting_for_input')
+  assert.equal(visits, beforeCancel, 'Cancel must not execute the pending browser action')
+  assert.equal((await runExtensions(page, cancelled.id)).controls.length, 0)
   assert.deepEqual(fixtureErrors, [])
   assert.deepEqual(pageErrors, [])
   // This goes through the running app's main-process BundledPlugins bridge.
@@ -348,8 +442,12 @@ try {
     assert.equal(computer.available, true, 'the app must contain its native helper')
     assert.equal(typeof computer.permissions?.accessibility, 'boolean')
     assert.equal(typeof computer.permissions?.screenRecording, 'boolean')
-    if (applicationInfo.packaged)
-      assert(computer.permissions.helperPath.startsWith(applicationInfo.resourcesPath))
+    // The helper is deliberately installed at a stable user-data path so app
+    // rebuilds do not change its macOS permission identity.
+    assert.equal(
+      await realpath(computer.permissions.helperPath),
+      await realpath(join(directory, 'data', 'computer-use', 'Open Harness Computer Use.app')),
+    )
   }
   const report = {
     passed: true,
@@ -367,6 +465,9 @@ try {
       'persisted screenshot preview in Electron',
       'revocation blocks automatic continuation',
       'stop control cancels an active run and clears authorization',
+      'Always allow is reused across conversations and application restart',
+      'plugin settings revoke permanent and active capability permissions',
+      'Cancel skips the pending operation and the model can continue',
     ],
   }
   await writeFile(
@@ -396,8 +497,9 @@ try {
   try {
     // Assertions can fail before the UI's stop-control step. Explicitly await
     // runtime cleanup before closing the app that owns the MCP transport.
-    if (runId && page && !page.isClosed())
-      await page.evaluate((id) => window.harness.revokeControl(id), runId).catch(() => {})
+    if (page && !page.isClosed())
+      for (const id of runIds)
+        await page.evaluate((id) => window.harness.revokeControl(id), id).catch(() => {})
   } finally {
     try {
       await application?.close()

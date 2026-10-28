@@ -47,7 +47,16 @@ export interface PluginInfo {
   warnings: string[]
 }
 
+export type ControlApprovalDecision = 'allow' | 'always' | 'cancel'
+
+export interface ControlPermission {
+  server_id: string
+  server_name: string
+  capability: 'chrome' | 'browser' | 'computer'
+}
+
 export interface ExtensionSettings {
+  control_permissions?: ControlPermission[]
   config: ExtensionConfig
   builtin_plugins: BuiltinPluginInfo[]
   plugins: PluginInfo[]
@@ -122,6 +131,8 @@ export interface RunExtensions {
   diagnostics: { path: string; message: string }[]
   approvals: ExtensionApproval[]
   controls?: ControlAccess[]
+  /** Capability grants remain revocable after the selected tab/app is released. */
+  control_permissions?: ControlPermission[]
 }
 
 export interface McpCatalog {

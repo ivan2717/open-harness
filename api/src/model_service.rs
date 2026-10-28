@@ -21,6 +21,19 @@ impl AppState {
         id: &str,
         replacement_id: &str,
     ) -> Result<ModelInfo, ServiceError> {
+        self.replace_model_configuration(id, replacement_id, false)
+            .await
+    }
+
+    /// Apply an explicit saved-profile edit to every idle binding. When the
+    /// provider contract changes, retain portable history but stop replaying
+    /// opaque state from the previous model, just like switching a single run.
+    pub async fn replace_model_configuration(
+        &self,
+        id: &str,
+        replacement_id: &str,
+        allow_configuration_change: bool,
+    ) -> Result<ModelInfo, ServiceError> {
         if !valid_id(id) || !valid_id(replacement_id) {
             return Err(ServiceError::NotFound);
         }
@@ -48,7 +61,7 @@ impl AppState {
                 .read()
                 .expect("runs lock poisoned")
                 .values()
-                .any(|entry| entry.snapshot.get().summary.model_id == id);
+                .any(|entry| references_model(&entry.snapshot.get(), id));
             return if still_referenced {
                 Err(ServiceError::NotFound)
             } else {
@@ -58,23 +71,21 @@ impl AppState {
         if id == replacement_id {
             return Ok(replacement.info);
         }
-        if previous.model.provider_context_identity()
-            != replacement.model.provider_context_identity()
+        if !allow_configuration_change
+            && previous.model.provider_context_identity()
+                != replacement.model.provider_context_identity()
         {
             return Err(ServiceError::BadRequest(
                 "更新容量须保持相同的模型、服务地址、协议和思考设置".into(),
             ));
         }
-        let policy = context_policy(&replacement.model)?
-            .resolve(replacement.model.context_metadata())
-            .map_err(ServiceError::internal)?;
         let mut entries: Vec<_> = self
             .inner
             .runs
             .read()
             .expect("runs lock poisoned")
             .values()
-            .filter(|entry| entry.snapshot.get().summary.model_id == id)
+            .filter(|entry| references_model(&entry.snapshot.get(), id))
             .cloned()
             .collect();
         entries.sort_by_key(|entry| entry.snapshot.get().summary.id);
@@ -92,12 +103,21 @@ impl AppState {
                     .is_some_and(|workspace| workspace.commands_running())
             {
                 return Err(ServiceError::Conflict(
-                    "此模型仍有运行或压缩任务，请等待结束后更新容量".into(),
+                    "此模型仍有运行、压缩或命令任务，请等待结束后更新配置".into(),
                 ));
             }
         }
         let update_binding = |detail: &mut RunDetail| {
-            detail.summary.model_id = replacement_id.to_owned();
+            if detail.summary.model_id == id {
+                detail.summary.model_id = replacement_id.to_owned();
+                if allow_configuration_change {
+                    retain_supported_effort(
+                        &replacement.model,
+                        &mut detail.summary.reasoning_effort,
+                    );
+                    detail.summary.reasoning_settings_version = 1;
+                }
+            }
             // Explicit child selections are reused on every follow-up. Migrate
             // the durable pin together with its current runtime binding.
             if let Some(selection) = detail
@@ -108,6 +128,9 @@ impl AppState {
                 .filter(|selection| selection.model_id == id)
             {
                 selection.model_id = replacement_id.to_owned();
+                if allow_configuration_change {
+                    retain_supported_effort(&replacement.model, &mut selection.reasoning_effort);
+                }
             }
         };
         for entry in entries {
@@ -118,20 +141,57 @@ impl AppState {
                 .await;
             let mut detail = entry.snapshot.get();
             let run_id = detail.summary.id.clone();
+            let rebind = detail.summary.model_id == id;
             update_binding(&mut detail);
-            let restored = self.make_entry_with_snapshot(
-                detail,
-                0,
-                Some(entry.snapshot.clone()),
-                Some(&replacement.model),
-                true,
-            )?;
+            let replacement = if !rebind {
+                // A child can retain an explicit future selection while its
+                // current runtime uses another model. Migrate only that pin.
+                None
+            } else {
+                if allow_configuration_change {
+                    let effective = match detail.summary.reasoning_effort.as_deref() {
+                        Some(effort) => replacement.model.with_reasoning_effort(effort),
+                        None => Ok(replacement.model.clone()),
+                    }
+                    .map_err(ServiceError::internal)?;
+                    if entry.runtime.model().provider_context_identity()
+                        != effective.provider_context_identity()
+                    {
+                        let run = entry
+                            .runtime
+                            .restore_run(&run_id)
+                            .await
+                            .map_err(ServiceError::internal)?
+                            .ok_or(ServiceError::NotFound)?;
+                        detail.summary.model_history_through =
+                            run.events().last().map(|e| e.sequence);
+                    }
+                }
+                let restored = self.make_entry_with_snapshot(
+                    detail.clone(),
+                    0,
+                    Some(entry.snapshot.clone()),
+                    Some(&replacement.model),
+                    !allow_configuration_change,
+                )?;
+                let policy = context_policy(restored.runtime.model())?
+                    .resolve(restored.runtime.model().context_metadata())
+                    .map_err(ServiceError::internal)?;
+                Some((restored, policy))
+            };
             // Preserve the Snapshot and its live subscriptions. Persist the
             // binding before exposing the new runtime. On failure, both model
             // configurations remain available for earlier and remaining runs.
-            entry.snapshot.update(|detail| {
-                update_binding(detail);
-                let context = detail.context.get_or_insert_with(initial_context);
+            entry.snapshot.update(|current| {
+                update_binding(current);
+                let Some((_, policy)) = &replacement else {
+                    return;
+                };
+                current.summary.reasoning_effort = detail.summary.reasoning_effort.clone();
+                current.summary.reasoning_settings_version =
+                    detail.summary.reasoning_settings_version;
+                current.summary.model_history_through = detail.summary.model_history_through;
+                let context = current.context.get_or_insert_with(initial_context);
                 context.window_tokens = policy.model_budget().context_window();
                 context.input_budget = policy.input_token_limit();
                 context.trigger_tokens = policy.compaction_threshold();
@@ -142,11 +202,13 @@ impl AppState {
                 }
                 context.measurement = "estimated".into();
             })?;
-            self.inner
-                .runs
-                .write()
-                .expect("runs lock poisoned")
-                .insert(run_id, restored);
+            if let Some((restored, _)) = replacement {
+                self.inner
+                    .runs
+                    .write()
+                    .expect("runs lock poisoned")
+                    .insert(detail.summary.id, restored);
+            }
         }
         self.inner
             .models
@@ -154,6 +216,27 @@ impl AppState {
             .expect("models lock poisoned")
             .remove(id);
         Ok(replacement.info)
+    }
+}
+
+pub(super) fn references_model(detail: &RunDetail, id: &str) -> bool {
+    detail.summary.model_id == id
+        || detail
+            .summary
+            .delegation
+            .as_ref()
+            .and_then(|delegation| delegation.model_override.as_ref())
+            .is_some_and(|selection| selection.model_id == id)
+}
+
+fn retain_supported_effort(model: &agent_providers::HttpModel, effort: &mut Option<String>) {
+    if effort
+        .as_deref()
+        .is_some_and(|effort| model.with_reasoning_effort(effort).is_err())
+    {
+        // None selects the replacement profile's configured default. Never
+        // send a stale effort value to a different provider or a reduced budget.
+        *effort = None;
     }
 }
 

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -17,6 +18,10 @@ describe('message presentation resources', () => {
   let run: RunDetail
   let store: MessageResourceStore
   let originalInput: string
+  let inputName: string
+  let inputImage: unknown
+  let inputAttachment: { id: string; size: number } | undefined
+  let originalBytes: Buffer
   let imageResult: unknown
   let imageRequests: number
   const png = Buffer.from(
@@ -26,10 +31,22 @@ describe('message presentation resources', () => {
 
   const reference = (source: string) => ({ runId: 'run-1', messageId: 'event-2', source })
   const backend = {
+    attachmentContent: async (runId: string, messageId: string, index: number) => {
+      expect([runId, messageId, index]).toEqual(['run-1', 'event-0', 0])
+      return originalBytes
+    },
     request: async ({ path }: { path: string; method: 'GET' }): Promise<unknown> => {
       if (path === '/api/runs/run-1') return run
       if (path === '/api/runs/run-1/messages/event-0/files/0')
-        return { name: 'input.md', path: join(directory, 'input.md'), text: originalInput }
+        return {
+          name: inputName,
+          path: join(directory, inputName),
+          ...(inputAttachment
+            ? { attachment: inputAttachment }
+            : inputImage === undefined
+              ? { text: originalInput }
+              : { image: inputImage }),
+        }
       if (path === '/api/runs/run-1/messages/event-2/images/0') {
         imageRequests += 1
         if (imageResult instanceof Error) throw imageResult
@@ -45,6 +62,10 @@ describe('message presentation resources', () => {
     cache = join(directory, 'cache')
     await mkdir(workspace)
     originalInput = '# Original input\n'
+    inputName = 'input.md'
+    inputImage = undefined
+    inputAttachment = undefined
+    originalBytes = Buffer.alloc(0)
     imageResult = { mime_type: 'image/png', data_base64: png.toString('base64') }
     imageRequests = 0
     run = {
@@ -98,6 +119,174 @@ describe('message presentation resources', () => {
       store.resolve({ runId: 'run-1', messageId: 'event-0', fileIndex: 1 }),
     ).rejects.toThrow('不存在')
   })
+
+  it.each(['pdf', 'docx', 'xlsx', 'pptx'])(
+    'previews and restores attached %s text while preserving the source name',
+    async (extension) => {
+      inputName = `source.${extension}`
+      originalInput = 'Extraction warning\n[page 1]\nSynthetic document text'
+      run.messages[0].files = [{ name: inputName, size: Buffer.byteLength(originalInput) }]
+      const input = { runId: 'run-1', messageId: 'event-0', fileIndex: 0 }
+      const first = await store.resolve(input)
+      expect(first).toMatchObject({
+        name: inputName,
+        kind: 'text',
+        mimeType: 'text/plain',
+        canOpen: true,
+        text: originalInput,
+      })
+      expect(store.exportName(first.id)).toBe(`${inputName}.txt`)
+      const response = await store.response(new Request(first.url))
+      expect(response.headers.get('content-type')).toBe('text/plain; charset=utf-8')
+      expect(await response.text()).toBe(originalInput)
+
+      // Old cache metadata must not restore the obsolete PDF/Office classification.
+      const metadataPath = join(cache, first.id, 'metadata.json')
+      const metadata = JSON.parse(await readFile(metadataPath, 'utf8'))
+      await writeFile(
+        metadataPath,
+        JSON.stringify({ ...metadata, kind: 'file', mimeType: 'application/pdf' }),
+      )
+      originalInput = 'Different server/source text after the snapshot was saved'
+      store = new MessageResourceStore(cache, backend)
+      const restored = await store.resolve(input)
+      expect(restored).toEqual(first)
+      expect(store.exportName(restored.id)).toBe(`${inputName}.txt`)
+      expect(await readFile(store.archivePath(restored.id), 'utf8')).toBe(first.text)
+    },
+  )
+
+  it.each(['pdf', 'docx', 'xlsx', 'pptx'])(
+    'retains and restores attached %s originals instead of exporting extracted text',
+    async (extension) => {
+      inputName = `original.${extension}`
+      originalBytes = Buffer.from('original binary document\0bytes')
+      inputAttachment = {
+        id: createHash('sha256').update(originalBytes).digest('hex'),
+        size: originalBytes.length,
+      }
+      const input = { runId: 'run-1', messageId: 'event-0', fileIndex: 0 }
+      const first = await store.resolve(input)
+      expect(first.kind).toBe('file')
+      expect(first.canOpen).toBe(true)
+      expect(first.text).toBeUndefined()
+      expect(store.exportName(first.id)).toBe(inputName)
+      const saved = Buffer.from(originalBytes)
+      expect(await readFile(store.archivePath(first.id))).toEqual(saved)
+      originalBytes = Buffer.from('server unavailable after snapshot')
+      store = new MessageResourceStore(cache, backend)
+      expect(await store.resolve(input)).toEqual(first)
+      expect(await readFile(store.archivePath(first.id))).toEqual(saved)
+    },
+  )
+
+  it('rejects mismatching original bytes and altered stored snapshots', async () => {
+    inputName = 'original.pdf'
+    originalBytes = Buffer.from('valid original')
+    inputAttachment = {
+      id: createHash('sha256').update(originalBytes).digest('hex'),
+      size: originalBytes.length,
+    }
+    const valid = Buffer.from(originalBytes)
+    const input = { runId: 'run-1', messageId: 'event-0', fileIndex: 0 }
+    originalBytes = Buffer.from('wrong original')
+    await expect(store.resolve(input)).rejects.toThrow('校验失败')
+    originalBytes = valid
+    const resource = await store.resolve(input)
+    await writeFile(store.archivePath(resource.id), Buffer.alloc(valid.length))
+    store = new MessageResourceStore(cache, backend)
+    await expect(store.resolve(input)).rejects.toThrow('校验失败')
+  })
+
+  it('keeps large text originals available for saving and opening without expanding the preview', async () => {
+    inputName = 'large.txt'
+    originalBytes = Buffer.alloc(600 * 1024, 97)
+    inputAttachment = {
+      id: createHash('sha256').update(originalBytes).digest('hex'),
+      size: originalBytes.length,
+    }
+    const resource = await store.resolve({ runId: 'run-1', messageId: 'event-0', fileIndex: 0 })
+    expect(resource).toMatchObject({ kind: 'file', canOpen: true, size: originalBytes.length })
+    expect(resource.text).toBeUndefined()
+    expect(store.exportName(resource.id)).toBe(inputName)
+  })
+
+  it('keeps document text export names within the filesystem byte limit', async () => {
+    inputName = `${'汉'.repeat(83)}.PDF`
+    const value = await store.resolve({ runId: 'run-1', messageId: 'event-0', fileIndex: 0 })
+    expect(value.name).toBe(inputName)
+    expect(store.exportName(value.id)).toBe(`${'汉'.repeat(82)}.PDF.txt`)
+    expect(Buffer.byteLength(store.exportName(value.id))).toBeLessThanOrEqual(255)
+  })
+
+  it('previews attached image pixels and restores the same bytes after restart', async () => {
+    inputName = '截图.png'
+    inputImage = { mime_type: 'image/png', data_base64: png.toString('base64') }
+    run.messages[0].files = [{ name: inputName, size: png.length, mime_type: 'image/png' }]
+    const input = { runId: 'run-1', messageId: 'event-0', fileIndex: 0 }
+    const first = await store.resolve(input)
+    expect(first).toMatchObject({
+      name: inputName,
+      kind: 'image',
+      mimeType: 'image/png',
+      size: png.length,
+      canOpen: true,
+    })
+    expect(first).not.toHaveProperty('text')
+    expect(store.exportName(first.id)).toBe('截图.png')
+    const response = await store.response(new Request(first.url))
+    expect(response.headers.get('content-type')).toBe('image/png')
+    expect(Buffer.from(await response.arrayBuffer())).toEqual(png)
+    const metadataPath = join(cache, first.id, 'metadata.json')
+    const metadata = JSON.parse(await readFile(metadataPath, 'utf8'))
+    await writeFile(
+      metadataPath,
+      JSON.stringify({ ...metadata, kind: 'text', mimeType: 'text/html' }),
+    )
+    inputImage = { mime_type: 'image/png', data_base64: 'broken after initial capture' }
+    store = new MessageResourceStore(cache, backend)
+    expect(await store.resolve(input)).toEqual(first)
+    expect(await readFile(store.archivePath(first.id))).toEqual(png)
+  })
+
+  it('exports image bytes with their real extension even when the original name is misleading', async () => {
+    inputName = 'source.pdf'
+    inputImage = { mime_type: 'image/png', data_base64: png.toString('base64') }
+    const resource = await store.resolve({ runId: 'run-1', messageId: 'event-0', fileIndex: 0 })
+    expect(resource.kind).toBe('image')
+    expect(store.exportName(resource.id)).toBe('source.pdf.png')
+  })
+
+  it('rejects malformed or mislabeled image attachment snapshots', async () => {
+    inputName = 'screenshot.png'
+    for (const image of [
+      { mime_type: 'image/png', data_base64: 'not-base64' },
+      { mime_type: 'image/jpeg', data_base64: png.toString('base64') },
+      { mime_type: 'image/png', data_base64: Buffer.from('<script/>').toString('base64') },
+    ]) {
+      inputImage = image
+      await expect(
+        store.resolve({ runId: 'run-1', messageId: 'event-0', fileIndex: 0 }),
+      ).rejects.toThrow()
+    }
+  })
+
+  it.each(['pdf', 'docx', 'xlsx', 'pptx'])(
+    'retains the original type and export name for workspace %s output',
+    async (extension) => {
+      const name = `generated.${extension}`
+      const bytes = Buffer.from('synthetic binary document\0')
+      const value = await mention(name, bytes)
+      expect(value.kind).toBe('file')
+      expect(value.canOpen).toBe(true)
+      expect(value.text).toBeUndefined()
+      expect(store.exportName(value.id)).toBe(name)
+      store = new MessageResourceStore(cache, backend)
+      expect(await store.resolve(reference(name))).toEqual(value)
+      expect(store.exportName(value.id)).toBe(name)
+      expect(await readFile(store.archivePath(value.id))).toEqual(bytes)
+    },
+  )
 
   it('previews generated files in a managed conversation directory without making it a project', async () => {
     run.execution_directory = workspace

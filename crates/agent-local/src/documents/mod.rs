@@ -6,7 +6,7 @@ mod pdf;
 use crate::{files::parse, paths};
 use agent_runtime::ToolCall;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{Value, json};
 use std::{io, path::Path};
 
 pub const MAX_DOCUMENT_BYTES: usize = 32 * 1024 * 1024;
@@ -113,12 +113,21 @@ pub(crate) fn call(root: &Path, call: &ToolCall) -> io::Result<String> {
 }
 
 pub(crate) fn read(root: &Path, path: &str, unit: usize, offset: usize) -> io::Result<String> {
+    read_page(&load(root, path)?, path, unit, offset).map(|value| value.to_string())
+}
+
+/// Page already admitted document bytes without resolving a filesystem path.
+pub(crate) fn read_page(
+    document: &ExtractedDocument,
+    path: &str,
+    unit: usize,
+    offset: usize,
+) -> io::Result<Value> {
     let input = ReadInput {
         path: path.into(),
         unit,
         offset,
     };
-    let document = load(root, &input.path)?;
     if input.unit == 0 || input.unit > document.units.len().max(1) {
         return Err(io::Error::other("unit is outside this document"));
     }
@@ -164,19 +173,35 @@ pub(crate) fn read(root: &Path, path: &str, unit: usize, offset: usize) -> io::R
             break;
         }
     }
-    Ok(json!({"path":input.path,"format":document.format,"unit_count":document.units.len(),"chunks":chunks,"next_cursor":next,"warnings":document.warnings}).to_string())
+    Ok(
+        json!({"path":input.path,"format":document.format,"unit_count":document.units.len(),"chunks":chunks,"next_cursor":next,"warnings":document.warnings}),
+    )
 }
 
 pub(crate) fn search(root: &Path, path: &str, query: &str, offset: usize) -> io::Result<String> {
+    validate_query(query)?;
+    search_page(&load(root, path)?, path, query, offset).map(|value| value.to_string())
+}
+
+pub(crate) fn validate_query(query: &str) -> io::Result<()> {
+    if query.is_empty() || query.len() > 1024 {
+        return Err(io::Error::other("query must contain 1 to 1024 bytes"));
+    }
+    Ok(())
+}
+
+pub(crate) fn search_page(
+    document: &ExtractedDocument,
+    path: &str,
+    query: &str,
+    offset: usize,
+) -> io::Result<Value> {
+    validate_query(query)?;
     let input = SearchInput {
         path: path.into(),
         query: query.into(),
         offset,
     };
-    if input.query.is_empty() || input.query.len() > 1024 {
-        return Err(io::Error::other("query must contain 1 to 1024 bytes"));
-    }
-    let document = load(root, &input.path)?;
     let query = &input.query;
     let candidates = document
         .units
@@ -204,5 +229,7 @@ pub(crate) fn search(root: &Path, path: &str, query: &str, offset: usize) -> io:
         bytes += size;
         matches.push(entry);
     }
-    Ok(json!({"path":input.path,"format":document.format,"matches":matches,"next_offset":next,"warnings":document.warnings}).to_string())
+    Ok(
+        json!({"path":input.path,"format":document.format,"matches":matches,"next_offset":next,"warnings":document.warnings}),
+    )
 }

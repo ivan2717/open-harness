@@ -295,6 +295,7 @@ async fn message_id_pages_reassemble_full_unicode_text_and_preserve_file_metadat
     let source = "原始证据🦀\n\"\\".repeat(1800);
     let mut original = message("long-user", "user", &source);
     original.files.push(FileReferenceInfo {
+        mime_type: None,
         name: "证据.csv".into(),
         path: Some("/workspace/证据.csv".into()),
         size: 123,
@@ -814,6 +815,7 @@ async fn automatic_completion_carries_complete_reports_and_only_suggests_metadat
 async fn previews_keep_attachment_only_messages_without_automatically_loading_bodies() {
     let mut file = message("file-only", "user", "");
     file.files.push(FileReferenceInfo {
+        mime_type: None,
         name: "resume.md".into(),
         path: None,
         size: 1200,
@@ -857,11 +859,15 @@ async fn saved_input_attachments_are_pageable_after_reopen_without_reading_host_
     let sources = fixture
         .save_attachment_turns(vec![
             TextFileReference {
+                attachment: None,
+                image: None,
                 name: "resume.md".into(),
                 path: None,
                 text: source.clone(),
             },
             TextFileReference {
+                attachment: None,
+                image: None,
                 name: "source.md".into(),
                 path: Some(host_path.display().to_string()),
                 text: "Saved attachment snapshot".into(),
@@ -927,6 +933,8 @@ async fn attachment_reads_require_public_input_and_stay_within_the_task_family()
     let fixture = Fixture::new(Vec::new()).await;
     fixture
         .save_attachment_turns(vec![TextFileReference {
+            attachment: None,
+            image: None,
             name: "evidence.md".into(),
             path: None,
             text: "Parent evidence".into(),

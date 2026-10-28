@@ -9,6 +9,9 @@ use crate::provider_state::{ProviderResponseState, ProviderToolCall};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ContentBlock {
+    Image {
+        image: crate::ModelImage,
+    },
     Text {
         text: String,
     },
@@ -78,6 +81,14 @@ impl ModelMessage {
         }
         for block in &self.content {
             match block {
+                ContentBlock::Image { image } => {
+                    if self.role != ModelRole::User {
+                        return Err(ModelProtocolError::InvalidBlockRole);
+                    }
+                    image
+                        .validate()
+                        .map_err(|_| ModelProtocolError::InvalidImage)?;
+                }
                 ContentBlock::Reasoning { .. } | ContentBlock::ToolCall { .. }
                     if self.role != ModelRole::Assistant =>
                 {
@@ -194,7 +205,10 @@ pub struct ModelResponse {
 impl ModelResponse {
     pub fn validate(&self) -> Result<(), ModelProtocolError> {
         for block in &self.content {
-            if matches!(block, ContentBlock::ToolResult { .. }) {
+            if matches!(
+                block,
+                ContentBlock::ToolResult { .. } | ContentBlock::Image { .. }
+            ) {
                 return Err(ModelProtocolError::InvalidBlockRole);
             }
             validate_call(block)?;

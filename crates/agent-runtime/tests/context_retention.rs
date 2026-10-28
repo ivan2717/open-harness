@@ -388,11 +388,15 @@ async fn protected_user_input_that_exceeds_the_budget_is_never_silently_summariz
 async fn compaction_retains_latest_file_and_keeps_old_snapshot_searchable() {
     use agent_runtime::{SEARCH_RUN_HISTORY_TOOL, TextFileReference, format_user_input};
     let old = TextFileReference {
+        attachment: None,
+        image: None,
         name: "earlier.txt".into(),
         path: None,
         text: format!("archive-needle\n\"original\" {}", "evidence ".repeat(900)),
     };
     let latest = TextFileReference {
+        attachment: None,
+        image: None,
         name: "latest.txt".into(),
         path: None,
         text: "Keep this current file verbatim.".into(),
@@ -462,4 +466,62 @@ async fn compaction_retains_latest_file_and_keeps_old_snapshot_searchable() {
     let result: serde_json::Value = serde_json::from_str(&result).unwrap();
     assert_eq!(result["total_matches"], 1);
     assert_eq!(result["hits"][0]["sequence"], 0);
+}
+
+#[tokio::test]
+async fn compaction_protects_latest_image_without_passing_raster_bytes_to_summary() {
+    let image = agent_core::ModelImage::new("image/png", "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZcZkAAAAASUVORK5CYII=").unwrap();
+    let mut run = AgentRun::start_with_files(
+        "image-compaction",
+        "a",
+        "Read this image",
+        vec![agent_core::FileReference {
+            attachment: None,
+            name: "screenshot.png".into(),
+            path: None,
+            text: String::new(),
+            image: Some(image.clone()),
+        }],
+    );
+    for step in 0..15 {
+        append_tool_step(&mut run, &format!("image-{step}"));
+    }
+    let compactor = ForgetfulCompactor::default();
+    let manager = CompactingContextManager::new(
+        ContextPolicy::builder()
+            .input_token_limit(40_000)
+            .compaction_threshold(15_000)
+            .compaction_target(10_000)
+            .recent_tail_tokens(1_000)
+            .build()
+            .unwrap(),
+        compactor.clone(),
+        InMemoryContextCheckpointStore::new(),
+        ApproximateTokenCounter::new(1).unwrap(),
+    );
+    let prepared = manager
+        .prepare_owned(
+            ContextInput::new(run.id(), INSTRUCTIONS, run.events().to_vec(), vec![])
+                .with_image_input(true),
+        )
+        .await
+        .unwrap();
+    assert!(!compactor.calls.lock().unwrap().is_empty());
+    let images: Vec<_> = prepared
+        .request
+        .messages
+        .iter()
+        .flat_map(|m| &m.content)
+        .filter_map(|b| match b {
+            ContentBlock::Image { image } => Some(image),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(images, vec![&image]);
+    assert!(
+        !serde_json::to_string(&*compactor.calls.lock().unwrap())
+            .unwrap()
+            .contains(&image.data_base64)
+    );
+    assert!(run.events()[0].event.images()[0].validate().is_ok());
 }

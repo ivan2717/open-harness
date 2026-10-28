@@ -5,7 +5,22 @@ import { fetchModelCapacity } from './model-metadata'
 import type { ModelVault } from './model-vault'
 import { identifier, resolvedModelConfiguration } from './protocol'
 
-const refreshing = new Set<string>()
+const updating = new Set<string>()
+
+/** Profile edits and capacity refreshes must never migrate the same source concurrently. */
+export async function withModelConfigurationUpdate<T>(
+  id: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  identifier(id)
+  if (updating.has(id)) throw new Error('此模型配置正在更新，请稍后重试。')
+  updating.add(id)
+  try {
+    return await operation()
+  } finally {
+    updating.delete(id)
+  }
+}
 
 /** Refresh an existing connection without returning its credentials to the renderer. */
 export async function refreshModelContext(
@@ -14,10 +29,7 @@ export async function refreshModelContext(
   vault: ModelVault,
   discover: typeof fetchModelCapacity = fetchModelCapacity,
 ): Promise<ConfigureModelResult> {
-  identifier(id)
-  if (refreshing.has(id)) throw new Error('此模型的上下文容量正在更新。')
-  refreshing.add(id)
-  try {
+  return withModelConfigurationUpdate(id, async () => {
     const saved = vault.get(id)
     if (!saved) throw new Error('此模型的连接配置不可用，请重新接入模型。')
     const runs = (await backend.request({ path: '/api/runs', method: 'GET' })) as RunSummary[]
@@ -54,7 +66,5 @@ export async function refreshModelContext(
         ? { warning: '新容量已保存，但旧模型配置暂未清理；重启后可能仍显示旧配置。' }
         : {}),
     }
-  } finally {
-    refreshing.delete(id)
-  }
+  })
 }

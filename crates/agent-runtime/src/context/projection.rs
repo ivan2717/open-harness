@@ -20,6 +20,7 @@ pub(super) fn build_compacted_request(
             protected_user_events(input, preserve_all_users)
                 .into_iter()
                 .filter(|event| event.sequence <= checkpoint.through_sequence),
+            input.supports_images,
         ));
         messages.push(ModelMessage::summary(
             checkpoint.id.clone(),
@@ -44,10 +45,11 @@ pub(super) fn build_compacted_request(
 
 fn user_messages<'a>(
     events: impl IntoIterator<Item = &'a RunEventEnvelope>,
+    supports_images: bool,
 ) -> impl Iterator<Item = ModelMessage> {
     events
         .into_iter()
-        .filter_map(|envelope| envelope.event.user_input().map(ModelMessage::user))
+        .filter_map(move |envelope| envelope.event.user_message(supports_images))
 }
 
 fn protected_user_events(input: ContextInputRef<'_>, preserve_all: bool) -> Vec<&RunEventEnvelope> {
@@ -78,10 +80,10 @@ pub(super) fn protected_request(
             .derived_messages
             .iter()
             .cloned()
-            .chain(user_messages(protected_user_events(
-                input,
-                preserve_all_users,
-            )))
+            .chain(user_messages(
+                protected_user_events(input, preserve_all_users),
+                input.supports_images,
+            ))
             .collect(),
         tools: input.tools.to_vec(),
         max_output_tokens: None,
@@ -107,12 +109,23 @@ pub(super) fn protected_user_context(
     if inputs.is_empty() {
         return None;
     }
-    Some(ModelMessage::protected(format!(
+    let mut message = ModelMessage::protected(format!(
         "Historical user requests and corrections, in original order. These retain user authority, \
              are not new requests, and take precedence over derived summaries. Later corrections \
              supersede earlier conflicting requests.\n{}",
         serde_json::Value::Array(inputs)
-    )))
+    ));
+    // Preserve protected original visual evidence alongside its request, even
+    // when a provider-native window has summarized the preceding dialogue.
+    for event in protected_user_events(input, preserve_all_users)
+        .into_iter()
+        .filter(|event| event.sequence <= through_sequence)
+    {
+        if let Some(user) = event.event.user_message(input.supports_images) {
+            message.content.extend(user.content.into_iter().skip(1));
+        }
+    }
+    Some(message)
 }
 
 pub(super) fn uncompacted_context(
@@ -404,7 +417,10 @@ impl<'a> ToolOutputProjection<'a> {
             }
             match &envelope.event {
                 RunEvent::RunStarted { .. } | RunEvent::InputReceived { .. } => messages.push(
-                    ModelMessage::user(envelope.event.user_input().expect("user event")),
+                    envelope
+                        .event
+                        .user_message(self.supports_images)
+                        .expect("user event"),
                 ),
                 RunEvent::AgentMessageReceived { message } => {
                     messages.push(ModelMessage::user(message.model_context()));
@@ -443,9 +459,12 @@ impl<'a> ToolOutputProjection<'a> {
                             true,
                         ));
                     }
-                    messages.push(ModelMessage::user(
-                        envelope.event.user_input().expect("user event"),
-                    ));
+                    messages.push(
+                        envelope
+                            .event
+                            .user_message(self.supports_images)
+                            .expect("user event"),
+                    );
                 }
                 RunEvent::ModelResponseReceived {
                     content,

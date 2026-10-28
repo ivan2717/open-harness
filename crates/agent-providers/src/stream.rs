@@ -157,7 +157,7 @@ impl Live {
             return Err(ProviderError::InvalidResponse);
         }
         for (live, block) in self.blocks.iter().zip(&content) {
-            let (kind, text) = block_parts(block);
+            let (kind, text) = block_parts(block)?;
             if kind != live.kind
                 || (kind != ModelBlockKind::ToolCall && text != live.text)
                 || matches!(block, ContentBlock::ToolCall { arguments, .. } if !live.text.is_empty() && arguments != &live.text)
@@ -169,7 +169,7 @@ impl Live {
             if index >= self.blocks.len() {
                 sink.emit(ModelStreamEvent::BlockStart {
                     index,
-                    kind: block_parts(&block).0,
+                    kind: block_parts(&block)?.0,
                 });
             }
             sink.emit(ModelStreamEvent::BlockEnd { index, block });
@@ -186,13 +186,14 @@ impl Live {
         Ok(())
     }
 }
-fn block_parts(block: &ContentBlock) -> (ModelBlockKind, &str) {
-    match block {
+fn block_parts(block: &ContentBlock) -> Result<(ModelBlockKind, &str), ProviderError> {
+    Ok(match block {
         ContentBlock::Text { text } => (ModelBlockKind::Text, text),
         ContentBlock::Reasoning { text } => (ModelBlockKind::Reasoning, text),
         ContentBlock::ToolCall { .. } => (ModelBlockKind::ToolCall, ""),
         ContentBlock::ToolResult { .. } => (ModelBlockKind::ToolResult, ""),
-    }
+        ContentBlock::Image { .. } => return Err(ProviderError::InvalidResponse),
+    })
 }
 
 struct State {

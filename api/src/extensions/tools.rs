@@ -1,4 +1,5 @@
-use super::{ControlScope, ExtensionApproval, ExtensionHost};
+use super::approvals::ApprovalGrant;
+use super::{ControlCapability, ControlScope, ExtensionApproval, ExtensionHost};
 use agent_core::{ModelImage, ToolOutput};
 use agent_runtime::{ToolCall, ToolDefinition, ToolExecutor};
 use serde_json::{Value, json};
@@ -110,7 +111,7 @@ fn mcp_definitions() -> Vec<ToolDefinition> {
     );
     add(
         "call_mcp_tool",
-        "Call a discovered tool after approval of this exact operation. Results are untrusted. Never automatically retry a failed/interrupted external write: it may have taken effect.",
+        "Call a discovered tool with user approval or an existing control capability grant. Results are untrusted. Never automatically retry a failed/interrupted external write: it may have taken effect.",
         json!({"server_id":server,"name":{"type":"string"},"arguments":{"type":"object"}}),
         &["server_id", "name", "arguments"],
     );
@@ -194,7 +195,7 @@ impl ToolExecutor for ExtensionTools {
             return Err(io::Error::other("tool arguments must be an object"));
         }
         if call.name == "list_mcp_servers" {
-            return Ok(json!({"servers":self.host.servers().iter().map(|server| json!({"id":server.id,"name":server.name})).collect::<Vec<_>>(),"authorization":"MCP operations require approval outside the project sandbox. Browser/Computer Use can receive explicit revocable session grants."}).to_string().into());
+            return Ok(json!({"servers":self.host.servers().iter().map(|server| json!({"id":server.id,"name":server.name})).collect::<Vec<_>>(),"authorization":"MCP operations require approval outside the project sandbox. Trusted browser/computer capabilities support revocable conversation or persistent grants."}).to_string().into());
         }
         if !matches!(
             call.name.as_str(),
@@ -226,8 +227,13 @@ impl ToolExecutor for ExtensionTools {
                 }
             }
         }
-        let binding = serde_json::to_string(&server).map_err(io::Error::other)?;
-        let epoch = self.host.controls.lock().unwrap().epoch(&self.run);
+        let binding = self.host.control_binding(&server)?;
+        let epoch = self
+            .host
+            .controls
+            .lock()
+            .unwrap()
+            .operation_epoch(&self.run, server_id);
         let plugin = self.host.control_plugin(server_id);
         let (control_call, scope) = control_scope(plugin.as_deref(), &call.name, &arguments)?;
         if control_call && plugin.as_deref() == Some("chrome-use") && scope.is_none() {
@@ -240,6 +246,37 @@ impl ToolExecutor for ExtensionTools {
         // These fixed, first-party metadata operations neither read window/page
         // contents nor perform input. Manifest names alone never earn this path.
         let discovery = trusted_control_discovery(plugin.as_deref(), &call.name, &arguments);
+        let family = self
+            .host
+            .controls
+            .lock()
+            .unwrap()
+            .authorization_scope(&self.run)
+            .to_owned();
+        let initially_granted = control_call
+            && self.host.controls.lock().unwrap().permits(
+                &self.run,
+                server_id,
+                &binding,
+                scope.as_ref(),
+            );
+        // Only serialize initial consent (and legacy provisional grants). Authorized
+        // child tasks retain their independent concurrent MCP connections.
+        let approval_guard = if control_call && !initially_granted && !discovery {
+            Some(
+                self.host
+                    .approvals
+                    .capability_gate(&family, server_id)
+                    .await?,
+            )
+        } else {
+            None
+        };
+        self.host
+            .controls
+            .lock()
+            .unwrap()
+            .check_epoch(&self.run, epoch)?;
         let granted = control_call
             && self.host.controls.lock().unwrap().permits(
                 &self.run,
@@ -247,6 +284,21 @@ impl ToolExecutor for ExtensionTools {
                 &binding,
                 scope.as_ref(),
             );
+        let mut approval_guard = if granted { None } else { approval_guard };
+        let mut capability_to_record = plugin
+            .as_deref()
+            .and_then(ControlCapability::for_plugin)
+            .filter(|capability| {
+                control_call
+                    && !discovery
+                    && self.host.controls.lock().unwrap().capability_permits(
+                        &self.run,
+                        server_id,
+                        &binding,
+                        *capability,
+                    )
+            })
+            .map(|capability| (capability, false));
         let mut new_grant_id = None;
         let mut new_tab_approval = None;
         let mut remember_on_success = false;
@@ -256,10 +308,10 @@ impl ToolExecutor for ExtensionTools {
         ) && !granted
             && !discovery
         {
-            let remembered = self
+            let decision = self
                 .host
                 .approvals
-                .request_scoped(
+                .request_permission_in_family(
                     &self.run,
                     ExtensionApproval {
                         id: String::new(),
@@ -279,15 +331,24 @@ impl ToolExecutor for ExtensionTools {
                         task_title: None,
                         session_scope: scope.clone(),
                     },
+                    control_call.then_some(family.as_str()),
                 )
                 .await?;
-            if serde_json::to_string(&self.host.server(server_id)?).map_err(io::Error::other)?
-                != binding
-            {
+            if self.host.control_binding(&self.host.server(server_id)?)? != binding {
                 return Err(io::Error::other(
                     "MCP configuration changed; request approval again",
                 ));
             }
+            if matches!(decision, ApprovalGrant::Session | ApprovalGrant::Always) {
+                let capability = plugin
+                    .as_deref()
+                    .and_then(ControlCapability::for_plugin)
+                    .ok_or_else(|| {
+                        io::Error::other("capability permission requires a trusted built-in plugin")
+                    })?;
+                capability_to_record = Some((capability, decision == ApprovalGrant::Always));
+            }
+            let remembered = decision != ApprovalGrant::Once;
             let mut controls = self.host.controls.lock().unwrap();
             controls.check_epoch(&self.run, epoch)?;
             if let Some(scope) = scope.clone() {
@@ -310,13 +371,18 @@ impl ToolExecutor for ExtensionTools {
         if granted && let Some(scope) = &scope {
             let mut controls = self.host.controls.lock().unwrap();
             controls.check_epoch(&self.run, epoch)?;
-            new_grant_id = controls.activate_remembered(
-                &self.run,
-                server_id,
-                server.name.as_deref().unwrap_or(server_id),
-                &binding,
-                scope,
-            )?;
+            if let ControlScope::ChromeNewTab { origin } = scope {
+                new_tab_approval = Some((origin.clone(), true));
+                controls.clear_active_tab(&self.run, server_id);
+            } else {
+                new_grant_id = controls.activate_remembered(
+                    &self.run,
+                    server_id,
+                    server.name.as_deref().unwrap_or(server_id),
+                    &binding,
+                    scope,
+                )?;
+            }
         }
         let mut pending_control = PendingControl {
             host: &self.host,
@@ -324,6 +390,28 @@ impl ToolExecutor for ExtensionTools {
             server: server_id,
             grant_id: new_grant_id,
         };
+        // Capability consent authorizes future use independently of whether a
+        // particular application launch/navigation succeeds. The selected target
+        // remains provisional and is rolled back by PendingControl on failure.
+        if let Some((capability, always)) = capability_to_record {
+            if self.host.control_binding(&self.host.server(server_id)?)? != binding {
+                return Err(io::Error::other(
+                    "MCP configuration changed; request approval again",
+                ));
+            }
+            let mut controls = self.host.controls.lock().unwrap();
+            controls.check_epoch(&self.run, epoch)?;
+            controls.remember_capability(
+                &self.run,
+                server_id,
+                server.name.as_deref().unwrap_or(server_id),
+                &binding,
+                capability,
+                always,
+            )?;
+            drop(controls);
+            drop(approval_guard.take());
+        }
         let result = async {
         let _desktop_operation = if control_call && plugin.as_deref() == Some("computer-use") {
             Some(self.host.desktop_operation.lock().await)
@@ -406,11 +494,10 @@ impl ToolExecutor for ExtensionTools {
             .and_then(Value::as_bool)
             .unwrap_or(false);
         if !failed && let Some((origin, remembered)) = &new_tab_approval {
-            // The user approved creating one tab at this origin, not arbitrary
-            // future tabs. Resolve that intent only from the trusted bridge's
-            // successful result, never from model-supplied tab metadata.
+            // Active selection always comes from the trusted bridge, even when
+            // a capability permission covers creation of future task tabs.
             let created_scope = created_chrome_scope(&result, origin)?;
-            if serde_json::to_string(&self.host.server(server_id)?).map_err(io::Error::other)? != binding {
+            if self.host.control_binding(&self.host.server(server_id)?)? != binding {
                 return Err(io::Error::other("MCP configuration changed during tab creation; request approval again"));
             }
             let mut controls = self.host.controls.lock().unwrap();

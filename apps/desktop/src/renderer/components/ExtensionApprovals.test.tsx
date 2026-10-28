@@ -19,6 +19,18 @@ function render(extensions: RunExtensions): string {
 }
 
 describe('delegated external tool approvals', () => {
+  it('keeps permission revocation available after all active targets have been released', () => {
+    const html = render({
+      skills: [],
+      diagnostics: [],
+      approvals: [],
+      controls: [],
+      control_permissions: [{ server_id: 'chrome', server_name: 'Chrome', capability: 'chrome' }],
+    })
+    expect(html).toContain('Chrome')
+    expect(html).toContain('本会话及协作任务控制')
+    expect(html).toContain('停止控制')
+  })
   it('identifies the requesting task and explains the family scope of reusable approval', () => {
     const html = render({
       skills: [],
@@ -37,8 +49,12 @@ describe('delegated external tool approvals', () => {
       ],
     })
     expect(html).toContain('协作任务：调查产品资料')
-    expect(html).toContain('允许本次')
-    expect(html).toContain('允许本会话及协作任务')
+    expect(html).toContain('允许本会话及协作任务使用独立浏览器')
+    expect(html).toContain('始终允许')
+    expect(html).toContain('取消')
+    expect(html).toMatch(/>允许<\/button>/)
+    expect(html).not.toContain('允许本次')
+    expect(html).not.toContain('拒绝')
   })
 
   it('does not offer reusable approval for an ordinary external operation', () => {
@@ -58,7 +74,9 @@ describe('delegated external tool approvals', () => {
       ],
     })
     expect(html).toContain('协作任务：撰写邮件')
-    expect(html).not.toContain('允许本会话及协作任务')
+    expect(html).not.toContain('始终允许')
+    expect(html).toContain('取消')
+    expect(html).toMatch(/>允许<\/button>/)
   })
 
   it('keeps the family revocation action visible for child controls', () => {
@@ -77,8 +95,47 @@ describe('delegated external tool approvals', () => {
         },
       ],
     })
-    expect(html).toContain('调查产品资料：Chrome')
+    expect(html).toContain('Chrome')
+    expect(html).not.toContain('标签页 42')
     expect(html).toContain('本会话及协作任务控制')
     expect(html).toContain('停止控制')
+  })
+  it('does not repeat tab identifiers or origins for controls shared across collaborating tasks', () => {
+    const html = render({
+      skills: [],
+      diagnostics: [],
+      approvals: [],
+      controls: [42, 43].map((tab_id) => ({
+        server_id: 'chrome',
+        server_name: 'Chrome',
+        remembered: true,
+        scope: { kind: 'chrome_tab', tab_id, origin: 'https://example.com' },
+        source_run_id: `child-${tab_id}`,
+        task_title: `Task ${tab_id}`,
+      })),
+    })
+    expect(html.match(/Chrome/g)).toHaveLength(1)
+    expect(html).not.toContain('example.com')
+    expect(html).toContain('停止控制')
+  })
+  it('explains capability approval without claiming that each new tab needs authorization', () => {
+    const html = render({
+      skills: [],
+      diagnostics: [],
+      approvals: [
+        {
+          id: 'mcp-3',
+          server_id: 'chrome',
+          server_name: 'Chrome · chrome',
+          operation: 'chrome_open',
+          arguments: {},
+          session_scope: { kind: 'chrome_new_tab', origin: 'https://example.com' },
+        },
+      ],
+    })
+    expect(html).toContain('允许使用Chrome？')
+    expect(html).toContain('专用标签页分组')
+    expect(html).toContain('你已有的标签页仍需单独共享')
+    expect(html).not.toContain('会话授权仅适用于这个新标签页和网站')
   })
 })

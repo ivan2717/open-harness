@@ -1,4 +1,40 @@
-import type { ReasoningCapability, ReasoningOption } from '../../shared/model-reasoning'
+import type { ModelConfiguration } from '../../shared/contracts'
+import {
+  resolveReasoningCapability,
+  type ReasoningCapability,
+  type ReasoningOption,
+} from '../../shared/model-reasoning'
+
+/** Preserve the actual saved wire settings when opening the model editor. */
+export function editableReasoningCapability(
+  initial: Pick<
+    ModelConfiguration,
+    | 'protocol'
+    | 'base_url'
+    | 'model'
+    | 'reasoning_capability'
+    | 'reasoning_mode'
+    | 'reasoning_effort'
+    | 'max_output_tokens'
+  >,
+): ReasoningCapability {
+  if (initial.reasoning_capability) return initial.reasoning_capability
+  const capability = resolveReasoningCapability(initial)
+  if (capability.source !== 'legacy' || capability.adapter !== 'anthropic_budget') return capability
+  // Legacy Messages profiles already clamp every named budget at request time.
+  // Reflect that effective value rather than dropping the saved default as invalid.
+  return {
+    ...capability,
+    options: capability.options.map((option) =>
+      option.budget_tokens === undefined
+        ? option
+        : {
+            ...option,
+            budget_tokens: Math.min(option.budget_tokens, initial.max_output_tokens - 1),
+          },
+    ),
+  }
+}
 
 export function reasoningLabel(id: string, option?: ReasoningOption): string {
   if (option?.label) return option.label

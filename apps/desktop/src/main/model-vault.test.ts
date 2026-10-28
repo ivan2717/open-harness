@@ -68,6 +68,36 @@ describe('model credential storage', () => {
     expect(await vault.save('model', input)).toBe(false)
     await expect(readFile(file)).rejects.toMatchObject({ code: 'ENOENT' })
   })
+  it('keeps the old in-memory and durable credential when strict update persistence fails', async () => {
+    const file = await location()
+    let available = true
+    const vault = new ModelVault(file, { ...cipher, isEncryptionAvailable: () => available })
+    await vault.save('model', input)
+    available = false
+    expect(
+      await vault.save('model', { ...input, api_key: 'new-key' }, { requirePersistence: true }),
+    ).toBe(false)
+    expect(vault.get('model')).toEqual(input)
+    expect(await new ModelVault(file, cipher).load()).toEqual([input])
+  })
+  it('only reuses exact, persisted profiles and never a transient or different credential', async () => {
+    const file = await location()
+    let available = true
+    const vault = new ModelVault(file, { ...cipher, isEncryptionAvailable: () => available })
+    await vault.save('replacement', input)
+    expect(vault.findEquivalent(input, 'source')).toBe('replacement')
+    expect(vault.findEquivalent(input, 'replacement')).toBeUndefined()
+    expect(vault.findEquivalent({ ...input, api_key: 'other-key' }, 'source')).toBeUndefined()
+    available = false
+    await vault.save('temporary', { ...input, model: 'temporary' })
+    expect(vault.findEquivalent({ ...input, model: 'temporary' }, 'source')).toBeUndefined()
+    await vault.save('replacement', { ...input, api_key: 'transient-key' })
+    expect(vault.findEquivalent(input, 'source')).toBeUndefined()
+    expect(vault.findEquivalent({ ...input, api_key: 'transient-key' }, 'source')).toBeUndefined()
+    const reopened = new ModelVault(file, cipher)
+    await reopened.load()
+    expect(reopened.findEquivalent(input, 'source')).toBe('replacement')
+  })
   it('keeps credentials internal and removes superseded profiles durably', async () => {
     const file = await location()
     const vault = new ModelVault(file, cipher)

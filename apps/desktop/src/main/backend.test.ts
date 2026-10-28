@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { spawn } from 'node:child_process'
 import { EventEmitter } from 'node:events'
@@ -111,6 +112,94 @@ describe('local runtime request deadlines', () => {
     const assertion = expect(result).rejects.toThrow('Could not reach the local runtime')
     await vi.advanceTimersByTimeAsync(70_000)
     await assertion
+  })
+})
+
+describe('local original attachment storage', () => {
+  it('uploads unmodified bytes and validates the returned immutable reference', async () => {
+    const backend = new Backend('unused', 'unused')
+    vi.spyOn(backend, 'start').mockResolvedValue('http://127.0.0.1:1234')
+    const bytes = Buffer.from('original PDF\0bytes')
+    const file = {
+      name: '中文 & notes.pdf',
+      attachment: { id: createHash('sha256').update(bytes).digest('hex'), size: bytes.length },
+    }
+    const fetch = vi.fn(async () => new Response(JSON.stringify(file)))
+    vi.stubGlobal('fetch', fetch)
+    await expect(backend.importAttachment(file.name, bytes)).resolves.toEqual(file)
+    const [url, init] = fetch.mock.calls[0] as unknown as [string, RequestInit]
+    expect(new URL(url).pathname).toBe('/api/attachments')
+    expect(new URL(url).searchParams.get('name')).toBe(file.name)
+    expect(init.body).toEqual(new Uint8Array(bytes))
+    expect(init.headers).toMatchObject({
+      Authorization: expect.stringMatching(/^Bearer [a-f0-9]+$/),
+    })
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({ ...file, attachment: { ...file.attachment, id: 'b'.repeat(64) } }),
+          ),
+      ),
+    )
+    await expect(backend.importAttachment(file.name, bytes)).rejects.toThrow('保存结果无效')
+  })
+
+  it('downloads only a bounded file from a saved message, never a caller-provided path', async () => {
+    const backend = new Backend('unused', 'unused')
+    vi.spyOn(backend, 'start').mockResolvedValue('http://127.0.0.1:1234')
+    const bytes = Buffer.from('original\0bytes')
+    const fetch = vi.fn(async (_url: string) => new Response(bytes))
+    vi.stubGlobal('fetch', fetch)
+    await expect(backend.attachmentContent('run-1', 'event-0', 12)).resolves.toEqual(bytes)
+    expect(fetch.mock.calls[0][0]).toBe(
+      'http://127.0.0.1:1234/api/runs/run-1/messages/event-0/files/12/content',
+    )
+    await expect(backend.attachmentContent('../other', 'event-0', 0)).rejects.toThrow('引用无效')
+    await expect(backend.attachmentContent('run-1', 'event-0', 64)).rejects.toThrow('引用无效')
+  })
+})
+
+describe('local document extraction', () => {
+  it('sends raw bytes and an encoded basename to the authenticated local endpoint', async () => {
+    const backend = new Backend('unused', 'unused')
+    vi.spyOn(backend, 'start').mockResolvedValue('http://127.0.0.1:1234')
+    const fetch = vi.fn(async () => new Response(JSON.stringify({ text: '[page 1]\nPDF text' })))
+    vi.stubGlobal('fetch', fetch)
+    const bytes = Buffer.from([37, 80, 68, 70, 0, 255])
+    await expect(backend.extractDocument('中文 & notes.pdf', bytes)).resolves.toBe(
+      '[page 1]\nPDF text',
+    )
+    const [url, init] = fetch.mock.calls[0] as unknown as [string, RequestInit]
+    expect(new URL(url).pathname).toBe('/api/documents/extract')
+    expect(new URL(url).searchParams.get('name')).toBe('中文 & notes.pdf')
+    expect(init.body).toEqual(new Uint8Array(bytes))
+    expect(init.headers).toMatchObject({
+      'Content-Type': 'application/octet-stream',
+      Authorization: expect.stringMatching(/^Bearer [a-f0-9]+$/),
+    })
+    expect(init.redirect).toBe('error')
+  })
+
+  it('surfaces extraction errors and rejects a malformed successful response', async () => {
+    const backend = new Backend('unused', 'unused')
+    vi.spyOn(backend, 'start').mockResolvedValue('http://127.0.0.1:1234')
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValue(
+          new Response(JSON.stringify({ error: '扫描件需要 OCR' }), { status: 400 }),
+        ),
+    )
+    await expect(backend.extractDocument('scan.pdf', Buffer.from('fixture'))).rejects.toThrow(
+      '扫描件需要 OCR',
+    )
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('{}')))
+    await expect(backend.extractDocument('scan.pdf', Buffer.from('fixture'))).rejects.toThrow(
+      '解析结果无效',
+    )
   })
 })
 

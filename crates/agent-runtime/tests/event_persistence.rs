@@ -110,6 +110,8 @@ async fn attached_file_snapshots_survive_restart_input_and_resume_and_are_counte
     let agent = test_agent();
     let files = |label: &str| {
         vec![TextFileReference {
+            attachment: None,
+            image: None,
             name: format!("{label}.txt"),
             path: Some(format!("/unavailable/{label}.txt")),
             text: format!("snapshot-{label}:{}", "已选择的内容".repeat(500)),

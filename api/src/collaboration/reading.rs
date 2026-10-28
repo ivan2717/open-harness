@@ -175,6 +175,20 @@ async fn read_attachment(
     let file = files
         .get(index)
         .ok_or_else(|| ServiceError::BadRequest("file_index 超出此消息的附件范围".into()))?;
+    if let Some(attachment) = &file.attachment {
+        return Ok(json!({
+            "agent_id": detail.summary.id, "message_id": message.id,
+            "file_index": index,
+            "file": {"name": file.name, "size": attachment.size, "path": format!("attachment:{}", attachment.id)},
+            "source": {"kind": "persisted_user_attachment", "run_id": run.id(), "event_sequence": sequence, "event_type": event_type},
+            "notice": "This attachment is a saved original, not inline text. Use read_file with file.path and follow next_cursor, or search_files with that path. For scripts, read_file mode=original returns an authorized read-only local path. The host enforces task membership; displayed original paths never grant filesystem access.",
+        }).to_string());
+    }
+    if file.image.is_some() {
+        return Err(ServiceError::BadRequest(
+            "此附件是图片，文字历史读取不能解读图片内容；请由父任务查看原图并提供所需信息".into(),
+        ));
+    }
     let total = file.text.chars().count();
     let text: String = file.text.chars().skip(offset).take(limit).collect();
     let end = offset.saturating_add(text.chars().count());

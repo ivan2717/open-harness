@@ -46,6 +46,7 @@ impl ToolExecutor for RunTools {
     }
     fn snapshot_definitions(&self) -> Vec<ToolDefinition> {
         let mut definitions = self.base.snapshot_definitions();
+        super::attachments::extend_definitions(&mut definitions);
         definitions.extend(definitions_for(self.child));
         definitions
     }
@@ -53,6 +54,9 @@ impl ToolExecutor for RunTools {
         self.execute_output(call).await.map(|r| r.text)
     }
     async fn execute_output(&self, call: ToolCall) -> io::Result<ToolOutput> {
+        if super::attachments::is_attachment_call(&call)? {
+            return super::attachments::execute(&self.state()?, &self.run_id, call).await;
+        }
         if matches!(call.name.as_str(), "spawn_agent" | "agent_control") {
             let state = self.state()?;
             // Box the orchestration future: a child creates another executor
@@ -126,7 +130,7 @@ fn definitions_for(child: bool) -> Vec<ToolDefinition> {
     result
 }
 
-fn service_io(error: ServiceError) -> io::Error {
+pub(super) fn service_io(error: ServiceError) -> io::Error {
     io::Error::other(match error {
         ServiceError::NotFound => "agent not found in this task".into(),
         ServiceError::BadRequest(s) | ServiceError::Conflict(s) | ServiceError::Internal(s) => s,
