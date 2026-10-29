@@ -1,5 +1,6 @@
 //! Capability consent, persistence and revocation through the real MCP boundary.
 use super::*;
+use crate::extensions::ApprovalExtent;
 
 #[tokio::test]
 async fn capability_allow_reuses_new_tabs_and_origins_only_inside_conversation_family() {
@@ -30,12 +31,17 @@ async fn capability_allow_reuses_new_tabs_and_origins_only_inside_conversation_f
         "child",
         server,
         "chrome_open",
-        json!({"url":"https://other.example"}),
+        json!({"url":"https://example.com/other"}),
     );
     tokio::task::yield_now().await;
     assert!(host.approvals.list("child").is_empty());
     host.approvals
-        .decide_permission("root", &approval.id, ApprovalDecision::Allow)
+        .decide_permission_with_extent(
+            "root",
+            &approval.id,
+            ApprovalDecision::Allow,
+            ApprovalExtent::Capability,
+        )
         .unwrap();
     complete_control(first).await.unwrap();
     complete_control(child).await.unwrap();
@@ -106,7 +112,12 @@ async fn always_permission_survives_restart_but_stop_and_settings_revoke_take_ef
     );
     let approval = pending_control(&host, "root").await;
     host.approvals
-        .decide_permission("root", &approval.id, ApprovalDecision::Always)
+        .decide_permission_with_extent(
+            "root",
+            &approval.id,
+            ApprovalDecision::Always,
+            ApprovalExtent::Capability,
+        )
         .unwrap();
     complete_control(first).await.unwrap();
     assert_eq!(host.settings().control_permissions.len(), 1);
@@ -202,7 +213,12 @@ async fn computer_capability_allows_other_apps_and_cancel_does_not_save_a_denial
     let first = select_task(host.clone(), "root", server);
     let approval = pending_control(&host, "root").await;
     host.approvals
-        .decide_permission("root", &approval.id, ApprovalDecision::Allow)
+        .decide_permission_with_extent(
+            "root",
+            &approval.id,
+            ApprovalDecision::Allow,
+            ApprovalExtent::Capability,
+        )
         .unwrap();
     complete_control(first).await.unwrap();
     complete_control(control_task(
@@ -273,7 +289,12 @@ async fn persistent_permission_is_bound_to_plugin_content_and_third_party_cannot
     assert!(
         external
             .approvals
-            .decide_permission("r", &approval.id, ApprovalDecision::Always)
+            .decide_permission_with_extent(
+                "r",
+                &approval.id,
+                ApprovalDecision::Always,
+                ApprovalExtent::Capability
+            )
             .is_err()
     );
     external
@@ -425,7 +446,7 @@ async fn cancelling_capability_consent_dismisses_already_queued_sibling_requests
         "child",
         server,
         "browser_open",
-        json!({"url":"https://other.example"}),
+        json!({"url":"https://example.com/other"}),
     );
     // Ensure the sibling has entered the consent queue before cancellation.
     tokio::time::sleep(std::time::Duration::from_millis(20)).await;

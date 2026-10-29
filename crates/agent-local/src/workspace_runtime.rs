@@ -3,7 +3,7 @@
 use serde_json::{Value, json};
 use std::{fs, io, path::Path};
 
-pub(crate) fn describe(root: &Path, arguments: &str) -> io::Result<String> {
+pub(crate) fn describe(root: &Path, execution_mode: &str, arguments: &str) -> io::Result<String> {
     let arguments: Value = serde_json::from_str(arguments).map_err(io::Error::other)?;
     if !arguments
         .as_object()
@@ -20,7 +20,9 @@ pub(crate) fn describe(root: &Path, arguments: &str) -> io::Result<String> {
             "No desktop runtime inventory is available. Check installed interpreters through run_command before choosing one; do not assume Python or third-party libraries exist."
         ]}),
     };
-    Ok(describe_inventory(root, inventory).to_string())
+    let mut result = describe_inventory(root, inventory);
+    result["execution_mode"] = execution_mode.into();
+    Ok(result.to_string())
 }
 
 fn describe_inventory(root: &Path, inventory: Value) -> Value {
@@ -85,7 +87,7 @@ mod tests {
 
     #[test]
     fn rejects_model_paths_instead_of_reading_them() {
-        assert!(describe(Path::new("/work"), r#"{"path":"/etc/passwd"}"#).is_err());
+        assert!(describe(Path::new("/work"), "sandboxed", r#"{"path":"/etc/passwd"}"#).is_err());
     }
 
     #[test]

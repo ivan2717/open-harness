@@ -101,13 +101,18 @@ export function WelcomePage() {
                 submitDisabledReason={!model ? '添加模型后即可开始任务。' : undefined}
                 onSubmit={async (prompt, files) => {
                   if (!model) throw new Error('添加模型后即可开始任务。')
+                  const approval = useUiStore.getState().approvalMode
                   await create.mutateAsync({
                     prompt,
                     model_id: model.id,
+                    execution_policy: { approval_mode: approval },
                     ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
                     files,
                     ...(project
-                      ? { workspace_path: project.path, permission_mode: project.permission }
+                      ? {
+                          workspace_path: project.path,
+                          permission_mode: 'workspace_write',
+                        }
                       : {}),
                   })
                   if (useUiStore.getState().project === project) setProject(null)

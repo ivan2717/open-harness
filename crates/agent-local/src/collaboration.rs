@@ -264,9 +264,12 @@ impl LocalTools {
     }
 
     pub(crate) fn authorize_write(&self, path: &str) -> io::Result<PathBuf> {
-        let target = paths::resolve(self.root(), path)?;
+        let target = self.file_scope().resolve(path)?;
         if let Some(binding) = &self.collaboration {
-            let relative = target.strip_prefix(self.root()).unwrap();
+            let Ok(relative) = target.strip_prefix(self.root()) else {
+                // Only an unrestricted binding can resolve an outside target.
+                return Ok(target);
+            };
             let leases = binding.access.inner.leases.lock().map_err(lock_error)?;
             if let Some(allowed) = &binding.allowed
                 && (!allowed.iter().any(|path| path == relative)

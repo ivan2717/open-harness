@@ -48,11 +48,20 @@ export interface PluginInfo {
 }
 
 export type ControlApprovalDecision = 'allow' | 'always' | 'cancel'
+export type ApprovalExtent = 'target' | 'capability'
+export type PermissionTarget =
+  | { kind: 'application'; bundle_id: string }
+  | { kind: 'origin'; origin: string }
+  | { kind: 'mcp_tool'; name: string }
+  | { kind: 'mcp_resource'; uri: string }
+  | { kind: 'mcp_prompt'; name: string }
 
 export interface ControlPermission {
   server_id: string
   server_name: string
-  capability: 'chrome' | 'browser' | 'computer'
+  capability: 'chrome' | 'browser' | 'computer' | 'mcp'
+  target?: PermissionTarget | null
+  lifetime?: 'session' | 'always'
 }
 
 export interface ExtensionSettings {
@@ -79,11 +88,14 @@ export interface ExtensionApproval {
   operation: string
   arguments: unknown
   session_scope?: ControlScope
+  permission_target?: PermissionTarget | null
+  can_allow_capability?: boolean
   source_run_id?: string
   task_title?: string
 }
 export type ControlScope =
   | { kind: 'browser' }
+  | { kind: 'browser_origin'; origin: string }
   | { kind: 'application'; bundle_id: string; pid: number }
   | { kind: 'chrome_tab'; tab_id: number; origin: string }
   | { kind: 'chrome_new_tab'; origin: string }

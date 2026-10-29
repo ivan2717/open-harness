@@ -1,4 +1,5 @@
 import { useIsMutating, useMutation, useQueryClient } from '@tanstack/react-query'
+import { Link } from '@tanstack/react-router'
 import { BookOpen, LoaderCircle } from 'lucide-react'
 import type {
   BuiltinPluginInfo,
@@ -35,14 +36,6 @@ export function PluginSettings({
   const catalog = useBundledPluginCatalog()
   const action = usePluginActions()
   const save = useSaveExtensions()
-  const revokePermission = useMutation({
-    scope: { id: 'extension-config' },
-    mutationFn: (serverId: string) => window.harness.revokeControlPermission(serverId),
-    onSuccess: (data) => {
-      client.setQueryData(extensionSettingsOptions.queryKey, data)
-      void client.invalidateQueries({ queryKey: ['run-extensions'] })
-    },
-  })
   const install = useMutation({
     scope: { id: 'extension-config' },
     mutationFn: (id: BundledPlugin['id']) => window.harness.installBundledPlugin(id),
@@ -82,26 +75,14 @@ export function PluginSettings({
         {bundle && (
           <BundledPluginSetup plugin={bundle} installed={plugin} disabled={busy || !settings} />
         )}
-        {plugin && hasControl && (
-          <div className="plugin-control-permissions" aria-label="控制授权">
-            {permissions.length ? (
-              permissions.map((permission) => (
-                <div className="plugin-control-permission" key={permission.server_id}>
-                  <span>控制授权 · 始终允许</span>
-                  <button
-                    type="button"
-                    className="extension-text-button"
-                    aria-label={`取消始终允许 ${permission.server_name}`}
-                    disabled={busy}
-                    onClick={() => revokePermission.mutate(permission.server_id)}
-                  >
-                    取消始终允许
-                  </button>
-                </div>
-              ))
-            ) : (
-              <span>控制授权 · 每个会话首次使用时询问</span>
-            )}
+        {plugin && (hasControl || permissions.length > 0) && (
+          <div className="plugin-control-permissions">
+            <span>
+              {permissions.length ? `已保存 ${permissions.length} 项访问授权` : '尚未保存长期授权'}
+            </span>
+            <Link to="/settings" className="extension-text-button">
+              管理访问授权
+            </Link>
           </div>
         )}
       </PluginCard>
@@ -162,7 +143,6 @@ export function PluginSettings({
       {action.isError && <InlineError message={pluginErrorMessage(action.error)} />}
       {install.isError && <InlineError message={pluginErrorMessage(install.error)} />}
       {save.isError && <InlineError message={errorMessage(save.error)} />}
-      {revokePermission.isError && <InlineError message={errorMessage(revokePermission.error)} />}
       <p className="settings-footnote">
         安装外部插件不会连接服务或运行脚本。启用后，Agent 可按需发现工具，工具使用遵循你授予的权限。
       </p>

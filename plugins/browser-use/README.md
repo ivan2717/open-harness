@@ -78,8 +78,15 @@ This controls a separate browser, not the user's existing Chrome, desktop
 applications, system dialogs or clipboard. HTTP(S) URL navigation is supported;
 file URLs and credential-bearing URLs are rejected. Browser cookies are
 ephemeral. Service workers and accepted downloads are disabled. File upload,
-arbitrary evaluation, persisted profiles, network-domain allowlists and direct
-iframe element refs are not exposed in this initial plugin. Cross-origin
+arbitrary evaluation, persisted profiles and direct iframe element refs are not
+exposed. Password/file/hidden inputs cannot be filled by the agent. The desktop
+host defaults to exact-origin permission: Allow covers this conversation and
+collaborative tasks, while Always allow persists that origin. Entire browser
+access is a separate explicit scope choice. The host-only target probe returns
+only origin metadata; page text, screenshots and actions are checked against
+host-provided origins on every call and after navigation. The model cannot
+supply those grants. This is a page-access boundary, not a network firewall:
+websites can still load their normal cross-origin subresources. Cross-origin
 iframe visuals may be observed in screenshots, but native dialogs need another
 executor. The browser process is not a substitute for a host/OS security
 sandbox, and web content is never permission to perform unrelated actions.

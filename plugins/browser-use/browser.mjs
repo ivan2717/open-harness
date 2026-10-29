@@ -2,6 +2,7 @@ import { createRequire } from "node:module";
 import { homedir, tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
 import { validateArguments } from "./schema.mjs";
+import { fillTextField } from "./input.mjs";
 
 const MAX_REFS = 128;
 const MAX_TEXT = 24_000;
@@ -111,8 +112,11 @@ export class BrowserSession {
     headless,
     platform = process.platform,
     environment = process.env,
+    requireHostPermission = false,
   } = {}) {
     this.chromium = chromium;
+    this.requireHostPermission = requireHostPermission;
+    this.authorizedOrigins = new Set();
     this.headless =
       headless ??
       (platform === "linux" &&
@@ -135,7 +139,7 @@ export class BrowserSession {
   }
 
   // Preserve operation ordering even when a caller sends concurrent MCP calls.
-  call(name, args = {}) {
+  call(name, args = {}, authorization) {
     const generation = this.closedGeneration;
     const operation = this.queue.then(async () => {
       if (generation !== this.closedGeneration)
@@ -143,7 +147,18 @@ export class BrowserSession {
           "session_cancelled",
           "The browser session was closed; observe a new session before continuing.",
         );
+      if (name === "__openharness_browser_target" && this.requireHostPermission) {
+        const page = args.tab_id ? this.tabs.get(args.tab_id) : this.page;
+        let origin = null;
+        try { const url = new URL(page?.url()); if (["http:", "https:"].includes(url.protocol)) origin = url.origin; } catch {}
+        return { content: [textBlock({ origin })] };
+      }
       validateArguments(name, args);
+      if (this.requireHostPermission) {
+        if (!authorization || !Array.isArray(authorization.origins) || authorization.origins.some(origin => typeof origin !== "string"))
+          throw new BrowserError("permission_required", "The host must approve this website before browser use.");
+        this.authorizedOrigins = new Set(authorization.origins);
+      }
       if (name === "browser_open") return this.open(args);
       if (name === "browser_snapshot") {
         if (args.tab_id) {
@@ -163,6 +178,16 @@ export class BrowserSession {
     });
     this.queue = operation.catch(() => {});
     return operation;
+  }
+
+  assertOrigin(page) {
+    if (!this.requireHostPermission) return;
+    let origin;
+    try { origin = new URL(page.url()).origin; } catch {}
+    if (!origin || (!this.authorizedOrigins.has("*") && !this.authorizedOrigins.has(origin))) {
+      this.invalidate();
+      throw new BrowserError("website_permission_required", `The page is now at ${origin || "an unavailable origin"}. Request a new browser_snapshot so the host can ask for this website's permission. No page content was returned.`);
+    }
   }
 
   async ensureBrowser() {
@@ -362,9 +387,11 @@ export class BrowserSession {
 
   async snapshot(textOffset = 0) {
     const page = this.requirePage();
+    this.assertOrigin(page);
     this.invalidate();
     await this.releaseRefs();
     for (let attempt = 0; attempt < 2; attempt += 1) {
+      this.assertOrigin(page);
       const start = await this.state(page);
       const handles = await this.controls(page);
       const selected = handles.slice(0, MAX_REFS);
@@ -447,6 +474,7 @@ export class BrowserSession {
       // character and report the adjusted cursor rather than dropping it.
       textOffset = textBoundary(body, textOffset);
       const end = await this.state(page);
+      this.assertOrigin(page);
       if (!sameState(start, end)) {
         await Promise.allSettled(handles.map((handle) => handle.dispose()));
         if (attempt === 0) continue;
@@ -528,6 +556,7 @@ export class BrowserSession {
       }
       const nextOffset = textOffset + snapshot.text.length;
       snapshot.next_text_offset = nextOffset < body.length ? nextOffset : null;
+      this.assertOrigin(page);
       return snapshot;
     }
   }
@@ -548,6 +577,8 @@ export class BrowserSession {
         "invalid_url",
         "Only HTTP(S) URLs without embedded credentials are supported.",
       );
+    if (this.requireHostPermission && !this.authorizedOrigins.has("*") && !this.authorizedOrigins.has(target.origin))
+      throw new BrowserError("website_permission_required", "The host has not approved the navigation target.");
     await this.ensureBrowser();
     if (newTab || !this.page || this.page.isClosed())
       this.page = await this.context.newPage();
@@ -565,6 +596,7 @@ export class BrowserSession {
 
   async action(args) {
     const page = this.requirePage();
+    this.assertOrigin(page);
     if (
       args.revision !== this.revision ||
       !this.observedState ||
@@ -604,9 +636,15 @@ export class BrowserSession {
           if (ref) await ref.click();
           else await page.mouse.click(args.x, args.y);
           break;
-        case "fill":
-          await ref.fill(args.text);
+        case "fill": {
+          const origin = new URL(page.url()).origin;
+          await ref.waitForElementState("visible");
+          this.assertOrigin(page);
+          const result = await ref.evaluate(fillTextField, { text: args.text, origin });
+          if (result.blocked === "sensitive_input") throw new BrowserError("sensitive_input", "File and password inputs must be completed by the user.");
+          if (result.blocked) throw new BrowserError(result.blocked, "The field changed or cannot accept text; observe before deciding again.");
           break;
+        }
         case "select":
           await ref.selectOption(args.text);
           break;
@@ -623,7 +661,8 @@ export class BrowserSession {
           await page.goForward({ waitUntil: "domcontentloaded" });
           break;
       }
-    } catch {
+    } catch (error) {
+      if (error instanceof BrowserError && error.code === "sensitive_input") throw error;
       return this.uncertainResult(
         "action_failed",
         "The action failed or timed out. Its effect is uncertain; observe before deciding whether another action is needed.",
@@ -696,6 +735,7 @@ export class BrowserSession {
         "Page changed while taking the screenshot. Capture another screenshot before using coordinates.",
       );
     }
+    this.assertOrigin(this.requirePage());
     if (image.length > 2 * 1024 * 1024)
       throw new BrowserError("screenshot_too_large");
     this.screenshotRevision = snapshot.revision;

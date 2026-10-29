@@ -846,12 +846,12 @@ async fn delegated_tools_cannot_expand_permissions_or_spawn_nested_agents() {
 async fn delegated_test_commands_inherit_only_explicit_root_session_approval() {
     let fixture = Fixture::new(|who, index, _| match (who, index) {
         ("ROOT", 0) => Reply::tools(vec![call("prepare", "run_command", json!({
-            "command":"printf ROOT_READY", "access":"read_only", "timeout_seconds":5
+            "command":"printf ROOT_READY", "access":"read_only", "network_access":"allowed", "timeout_seconds":5
         }))]),
         ("ROOT", 1) => Reply::tools(vec![spawn("tester", "TESTER", &[])]),
         ("TESTER", 0) => Reply::tools(vec![call("test", "run_command", json!({
             "command":"if printf escape > file-0.txt 2>/dev/null; then exit 81; fi; test \"$(cat file-0.txt)\" = 'Evidence 0' || exit 82; printf result > \"$TMPDIR/test-result\" || exit 83; printf CHILD_TEST_PASSED",
-            "timeout_seconds":5
+            "network_access":"allowed", "timeout_seconds":5
         }))]),
         _ => Reply::done("verification finished"),
     }).await;
@@ -958,7 +958,7 @@ async fn approving_write_commands_while_review_is_polled_does_not_create_lock_co
             Reply::tools(vec![call("prepare-files", "apply_patch", json!({"patch":patch}))])
         } else if index <= COMMANDS {
             Reply::tools(vec![call(&format!("write-{index}"), "run_command", json!({
-                "command":"printf x >> command-results.txt", "access":"workspace_write", "timeout_seconds":5
+                "command":"printf x >> command-results.txt", "access":"workspace_write", "network_access":"allowed", "timeout_seconds":5
             }))])
         } else { Reply::done("writes verified") }
     }).await;
@@ -1044,7 +1044,7 @@ async fn parent_can_approve_and_stop_child_commands_without_exposing_other_roots
             "long-test",
             "run_command",
             json!({
-                "command":"printf CHILD_RUNNING; sleep 20", "yield_time_ms":0, "timeout_seconds":25
+                "command":"printf CHILD_RUNNING; sleep 20", "network_access":"allowed", "yield_time_ms":0, "timeout_seconds":25
             }),
         )]),
         ("TESTER", _) => Reply::done("child finished").blocked(&child_gate),

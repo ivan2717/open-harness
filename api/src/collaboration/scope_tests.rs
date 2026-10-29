@@ -146,6 +146,139 @@ fn write(path: &str) -> ToolCall {
 }
 
 #[tokio::test]
+async fn restoring_stale_delegate_permissions_cannot_override_the_root_policy() {
+    let f = Fixture::new().await;
+    f.member("root", MODEL_ID, PermissionMode::ReadOnly, None)
+        .await;
+    let child = f
+        .member("child", MODEL_ID, PermissionMode::ReadOnly, None)
+        .await;
+    // Simulate interruption after the root's downgrade was saved, before
+    // older delegate snapshots were updated.
+    child
+        .snapshot
+        .update(|detail| {
+            detail.summary.execution_policy.approval_mode = agent_local::ApprovalMode::FullAccess;
+            detail.summary.permission_mode = PermissionMode::WorkspaceWrite;
+        })
+        .unwrap();
+    f.state.shutdown().await;
+    let restored = AppState::open_with_delay(f.directory.join("state"), None, Duration::ZERO)
+        .await
+        .unwrap();
+    for id in ["root", "child"] {
+        let entry = restored.entry(id).unwrap();
+        assert_eq!(
+            entry.snapshot.get().summary.execution_policy.approval_mode,
+            agent_local::ApprovalMode::Ask
+        );
+        assert_eq!(
+            entry.snapshot.get().summary.permission_mode,
+            PermissionMode::ReadOnly
+        );
+        assert_eq!(
+            entry.workspace.as_ref().unwrap().approval_mode().unwrap(),
+            agent_local::ApprovalMode::Ask
+        );
+        assert!(!entry.workspace.as_ref().unwrap().full_access());
+        assert!(
+            entry
+                .workspace
+                .as_ref()
+                .unwrap()
+                .execute(write("forbidden.txt"))
+                .await
+                .is_err()
+        );
+    }
+    restored.shutdown().await;
+}
+
+#[tokio::test]
+async fn rebuilding_a_child_preserves_full_root_policy_and_child_write_restrictions() {
+    let f = Fixture::new().await;
+    let root = f
+        .member("root", MODEL_ID, PermissionMode::WorkspaceWrite, None)
+        .await;
+    root.snapshot
+        .update(|detail| {
+            detail.summary.execution_policy.approval_mode = agent_local::ApprovalMode::FullAccess;
+        })
+        .unwrap();
+    root.workspace
+        .as_ref()
+        .unwrap()
+        .set_approval_mode(agent_local::ApprovalMode::FullAccess)
+        .unwrap();
+    // Fixture child input defaults to Ask; only the root is authoritative.
+    let child = f
+        .member("child", MODEL_ID, PermissionMode::ReadOnly, Some(vec![]))
+        .await;
+    assert_eq!(
+        child.snapshot.get().summary.execution_policy.approval_mode,
+        agent_local::ApprovalMode::FullAccess
+    );
+    assert_eq!(
+        root.workspace.as_ref().unwrap().approval_mode().unwrap(),
+        agent_local::ApprovalMode::FullAccess
+    );
+    assert!(root.workspace.as_ref().unwrap().full_access());
+    assert!(!child.workspace.as_ref().unwrap().full_access());
+    assert_eq!(
+        child.snapshot.get().summary.permission_mode,
+        PermissionMode::ReadOnly
+    );
+    assert!(
+        child
+            .workspace
+            .as_ref()
+            .unwrap()
+            .execute(write("forbidden.txt"))
+            .await
+            .is_err()
+    );
+    f.state.shutdown().await;
+}
+
+#[tokio::test]
+async fn followup_rebinds_a_stale_delegate_approval_mode_to_the_live_root() {
+    let f = Fixture::new().await;
+    f.member("root", MODEL_ID, PermissionMode::WorkspaceWrite, None)
+        .await;
+    let child = f
+        .member("child", MODEL_ID, PermissionMode::WorkspaceWrite, None)
+        .await;
+    child
+        .snapshot
+        .update(|detail| {
+            detail.summary.execution_policy.approval_mode = agent_local::ApprovalMode::FullAccess;
+        })
+        .unwrap();
+    f.state
+        .resume_child("root", "child", "Continue reviewing".into(), None)
+        .await
+        .unwrap();
+    let resumed = f.state.entry("child").unwrap();
+    assert!(!Arc::ptr_eq(&child, &resumed));
+    assert_eq!(
+        resumed
+            .snapshot
+            .get()
+            .summary
+            .execution_policy
+            .approval_mode,
+        agent_local::ApprovalMode::Ask
+    );
+    assert_eq!(
+        resumed.workspace.as_ref().unwrap().approval_mode().unwrap(),
+        agent_local::ApprovalMode::Ask
+    );
+    assert!(!resumed.workspace.as_ref().unwrap().full_access());
+    f.stop_child().await;
+    f.state.shutdown().await;
+}
+
+#[tokio::test]
 async fn new_task_names_cannot_shadow_identity_aliases_or_paths() {
     let f = Fixture::new().await;
     f.member("root", MODEL_ID, PermissionMode::WorkspaceWrite, None)

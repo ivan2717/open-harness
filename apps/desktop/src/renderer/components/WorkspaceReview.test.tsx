@@ -79,10 +79,10 @@ describe('script command controls', () => {
     expect(html).toContain('允许执行并联网？')
     expect(html).toContain('允许命令及其子进程访问网络')
     expect(html).toContain('可读写工作目录及临时目录')
-    expect(html).toContain('本会话授权适用于主任务及子任务')
-    expect(html).toContain('此范围内的后续命令不再询问')
-    expect(html).toContain('本会话同范围允许')
-    expect(html).toContain('允许本次联网执行')
+    expect(html).toContain('适用于本会话及协作任务')
+    expect(html).toContain('同一工作区及读写、联网范围内不再询问')
+    expect(html).toContain('始终允许')
+    expect(html).toContain('仅允许本次')
     expect(html).not.toContain('网络关闭')
     expect(html).not.toContain('可访问工作目录以外')
   })
@@ -106,11 +106,13 @@ describe('script command controls', () => {
     expect(html).toContain('项目只读，文件写入仅限临时目录')
     expect(html).toContain('重启应用后失效')
     const buttons = collectButtons(element)
-    buttons.find((button) => button.children === '允许本次')!.onClick()
+    buttons.find((button) => button.children === '仅允许本次')!.onClick()
     expect(onDecide).toHaveBeenLastCalledWith('read', true, 'once')
-    buttons.find((button) => button.children === '本会话同范围允许')!.onClick()
+    buttons.find((button) => button.children === '允许')!.onClick()
     expect(onDecide).toHaveBeenLastCalledWith('read', true, 'session')
-    buttons.find((button) => button.children === '拒绝')!.onClick()
+    buttons.find((button) => button.children === '始终允许')!.onClick()
+    expect(onDecide).toHaveBeenLastCalledWith('read', true, 'always')
+    buttons.find((button) => button.children === '取消')!.onClick()
     expect(onDecide).toHaveBeenLastCalledWith('read', false)
   })
 
@@ -125,7 +127,7 @@ describe('script command controls', () => {
           onDecide={vi.fn()}
         />,
       )
-      expect(html).not.toContain('本会话同范围允许')
+      expect(html).not.toContain('始终允许')
     }
   })
 
@@ -145,7 +147,7 @@ describe('script command controls', () => {
       />,
     )
     expect(html).toContain('命令隔离不可用，因此不会执行命令')
-    expect(html).toMatch(/<button[^>]*disabled=""[^>]*>允许本次<\/button>/)
+    expect(html).toMatch(/<button[^>]*disabled=""[^>]*>允许<\/button>/)
   })
 
   it('keeps background command inspection and stopping visible even without an active model turn', () => {
@@ -233,6 +235,50 @@ describe('script command controls', () => {
     expect(html).toContain('可修改项目')
   })
 
+  it('keeps the actual full-access execution scope after the conversation returns to asking', () => {
+    const html = renderToStaticMarkup(
+      <WorkspaceReviewPanel
+        review={{
+          root: '/project',
+          permission_mode: 'workspace_write',
+          busy: false,
+          sandbox_available: true,
+          execution_mode: 'sandboxed',
+          approval_mode: 'ask',
+          changes: [],
+          approvals: [],
+          commands: [
+            {
+              ...command,
+              status: 'completed',
+              execution_mode: 'unrestricted',
+              access: 'read_only',
+              network_access: 'denied',
+            },
+            {
+              ...command,
+              id: 'legacy',
+              status: 'completed',
+              execution_mode: '',
+              access: 'read_only',
+              network_access: 'denied',
+            },
+          ],
+        }}
+        loading={false}
+        busy={false}
+        initialTab="commands"
+        onClose={vi.fn()}
+        onRefresh={vi.fn()}
+        onRevert={vi.fn()}
+        onStopCommand={vi.fn()}
+        onRevealWorkspace={vi.fn()}
+      />,
+    )
+    expect(html.match(/执行范围：主机完全访问/g)).toHaveLength(1)
+    expect(html.match(/请求范围：项目只读/g)).toHaveLength(1)
+  })
+
   it('shows revocable session grants even while a command is running', () => {
     const html = renderToStaticMarkup(
       <WorkspaceReviewPanel
@@ -262,8 +308,8 @@ describe('script command controls', () => {
     )
     expect(html).toContain('项目只读 · 网络关闭')
     expect(html).toContain('可修改项目 · 允许联网')
-    expect(html).toContain('重启应用后失效')
-    expect(html).toContain('不会停止已经批准的命令')
+    expect(html).toContain('撤销会同时清除保存的命令许可')
+    expect(html).toContain('不会停止正在执行的命令')
     expect(html).toMatch(/<button(?![^>]*disabled)[^>]*>撤销会话授权<\/button>/)
   })
 
@@ -277,7 +323,7 @@ describe('script command controls', () => {
     })
     expect(renderToStaticMarkup(approval)).toContain('子任务：检查图表')
     collectButtons(approval)
-      .find((button) => button.children === '允许本次')!
+      .find((button) => button.children === '仅允许本次')!
       .onClick()
     expect(onDecide).toHaveBeenCalledWith('child-command', true, 'once')
     const running = renderToStaticMarkup(

@@ -48,6 +48,9 @@ mod execution_lifecycle_tests;
 #[path = "workspace_service.rs"]
 mod workspace;
 
+#[path = "permissions/mod.rs"]
+pub(crate) mod permissions;
+
 #[path = "attachments.rs"]
 pub(crate) mod attachments;
 
@@ -77,6 +80,8 @@ pub struct AppState {
     inner: Arc<Service>,
 }
 struct Service {
+    permission_gate: std::sync::Mutex<()>,
+    permission_records: permissions::PermissionRecords,
     mailboxes: collaboration::Mailboxes,
     workspace_access: std::sync::Mutex<HashMap<String, agent_local::WorkspaceAccess>>,
     extensions: Arc<crate::extensions::ExtensionHost>,
@@ -113,6 +118,8 @@ impl AppState {
         let directory = fs::canonicalize(directory)?;
         let state = Self {
             inner: Arc::new(Service {
+                permission_gate: std::sync::Mutex::new(()),
+                permission_records: permissions::PermissionRecords::open(&directory)?,
                 mailboxes: collaboration::Mailboxes::open(directory.join("collaboration.json"))?,
                 workspace_access: std::sync::Mutex::new(HashMap::new()),
                 extensions: crate::extensions::ExtensionHost::open(&directory)?,
@@ -125,16 +132,24 @@ impl AppState {
                 shutting_down: AtomicBool::new(false),
             }),
         };
+        let mut saved = Vec::new();
         for entry in fs::read_dir(state.inner.directory.join("runs"))? {
             let path = entry?.path();
             if path.extension().is_none_or(|extension| extension != "json") {
                 continue;
             }
-            let mut detail: RunDetail =
+            let detail: RunDetail =
                 serde_json::from_slice(&fs::read(&path)?).map_err(io::Error::other)?;
             if !valid_id(&detail.summary.id) {
                 return Err(io::Error::other("invalid persisted run identifier"));
             }
+            saved.push(detail);
+        }
+        // The root snapshot owns the family's permission policy. Restore it
+        // before delegates, whose snapshots may be stale after an interrupted
+        // policy update. Directory enumeration order must not affect authority.
+        saved.sort_by_key(|detail| detail.summary.delegation.is_some());
+        for mut detail in saved {
             let store = JsonlEventStore::new(state.inner.directory.join("events"));
             use agent_runtime::EventStore;
             let Some(stored) = store
@@ -358,6 +373,7 @@ impl AppState {
         configured: Option<&agent_providers::HttpModel>,
         restore_saved_reasoning: bool,
     ) -> io::Result<Arc<RunEntry>> {
+        self.inherit_root_permissions(&mut detail);
         let id = detail.summary.id.clone();
         let operations = self
             .inner
@@ -376,6 +392,7 @@ impl AppState {
             .as_ref()
             .map_or_else(|| id.clone(), |delegation| delegation.root_run_id.clone());
         let max_steps = detail.summary.execution_policy.max_steps;
+        let approval_mode = detail.summary.execution_policy.approval_mode;
         let model_history_through = detail.summary.model_history_through;
         let demo = detail.summary.model_id == MODEL_ID;
         if !demo && detail.summary.workspace_path.is_none() {
@@ -502,7 +519,8 @@ impl AppState {
                         project,
                         workspace.clone(),
                     )
-                    .with_authorization_scope(&authorization_scope),
+                    .with_authorization_scope(&authorization_scope)
+                    .with_approval_mode(approval_mode),
                     child,
                 )))
             },
@@ -530,6 +548,32 @@ impl AppState {
             operations,
         }))
     }
+
+    fn inherit_root_permissions(&self, detail: &mut RunDetail) {
+        let Some(delegation) = &detail.summary.delegation else {
+            return;
+        };
+        let root = self
+            .entry(&delegation.root_run_id)
+            .ok()
+            .map(|entry| entry.snapshot.get().summary)
+            .filter(|summary| summary.delegation.is_none());
+        // An orphan's history remains readable, but it cannot recover a saved
+        // FullAccess policy without its authoritative root conversation.
+        detail.summary.execution_policy.approval_mode = root
+            .as_ref()
+            .map_or(agent_local::ApprovalMode::Ask, |summary| {
+                summary.execution_policy.approval_mode
+            });
+        detail.summary.permission_mode =
+            if delegation.write_paths.as_ref().is_some_and(Vec::is_empty) {
+                agent_local::PermissionMode::ReadOnly
+            } else {
+                root.map_or(agent_local::PermissionMode::ReadOnly, |summary| {
+                    summary.permission_mode
+                })
+            };
+    }
     pub async fn create(&self, input: CreateRunInput) -> Result<RunDetail, ServiceError> {
         let _gate = self.inner.model_gate.lock().await;
         self.ensure_accepting_work()?;
@@ -543,6 +587,12 @@ impl AppState {
         }
         let id = new_run_id();
         let now = time::now();
+        let permission_mode =
+            if input.execution_policy.approval_mode == agent_local::ApprovalMode::FullAccess {
+                agent_local::PermissionMode::WorkspaceWrite
+            } else {
+                input.permission_mode
+            };
         let detail = RunDetail {
             summary: RunSummary {
                 reasoning_settings_version: 1,
@@ -559,7 +609,7 @@ impl AppState {
                 model_id: input.model_id,
                 workspace_path,
                 execution_directory: None,
-                permission_mode: input.permission_mode,
+                permission_mode,
                 created_at: now.clone(),
                 updated_at: now,
             },
@@ -906,7 +956,13 @@ async fn execute_and_settle<E: std::fmt::Display>(
 ) {
     use futures_util::FutureExt;
     let _activity = BackgroundExecution { state, entry };
-    let execution_error = match std::panic::AssertUnwindSafe(execution).catch_unwind().await {
+    let execution = std::panic::AssertUnwindSafe(execution).catch_unwind();
+    tokio::pin!(execution);
+    let result = tokio::select! {
+        result = &mut execution => result,
+        _ = state.review_pending_loop(id) => execution.await,
+    };
+    let execution_error = match result {
         Ok(Ok(_)) => None,
         Ok(Err(error)) => Some(error.to_string()),
         Err(_) => Some("执行过程中发生内部异常".into()),

@@ -3,6 +3,7 @@ import { Database, SlidersHorizontal } from 'lucide-react'
 import { ErrorState, Loading } from '../components/Feedback'
 import { configOptions } from '../lib/queries'
 import { useUiStore } from '../state/ui-store'
+import { PermissionSettings } from '../components/PermissionSettings'
 import { DeveloperTools } from '../components/DeveloperTools'
 
 export function SettingsPage() {
@@ -39,6 +40,7 @@ export function SettingsPage() {
               </button>
             </div>
           </section>
+          <PermissionSettings />
           <section className="settings-section">
             <h2>本地数据</h2>
             <div className="storage-card">

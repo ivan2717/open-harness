@@ -382,17 +382,7 @@ async fn background_command(entry: &RunEntry) -> agent_local::CommandStatus {
             })
             .await
     });
-    let approval = tokio::time::timeout(Duration::from_secs(5), async {
-        loop {
-            if let Some(approval) = tools.review().unwrap().approvals.into_iter().next() {
-                break approval;
-            }
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-    })
-    .await
-    .expect("sandboxed command should request approval");
-    tools.approve(&approval.id, true).unwrap();
+    // A sandboxed no-network command runs inside the already selected scope.
     let status: agent_local::CommandStatus = serde_json::from_str(
         &tokio::time::timeout(Duration::from_secs(5), launch)
             .await

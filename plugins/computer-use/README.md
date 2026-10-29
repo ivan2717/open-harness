@@ -108,7 +108,14 @@ The secret is never put in argv or model output. The existing newline JSON
 protocol then runs over that socket. Host disconnect/cancellation exits the
 independent app, including during a pending operation. No TCP listener is opened.
 
-The Skill is guidance, not a permission grant. The host approves app selection;
+The Skill is guidance, not a permission grant. The host approves the displayed
+application identity. Allow covers that application for the conversation and
+collaborative tasks; Always allow persists the same application, bound to the
+plugin and server configuration. Process IDs remain live target checks rather
+than reusable permission identities. Another application requires its own grant
+unless the user explicitly chooses the entire computer-use capability. Cancel
+does not grant access; permissions can be inspected and revoked in settings.
+The host independently validates each app selection;
 the independent control app also requires macOS Accessibility permission. Window
 screenshots need Screen Recording. `computer_status` reports both without prompting.
 Grant them to **Open Harness Computer Use** in System Settings. Existing grants to

@@ -44,12 +44,18 @@ describe('delegated external tool approvals', () => {
           arguments: { url: 'https://example.com' },
           source_run_id: 'child',
           task_title: '调查产品资料',
-          session_scope: { kind: 'browser' },
+          session_scope: { kind: 'browser_origin', origin: 'https://example.com' },
+          permission_target: { kind: 'origin', origin: 'https://example.com' },
+          can_allow_capability: true,
         },
       ],
     })
     expect(html).toContain('协作任务：调查产品资料')
-    expect(html).toContain('允许本会话及协作任务使用独立浏览器')
+    expect(html).toContain('允许本会话及协作任务访问上述目标')
+    expect(html).toContain('https://example.com')
+    expect(html).toContain('扩大到 独立浏览器 的所有目标')
+    expect(html).toMatch(/type="checkbox"[^>]*>/)
+    expect(html).not.toContain('checked=""')
     expect(html).toContain('始终允许')
     expect(html).toContain('取消')
     expect(html).toMatch(/>允许<\/button>/)

@@ -3,6 +3,10 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
+#[path = "file_access/mod.rs"]
+mod file_access;
+pub(crate) use file_access::ParentDirectory;
+
 pub(crate) const FILE_LIMIT: usize = 256 * 1024;
 pub(crate) const READ_LIMIT: usize = 32 * 1024 * 1024;
 pub(crate) const OUTPUT_LIMIT: usize = 64 * 1024;
@@ -68,6 +72,42 @@ pub(crate) fn skipped_directory(name: &str) -> bool {
         )
 }
 
+/// Only the host's effective task policy can construct unrestricted scope.
+#[derive(Clone, Copy)]
+pub(crate) struct Scope<'a> {
+    pub root: &'a Path,
+    pub unrestricted: bool,
+}
+impl Scope<'_> {
+    pub fn resolve(self, path: &str) -> io::Result<PathBuf> {
+        if !self.unrestricted {
+            return resolve(self.root, path);
+        }
+        let input = Path::new(path);
+        let candidate = if input.is_absolute() {
+            input.to_path_buf()
+        } else {
+            self.root.join(input)
+        };
+        // Canonicalize the existing prefix so symlink aliases and '..' have
+        // their actual OS meaning. Missing descendants are allowed for writes.
+        fn existing_prefix(path: &Path) -> io::Result<PathBuf> {
+            match fs::canonicalize(path) {
+                Ok(path) => Ok(path),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    let parent = path.parent().ok_or(error)?;
+                    let name = path
+                        .file_name()
+                        .ok_or_else(|| denied("invalid host path"))?;
+                    Ok(existing_prefix(parent)?.join(name))
+                }
+                Err(error) => Err(error),
+            }
+        }
+        existing_prefix(&candidate)
+    }
+}
+
 /// Refuse every symlink component, including links whose current target is
 /// inside the root. This avoids surprising writes through shared aliases.
 pub(crate) fn resolve(root: &Path, relative: &str) -> io::Result<PathBuf> {
@@ -81,13 +121,21 @@ pub(crate) fn resolve(root: &Path, relative: &str) -> io::Result<PathBuf> {
             Component::CurDir => continue,
             Component::Normal(name) => {
                 let name = name.to_str().ok_or_else(|| denied("path must be UTF-8"))?;
+                #[cfg(windows)]
+                if name.contains(':') || name.ends_with(['.', ' ']) {
+                    return Err(denied(
+                        "alternate data streams and ambiguous Windows names are not accessible",
+                    ));
+                }
                 if denied_component(name) {
                     return Err(denied("protected path"));
                 }
                 candidate.push(name);
                 match fs::symlink_metadata(&candidate) {
-                    Ok(metadata) if metadata.file_type().is_symlink() => {
-                        return Err(denied("symbolic links are not accessible"));
+                    Ok(metadata) if redirected(&metadata) => {
+                        return Err(denied(
+                            "symbolic links and reparse points are not accessible",
+                        ));
                     }
                     Ok(_) => (),
                     Err(error) if error.kind() == io::ErrorKind::NotFound => (),
@@ -100,48 +148,46 @@ pub(crate) fn resolve(root: &Path, relative: &str) -> io::Result<PathBuf> {
     Ok(candidate)
 }
 
+fn redirected(metadata: &fs::Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        metadata.file_attributes()
+            & windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT
+            != 0
+    }
+    #[cfg(not(windows))]
+    {
+        metadata.file_type().is_symlink()
+    }
+}
+
 /// Opens a bounded regular file without following its final symlink. All callers
 /// must first resolve the workspace path to apply the component policy.
 pub(crate) fn read_bytes(path: &Path, limit: usize) -> io::Result<Vec<u8>> {
     use std::io::Read;
-    let metadata = fs::symlink_metadata(path)?;
-    if !metadata.is_file() || metadata.file_type().is_symlink() {
-        return Err(denied("expected a regular file"));
-    }
-    let mut options = fs::OpenOptions::new();
-    options.read(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
-        if metadata.nlink() > 1 {
-            return Err(denied("hard-linked files are not accessible"));
-        }
-        options.custom_flags(libc::O_NOFOLLOW);
-    }
+    let parent = ParentDirectory::open(path, false)?;
+    let mut file = parent.read()?;
+    let metadata = file.metadata()?;
     if metadata.len() > limit as u64 {
         return Err(io::Error::other(format!(
             "file exceeds {} MiB read limit",
             limit as f64 / 1048576.0
         )));
     }
-    let file = options.open(path)?;
-    let opened = file.metadata()?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        if opened.ino() != metadata.ino() || opened.dev() != metadata.dev() || opened.nlink() > 1 {
-            return Err(denied("file changed while opening; retry"));
-        }
-    }
-    if !opened.is_file() {
-        return Err(denied("expected a regular file"));
-    }
     let mut bytes = Vec::new();
-    file.take((limit + 1) as u64).read_to_end(&mut bytes)?;
+    (&mut file)
+        .take((limit + 1) as u64)
+        .read_to_end(&mut bytes)?;
+    ParentDirectory::check_file(&file)?;
     if bytes.len() > limit {
         return Err(io::Error::other("file exceeds read limit"));
     }
     Ok(bytes)
+}
+
+pub(crate) fn create_parent_directory(target: &Path) -> io::Result<()> {
+    ParentDirectory::open(target, true).map(|_| ())
 }
 
 pub(crate) fn read_text(path: &Path, limit: usize) -> io::Result<String> {

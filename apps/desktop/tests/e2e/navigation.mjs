@@ -87,6 +87,9 @@ async function launch() {
   page = await application.firstWindow()
   page.on('pageerror', (error) => errors.push(error.message))
   await expect(page.getByRole('heading', { name: '开始一个新任务' })).toBeVisible()
+  await application.evaluate(({ safeStorage }) => {
+    safeStorage.isEncryptionAvailable = () => false
+  })
   rail = page.getByRole('navigation', { name: '主导航' })
   sidebar = page.getByRole('complementary', { name: '会话导航' })
   composer = page.getByRole('textbox', { name: '任务描述', exact: true })
@@ -124,7 +127,10 @@ async function addProject(path) {
     'title',
     path,
   )
-  await expect(page.getByRole('button', { name: '项目权限', exact: true })).toContainText('只读')
+  await expect(page.getByRole('button', { name: '项目权限', exact: true })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: '审批方式', exact: true })).toContainText(
+    '请求批准',
+  )
   await expect(projectGroup(path)).toBeVisible()
   assert.equal(await application.evaluate(() => globalThis.__navigationPicker.calls), 1)
 }
@@ -137,7 +143,10 @@ async function expectProjectDraft(path, draft) {
     'title',
     path,
   )
-  await expect(page.getByRole('button', { name: '项目权限', exact: true })).toContainText('只读')
+  await expect(page.getByRole('button', { name: '项目权限', exact: true })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: '审批方式', exact: true })).toContainText(
+    '请求批准',
+  )
 }
 
 async function openRun(id) {

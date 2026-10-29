@@ -89,8 +89,8 @@ describe('delegated task and pause controls', () => {
         },
       ],
     })
-    expect(html).toMatch(/<button(?![^>]*disabled)[^>]*>允许本次<\/button>/)
-    expect(html).toMatch(/<button(?![^>]*disabled)[^>]*>本会话同范围允许<\/button>/)
+    expect(html).toMatch(/<button(?![^>]*disabled)[^>]*>仅允许本次<\/button>/)
+    expect(html).toMatch(/<button(?![^>]*disabled)[^>]*>允许<\/button>/)
   })
   it('keeps child results visible but directs further instructions to its parent', () => {
     const html = render({ delegation, status: 'failed' })

@@ -39,7 +39,8 @@
     "test:chrome": "node --test ../../plugins/chrome-use/tests/*.test.mjs",
     "test:e2e:control-setup": "node tests/e2e/control-setup.mjs",
     "test:e2e:computer": "pnpm run build && node scripts/backend.mjs debug && node tests/e2e/computer-use.mjs",
-    "test:e2e:native": "node tests/e2e/native-computer.mjs"
+    "test:e2e:native": "node tests/e2e/native-computer.mjs",
+    "test:e2e:permissions": "node tests/e2e/permissions.mjs"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.90.0",

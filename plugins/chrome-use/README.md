@@ -29,9 +29,10 @@ For local development only:
 3. Open **Open Harness Chrome** from Chrome's toolbar. Connect, then explicitly
    enable agent-created background tabs or share the current HTTP(S) tab.
 4. Enable the Chrome plugin in Open Harness. Choose **Allow** to use Chrome for
-   this conversation and its collaborative tasks, or **Always allow** to save
-   that capability permission for future conversations. **Cancel** leaves the
-   request unapproved. The extension still verifies the exact selected tab and
+   this conversation and its collaborative tasks on the displayed website, or
+   **Always allow** to save that website permission for future conversations.
+   Entire Chrome capability access is a separate explicit scope choice.
+   **Cancel** leaves the request unapproved. The extension still verifies the exact selected tab and
    document before every operation; existing user tabs must be explicitly shared.
 
 On macOS or Windows an approved `chrome_open` starts Chrome in the background
@@ -159,10 +160,13 @@ popups do not automatically gain ownership or permissions.
 
 ### Page access
 
-- Open Harness owns the capability permission, independently of the extension's
-  tab ownership and selected document. One conversation approval covers new
-  task tabs and sites; a saved permission can be revoked in extension settings.
-  Capability permission never shares an existing private user tab.
+- Open Harness owns application-side permission independently of the extension's
+  tab ownership and selected document. By default Allow covers an exact HTTP(S)
+  origin for a conversation and its collaborative tasks, including new task tabs
+  at that origin. Always allow persists the same origin and is bound to the plugin
+  content and server configuration. Entire Chrome capability access requires an
+  explicit scope choice. Saved permissions can be revoked in settings; neither
+  website nor whole-capability permission shares an existing private user tab.
 - Existing tabs remain private unless shared from the extension's own popup.
   Websites and content scripts cannot call popup grants or native host methods.
 - Agent-created tabs belong to their task family, with one MCP session recorded
@@ -170,12 +174,14 @@ popups do not automatically gain ownership or permissions.
   task may select it after release but cannot close a teammate's tab. Tab IDs
   are checked again on each call. Ownership, sharing and snapshot state are
   intentionally not restored after disconnect or browser restart, even when
-  Open Harness has a saved capability permission.
+  Open Harness has a saved website or whole-capability permission.
 - The origin is rechecked before and after observations and before actions. A
   redirect outside the selected origin stops reading and invalidates stale
   observations. Agent-owned tabs expose only the new origin with
   `selection_required`; use `chrome_select_tab` for that existing tab to obtain
-  a fresh snapshot under the existing capability permission. Existing user tabs
+  a fresh snapshot. The host reuses an existing permission for that origin or
+  asks for the newly reached website; it never treats tab ownership as website
+  consent. Existing user tabs
   still need the new origin shared through the popup. Do not open duplicate tabs
   or repeat an action to recover from navigation.
 - Page operations are fixed functions in an isolated execution world. Model

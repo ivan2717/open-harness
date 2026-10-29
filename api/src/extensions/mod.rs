@@ -16,9 +16,11 @@ use agent_plugins::{PluginInfo, PluginStore};
 use agent_skills::{
     SkillCatalog, SkillCatalogConfig, SkillDiagnostic, SkillInfo, SkillRoot, SkillScope,
 };
-pub use approvals::{ApprovalDecision, ExtensionApproval};
+pub use approvals::{ApprovalDecision, ApprovalExtent, ExtensionApproval};
 pub use control::{ControlAccess, ControlScope};
-pub use control_permissions::{ControlCapability, ControlPermission};
+pub use control_permissions::{
+    ControlCapability, ControlPermission, PermissionLifetime, PermissionTarget,
+};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet},
@@ -198,19 +200,20 @@ impl ExtensionHost {
         let control_permissions = saved
             .into_iter()
             .filter(|permission| {
-                self.control_plugin(&permission.server_id)
-                    .as_deref()
-                    .and_then(ControlCapability::for_plugin)
-                    == Some(permission.capability)
+                (permission.capability == ControlCapability::Mcp
+                    || self
+                        .control_plugin(&permission.server_id)
+                        .as_deref()
+                        .and_then(ControlCapability::for_plugin)
+                        == Some(permission.capability))
                     && self
                         .server(&permission.server_id)
                         .and_then(|server| self.control_binding(&server))
                         .is_ok_and(|binding| {
-                            self.controls.lock().unwrap().persistent_permission_matches(
-                                &permission.server_id,
-                                &binding,
-                                permission.capability,
-                            )
+                            self.controls
+                                .lock()
+                                .unwrap()
+                                .persistent_permission_matches(permission, &binding)
                         })
             })
             .collect();
@@ -451,6 +454,11 @@ impl ExtensionHost {
                     .into(),
             ]);
         }
+        if self.control_plugin(&server.id).as_deref() == Some("browser-use")
+            && let agent_mcp::McpTransport::Stdio { args, .. } = &mut connection.transport
+        {
+            args.push("--host-permissions".into());
+        }
         connection
     }
 
@@ -486,9 +494,62 @@ impl ExtensionHost {
         Ok(())
     }
 
+    /// Query durable grants globally, or effective grants used by one family.
+    pub fn permissions(&self, run: Option<&str>) -> Vec<ControlPermission> {
+        match run {
+            Some(run) => self.controls.lock().unwrap().session_permissions(run),
+            None => self.settings().control_permissions,
+        }
+    }
+    pub fn revoke_permission(
+        &self,
+        run: Option<&str>,
+        permission: &ControlPermission,
+    ) -> io::Result<()> {
+        let mut controls = self.controls.lock().unwrap();
+        controls.revoke_target(run, permission)?;
+        let members = run.map(|run| controls.family_members(controls.authorization_scope(run)));
+        // A revocation invalidates every handle that could still dispatch with
+        // the old target. Other saved permissions remain available afterward.
+        if permission.lifetime == PermissionLifetime::Always {
+            self.approvals
+                .invalidate_servers(&HashSet::from([permission.server_id.clone()]));
+        } else if let Some(members) = &members {
+            self.approvals
+                .invalidate_for_runs(&permission.server_id, members);
+        }
+        self.clients.write().unwrap().retain(|(owner, id), cached| {
+            if id == &permission.server_id
+                && (permission.lifetime == PermissionLifetime::Always
+                    || members
+                        .as_ref()
+                        .is_some_and(|members| members.contains(owner)))
+            {
+                cached.client.revoke();
+                false
+            } else {
+                true
+            }
+        });
+        Ok(())
+    }
+
     pub fn revoke_run(&self, run: &str) {
         // Same order as authorization: control registry -> client cache.
         let mut controls = self.controls.lock().unwrap();
+        self.revoke_run_locked(&mut controls, run);
+    }
+
+    /// Restore host policy, or invalidate outstanding operations and selected
+    /// controllers atomically when an already-initialized root changes modes.
+    pub fn set_approval_mode(&self, run: &str, mode: agent_local::ApprovalMode) {
+        let mut controls = self.controls.lock().unwrap();
+        if controls.set_approval_mode(run, mode) {
+            self.revoke_run_locked(&mut controls, run);
+        }
+    }
+
+    fn revoke_run_locked(&self, controls: &mut control::ControlRegistry, run: &str) {
         let members = if controls.authorization_scope(run) == run {
             controls.family_members(run)
         } else {
@@ -516,9 +577,7 @@ impl ExtensionHost {
             .list()
             .into_iter()
             .find(|plugin| {
-                self.is_bundled_control(plugin)
-                    && plugin.enabled
-                    && plugin.mcp_servers.iter().any(|entry| entry.id == server.id)
+                plugin.enabled && plugin.mcp_servers.iter().any(|entry| entry.id == server.id)
             });
         match plugin {
             Some(plugin) => serde_json::to_string(&serde_json::json!({
@@ -527,6 +586,12 @@ impl ExtensionHost {
             None => serde_json::to_string(server),
         }
         .map_err(io::Error::other)
+    }
+
+    /// Control consent is always human-owned, including actions whose target is
+    /// resolved from an earlier selection rather than repeated in tool args.
+    pub fn is_control_server(&self, server: &str) -> bool {
+        self.control_plugin(server).is_some()
     }
 
     fn control_plugin(&self, server: &str) -> Option<String> {

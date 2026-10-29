@@ -91,8 +91,8 @@ Real-model conversations support follow-up
 messages and the harness's history-read tools; synthetic diagnostic tools are
 only used by the offline demo.
 
-The composer groups task setup in one place: its top strip shows the project,
-its permissions when selected, and **此计算机**. **选择项目** opens the native directory
+The composer groups task setup in one place: its top strip shows the project
+and **此计算机**. **选择项目** opens the native directory
 picker; the selected project's menu offers **更换项目** and **移除项目**.
 The lower-right contains the model and send/stop controls. The text area grows with the draft,
 supports Shift+Enter for a newline, and does not send during IME composition.
@@ -101,8 +101,10 @@ Menus support arrow keys, Escape with focus return, and outside-click dismissal.
 project, permissions and draft survive that navigation. Use **新建会话** in the
 conversation sidebar to start a task without a project, or the project row’s new-chat
 control to start another task in that folder.
-Project access defaults to **只读**. Select **允许修改** in the permissions menu before creating the session to
-authorize file edits within that project. The agent can list, read and search
+New conversations allow edits within the selected working directory. The three
+permission presets control approval and access beyond that directory. Existing
+read-only conversations retain their restriction until the user selects a preset.
+The agent can list, read and search
 files, load project instructions, and make guarded edits. The renderer cannot
 start work in an arbitrary path without native directory selection.
 An idle conversation's lower-right model menu can switch to another configured
@@ -215,13 +217,17 @@ idle conversations to the updated model configuration while preserving their his
 and checkpoints. Active execution or compaction blocks the update. Both connections
 are saved before migration; the old one is removed only after all bindings are updated.
 
-Commands request approval showing the exact command, working directory, file
-access and network scope. The user may approve once or grant that scope for the
-current root conversation and its child tasks. The command panel lists reusable
-grants and can revoke them; they disappear after app restart. Revoking a grant
-does not stop commands that were already approved.
+Sandboxed commands with networking disabled run inside the selected project
+permissions without another approval. Network requests show the exact command,
+working directory, file access and network scope. **允许** reuses that scope in
+this root conversation and its children; **始终允许** keeps it across restarts for
+this same conversation and directory; **仅本次** is a single action. **取消** cancels
+the pending request. The composer offers only **请求批准 / 帮我批准 / 完全访问权限**.
+Saved grants, review decisions and token usage are secondary controls in settings. Changes to
+policy require an idle task family. Revocation cancels pending approvals and
+late reviews; **撤销并停止** also stops running work.
 
-macOS uses Seatbelt and Windows uses AppContainer with Job Objects. Networking
+In the first two presets, macOS uses Seatbelt and Windows uses AppContainer with Job Objects. Networking
 is disabled unless explicitly authorized. Read-only commands cannot modify the
 project and receive their own writable temporary directory. Workspace-write
 commands can modify the project and its temporary storage. Missing or failed
@@ -630,26 +636,24 @@ Both executors only control a selected running app and its observed window.
 Native Linux desktop input, secure-field typing and cross-app shortcuts are
 not supported. For concurrent background web work, use the Chrome plugin.
 
-At first use, choose **允许**, **始终允许**, or **取消**. **允许** grants the
-selected built-in capability (Chrome, the isolated browser, or computer control)
-to this conversation and its collaboration tasks. New task-owned tabs, websites,
-and application selections within that capability do not need repeated approval.
-**始终允许** saves that capability approval for future conversations and app
-restarts; revoke it in the plugin's settings card. These saved permissions are
-bound to the trusted server configuration and do not authorize arbitrary MCP
-servers. **取消** declines this pending operation without saving a denial.
-Existing user browser tabs still require explicit sharing in the extension;
-task tab ownership, application identity validation, and OS permissions continue
-to apply. The inline
-**电脑与浏览器控制** strip identifies the authorized capabilities and provides **停止控制**.
-This revokes the current conversation's authorization, cancels pending work and
-closes its owned executor. During the current app session, a saved permission
-cannot silently resume control in that stopped conversation; another explicit
-approval is required. After restarting the app, continuing a task can use a saved
-**始终允许** permission again; revoke the saved permission in settings to disable it.
-Stopping a run or quitting the app also ends owned control. Stopping does not
-reverse clicks or typing already delivered, and failed/uncertain actions are
-not automatically replayed. Computer targets are exclusive across conversations.
+At first use, choose **允许**, **始终允许**, or **取消**. The default grant is
+for the named application or website origin, shared with the current task's
+children. Explicitly selecting the entire capability permits switching targets.
+For ordinary MCP, the target is one exact server/tool, resource URI or prompt.
+**始终允许** persists the selected target, bound to the trusted server configuration
+and plugin content; settings can revoke individual entries. Previously saved
+whole-capability grants remain broad and are labelled accordingly. **取消** does
+not create a permanent denial. Chrome private tabs still need explicit extension
+sharing, and original tab ownership restrictions remain in force. The extension's
+shared-tab list is global to the browser profile, not private to one conversation.
+
+**停止控制** cancels current family control and pending requests. It does not erase
+saved Always permissions; remove those in settings. Stopping cannot reverse clicks
+or typing already delivered. A failed or uncertain action is never automatically
+replayed. Browser calls validate actual page origin at every operation; crossing
+an unapproved origin requires new consent before observing or manipulating it.
+Sensitive password/file inputs cannot be filled through the isolated browser's
+ordinary fill action, matching the Chrome/native restrictions.
 
 Enable **此模型支持图片输入** when adding a model that actually supports vision.
 This explicit capability is persisted with the model; protocol alone does not
@@ -711,7 +715,8 @@ The default project tool surface is `list_files`, `read_file`, `search_files`,
 `apply_patch`, `run_command`, `manage_command`, and `load_workspace_dependencies`.
 Read-only projects omit `apply_patch` and permit only read-only commands.
 Commands are available on macOS and Windows under their OS sandboxes; execution
-needs one-time approval or a matching session grant. Creating, editing and deleting files
+runs without extra approval within the selected file scope when networking is disabled;
+network requests need approval or a matching saved grant. Creating, editing and deleting files
 share one patch interface, with review and undo preserved.
 
 Open **插件** in the left rail. Use **安装插件** to choose a plugin folder
@@ -931,17 +936,31 @@ preserved, but are no longer created or automatically loaded. Existing files and
 deliverables under `outputs/` are retained across turns and restarts.
 
 Runtime sharing and temporary directories are not a security sandbox. macOS
-commands use Seatbelt; Windows commands use AppContainer plus Job Objects. Both
+commands in the first two presets use Seatbelt; Windows commands use AppContainer plus Job Objects. Both
 default to blocked networking. A command can request `network_access: "allowed"`
 for explicit approval, while retaining filesystem restrictions. A one-time grant
 covers that command and its subprocesses. The user can instead choose
-**本会话同范围允许** for subsequent commands within the same scope, shared by the
-root task and its children. The command panel shows those grants and
-**撤销会话授权** restores approval for future commands without stopping ones that
-were already approved. Grants are in memory only and disappear after restart.
-They never bypass a read-only project or a child's file ownership. Shared
-runtimes remain read-only; extra dependencies must use a writable project or
-workspace environment.
+**允许** for subsequent commands within the same scope, shared by the root task
+and its children, or **始终允许** to persist that scope for the same conversation
+and directory. The permission panel can revoke grants and optionally stop active
+work. Session-only grants expire on restart. They never bypass a read-only
+project or a child's file ownership. Shared runtimes remain read-only; extra
+dependencies must use a writable project or workspace environment.
+
+Automatic review is opt-in and uses an independent, tool-free model request only
+for pending command and ordinary MCP actions. Browser/app consent remains manual.
+Only validated low-risk, authorized decisions grant a single pending action;
+errors, timeouts and uncertain decisions stay pending for the human. The separate
+review log reports model usage. It never changes the sandbox or grants Always.
+
+Full Access is a separate, explicit conversation preset: it permits host commands,
+networking, file paths outside the working directory, and configured external tools
+without repeated approvals. It does not bypass OS permissions, the browser
+extension's shared-tab boundary, or explicitly narrowed child-task write leases.
+Read-only and network-denied commands still request a sandbox. Changing back to
+another preset revokes conversation grants and restores the filesystem boundary.
+New conversations do not inherit Full Access. The advanced **收回权限并停止任务**
+action also switches Full Access back to **请求批准**.
 
 Windows packages include `openharness-sandbox.exe` next to `api.exe`; the main
 process supplies its absolute path via `OPENHARNESS_WINDOWS_SANDBOX_HELPER`.

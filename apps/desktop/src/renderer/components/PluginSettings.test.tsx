@@ -1,8 +1,16 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import type { BundledPlugin, ExtensionSettings, PluginInfo } from '../../shared/extensions'
 import { PluginSettings } from './PluginSettings'
+
+vi.mock('@tanstack/react-router', () => ({
+  Link: ({ to, children, ...props }: any) => (
+    <a href={to} {...props}>
+      {children}
+    </a>
+  ),
+}))
 
 const chromeConnection: NonNullable<BundledPlugin['chrome']> = {
   configured: true,
@@ -235,7 +243,7 @@ describe('unified plugin settings', () => {
     expect(card).toContain('运行前需设置环境变量：SERVICE_TOKEN')
     expect(button(card, '测试连接')).not.toContain('disabled=')
   })
-  it('places persistent control permission and revocation inside its installed plugin card', () => {
+  it('links installed plugins to the unified permission manager', () => {
     const chrome = plugin('chrome-use', 'Chrome', {
       mcp_servers: [
         {
@@ -256,12 +264,13 @@ describe('unified plugin settings', () => {
     ]
     const html = render({ settings: configured, catalog: [catalog[2]] })
     const card = article(html, 'Chrome')
-    expect(card).toContain('控制授权 · 始终允许')
-    expect(button(card, 'aria-label="取消始终允许 Chrome"')).not.toContain('disabled=')
+    expect(card).toContain('已保存 1 项访问授权')
+    expect(card).toContain('href="/settings"')
+    expect(card).toContain('管理访问授权')
     expect(card).not.toContain('每个会话首次使用时询问')
     configured.control_permissions = []
     const cleared = article(render({ settings: configured, catalog: [catalog[2]] }), 'Chrome')
-    expect(cleared).toContain('每个会话首次使用时询问')
+    expect(cleared).toContain('尚未保存长期授权')
     expect(cleared).not.toContain('取消始终允许')
   })
 })

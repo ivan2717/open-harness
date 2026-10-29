@@ -581,7 +581,7 @@ async fn pending_commands_block_profile_edits_before_any_binding_changes() {
             .execute(agent_runtime::ToolCall {
                 id: "pending-command".into(),
                 name: "run_command".into(),
-                arguments: json!({"command":"echo profile-test","access":"read_only"}).to_string(),
+                arguments: json!({"command":"echo profile-test","access":"read_only","network_access":"allowed"}).to_string(),
             })
             .await
     });

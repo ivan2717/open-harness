@@ -3,6 +3,8 @@ import type { ReasoningCapability } from './model-reasoning'
 export type { ReasoningCapability, ReasoningOption } from './model-reasoning'
 import type {
   ControlApprovalDecision,
+  ApprovalExtent,
+  ControlPermission,
   ExtensionConfig,
   ExtensionSettings,
   McpCatalog,
@@ -25,9 +27,12 @@ export interface RunDelegation {
   model_override?: UpdateRunModelInput | null
 }
 
+export type ApprovalMode = 'ask' | 'auto_review' | 'full_access'
+
 export interface ExecutionPolicy {
+  approval_mode?: ApprovalMode
   max_steps?: number | null
-  max_agents?: number
+  max_agents?: number | null
 }
 
 export type PermissionMode = 'read_only' | 'workspace_write'
@@ -196,6 +201,7 @@ export interface RunDetail extends RunSummary {
 }
 
 export interface CreateRunInput {
+  execution_policy?: ExecutionPolicy
   prompt: string
   model_id: string
   reasoning_effort?: string
@@ -262,7 +268,7 @@ export interface FileChange {
 export type CommandExecutionMode = 'sandboxed' | 'unrestricted' | 'unavailable'
 export type CommandNetworkAccess = 'denied' | 'allowed'
 export type CommandAccess = 'read_only' | 'workspace_write'
-export type CommandApprovalScope = 'once' | 'session'
+export type CommandApprovalScope = 'once' | 'session' | 'always'
 
 export interface CommandGrant {
   access: CommandAccess
@@ -270,6 +276,8 @@ export interface CommandGrant {
 }
 
 export interface PendingApproval {
+  review_mode?: ApprovalMode
+  epoch?: number
   id: string
   task_title?: string
   command: string
@@ -288,9 +296,11 @@ export interface CommandRecord {
   exit_code: number | null
   access?: CommandAccess
   network_access?: CommandNetworkAccess
+  execution_mode?: CommandExecutionMode | ''
 }
 
 export interface WorkspaceReview {
+  approval_mode?: ApprovalMode
   root: string
   permission_mode: PermissionMode
   busy: boolean
@@ -303,7 +313,34 @@ export interface WorkspaceReview {
   command_grants?: CommandGrant[]
 }
 
+export interface UpdateRunPermissionsInput {
+  approval_mode: ApprovalMode
+  permission_mode?: PermissionMode
+}
+export interface PermissionReview {
+  id: string
+  run_id: string
+  operation: string
+  status: 'reviewing' | 'approved' | 'manual' | 'cancelled'
+  reason: string
+  model_id: string
+  created_at: string
+  usage: { input_tokens: number; output_tokens: number } | null
+}
+export interface RunPermissions extends UpdateRunPermissionsInput {
+  permission_mode: PermissionMode
+  root_run_id: string
+  editable: boolean
+  persistent_command_grants: CommandGrant[]
+  reviews: PermissionReview[]
+}
+
 export interface DesktopBridge {
+  runPermissions(id: string): Promise<RunPermissions>
+  updateRunPermissions(id: string, input: UpdateRunPermissionsInput): Promise<RunPermissions>
+  revokeRunPermissions(id: string, stop: boolean): Promise<RunPermissions>
+  permissions(): Promise<ControlPermission[]>
+  revokePermission(permission: ControlPermission, runId?: string): Promise<void>
   bundledPlugins(): Promise<BundledPlugin[]>
   installBundledPlugin(id: BundledPlugin['id']): Promise<ExtensionSettings>
   prepareBrowser(): Promise<void>
@@ -327,6 +364,7 @@ export interface DesktopBridge {
     id: string,
     approvalId: string,
     decision: ControlApprovalDecision,
+    extent?: ApprovalExtent,
   ): Promise<RunExtensions>
   revokeControl(id: string): Promise<RunExtensions>
   revokeControlPermission(serverId: string): Promise<ExtensionSettings>

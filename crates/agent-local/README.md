@@ -4,9 +4,11 @@
 surface is `list_files`, `read_file`, `search_files`, `apply_patch`, and
 `run_command`. Reading/searching automatically handles UTF-8 text and PDF,
 DOCX, XLSX and PPTX documents without commands or a Python installation. `ReadOnly` is the default;
-`WorkspaceWrite` permits file edits within the selected project. Read-only
-sessions advertise only read tools. `run_command` is advertised only when writes
-are enabled and the platform has the supported sandbox. Execution checks still
+`WorkspaceWrite` permits file edits within the selected project. The following
+workspace restrictions apply to Ask/AutoReview; see Full access below for the
+explicit host-execution mode. Read-only
+sessions advertise read tools and sandboxed read-only commands. `run_command`
+is advertised whenever the platform has the supported sandbox. Execution checks still
 reject calls to unavailable tools. Root/home/system
 directories, protected credential paths, symbolic links and hard-linked files
 are rejected. The root's identity is checked again on every operation.
@@ -25,19 +27,36 @@ recreated, including across application restarts. It never resets Git or discard
 The journal lives outside the workspace, is bound to that workspace, and is
 written atomically with owner-only file permissions.
 
-Commands require individual approval. On macOS they run under `sandbox-exec`
-with project-only writes, protected-path restrictions, a cleared environment,
-and no network access. Other platforms currently reject commands because no
-equivalent execution sandbox is implemented. Toolchains may require additional
-setup when their build process needs caches outside the selected project.
+Commands within the configured project/delegated filesystem boundary run directly
+when network access is denied. A command that requests network access requires a
+host decision unless a matching grant already covers it. `ApprovalMode::Ask`
+and `ApprovalMode::AutoReview` select who reviews a boundary request; neither safe
+mode grants network access or removes sandbox restrictions. The host implements
+the automatic reviewer and may apply a result only with the pending epoch.
+
+On macOS commands use `sandbox-exec`; Windows uses AppContainer and ACLs. Both
+limit writes to the approved project or command scratch directory, protect
+credential/state paths and clear inherited secrets from the environment. Linux
+command execution is unavailable until a supported OS sandbox is implemented.
 There is no fallback to an unrestricted shell.
 
-Commands are foreground operations: default timeout 60 seconds, maximum 120.
+Command grants and pending requests share one root-conversation state lock.
+Session approval publishes the grant before releasing all covered parent/child
+requests; unrelated roots and broader requests retain their own approval.
+Revocation cancels pending requests and invalidates approvals in transit, but
+already-admitted commands must be stopped separately. Host-persisted grants can
+be restored only through the host API, never through a model tool. Persistence
+callbacks run under the same revision check and must not re-enter permissions.
+
+Commands are foreground operations with an optional total deadline up to 86400
+seconds. The initial output wait defaults to 10000 milliseconds (maximum 30000);
+a yielded command is managed with `manage_command`.
 Cancellation and timeout terminate the owned process group. A trusted wrapper
 watches a pipe from the host, terminating that group if the host crashes.
 Starting background daemons, detached processes or new sessions with `setsid`
 is unsupported: such processes can leave the supervised process group, although
-they retain inherited filesystem/network sandbox restrictions. This is not a
+in sandboxed modes they retain inherited filesystem/network restrictions.
+Full-access commands have no such inherited sandbox after detaching. This is not a
 VM/container lifecycle boundary for arbitrary daemon workloads.
 
 Command output retains its beginning and ending within 64 KiB and explicitly
@@ -66,6 +85,25 @@ inside another restrictive sandbox can return `sandbox_apply: Operation not
 permitted`. These tests use temporary directories and local loopback only;
 no model API or external network access is required.
 
+## Full access
+
+The host may explicitly select `approval_mode: full_access`. Only a writable
+root or an inheriting child without `write_paths` receives host execution.
+Commands then run without a filesystem/network sandbox or another approval and
+network defaults to allowed. Unix uses the same supervised process group;
+Windows launches PowerShell directly inside the same kill-on-close Job. This is
+an explicit policy branch, never fallback after isolation failure. Explicit
+`access: read_only` or `network_access: denied` still selects the normal OS
+sandbox, and unavailable isolation fails closed. Task read-only mode and exact
+file leases remain authoritative even when the root uses full access.
+
+Full-access file tools accept absolute and outside paths. Bounded reads and
+atomic file replacement remain; protected filenames are accessible explicitly.
+Only ordinary files in the project enter its review/undo journal: outside and
+protected-file patches report `project_undo: false`. Arbitrary host-command
+changes outside the project cannot be enumerated or undone by project review.
+Switching back to Ask/AutoReview removes host-path and host-execution authority.
+
 ## Delegated runs
 
 The host can bind every run in one project to a shared `WorkspaceAccess` using
@@ -79,9 +117,11 @@ Lease acquisition normalizes workspace-relative paths and rejects protected
 paths, symlinks, directories and overlapping reservations, including case aliases.
 Parent edits and undo cannot touch files leased to another run. All patch targets
 are authorized before any edit is applied, including legacy write/edit entry
-points. Delegates cannot execute shell commands; parent commands are refused
-while any write lease exists. Shared operation locks allow concurrent readers
-and serialize writes, commands, lease acquisition and release. Cancelling a lease
+points. Unrestricted delegates inherit the parent's workspace permission;
+file-scoped delegates can execute only read-only sandboxed commands. Workspace
+write commands are refused while any write lease exists. Read-only commands can
+run concurrently; shared operation locks serialize workspace writes, lease
+acquisition and release. Cancelling a lease
 request while it waits creates no reservation.
 `try_acquire` performs the same validation without waiting, returning `WouldBlock`
 when an operation is active; use it while holding a short service admission lock.

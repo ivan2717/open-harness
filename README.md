@@ -39,8 +39,9 @@ These builds are unsigned and need no Apple developer account. See
 
 Choose a project directory and a configured model to work on actual local files.
 New projects default to **read-only**. With **workspace write** enabled, the model
-can make focused edits. Commands request approval for their file and network
-access unless the user has already granted that scope for this conversation.
+can make focused edits. Commands inside the selected filesystem boundary run
+without another prompt when network access is disabled. Boundary operations use
+the conversation's **请求批准** or **帮我批准** policy.
 The desktop shows pending approvals, command results, and file changes in an
 on-demand project panel. The offline demonstration does not operate on projects.
 
@@ -86,16 +87,17 @@ eight-command concurrency limit. The desktop displays running commands even
 between model turns. Stopping a task or exiting the app
 stops its commands; restarting preserves records without replaying processes.
 
-Commands run inside an OS sandbox. Network is
+In **请求批准** and **帮我批准**, commands run inside an OS sandbox. Network is
 **off by default**. When a command needs a download or remote service, it may
 request `network_access: "allowed"`; the approval UI names the network grant and
 the command record retains it. Choose one-time approval, or allow future commands
 within the same file/network scope for the current root conversation and its
 child agents. A saved scope never bypasses read-only project permissions or
 delegated file ownership, and does not relax filesystem restrictions. Session
-grants are kept only in memory, can be revoked in the command panel and disappear
-when the app restarts. Revocation affects future approvals; already approved
-commands must be stopped separately. Missing or
+grants are kept in memory and disappear when the app restarts. **始终允许**
+explicitly persists the same scope for this conversation family and working
+directory only. The permission panel can revoke both kinds of grants, cancel
+pending reviews, or revoke and stop active work together. Missing or
 failed isolation never falls back to unrestricted execution.
 
 macOS uses `/bin/sh` and Seatbelt (`sandbox-exec`), with workspace-scoped writes,
@@ -300,12 +302,44 @@ Building the macOS helper requires Xcode Command Line Tools. Linux native
 desktop control is not implemented. See the
 [Computer Use setup and GUI checks](plugins/computer-use/README.md).
 
-Before a first action, the conversation offers **允许本次** or a scoped
-**允许本会话** grant. Browser grants apply to its isolated session; computer grants
-bind one application/process, with another approval required to switch apps.
-Use **停止控制** to revoke the grant and stop its owned executor; run cancellation
-and application shutdown also clean up owned work. Stopping cannot undo an input
+In the first two permission presets, a first browser or application action offers
+**允许**, **始终允许**, or **取消**.
+Control permissions default to the specific application identity or website
+origin. Explicitly selecting the entire capability permits switching apps/sites.
+Ordinary MCP grants are bound to the exact server and tool/resource/prompt;
+read-only annotations never grant authority by themselves. Persistent grants
+remain bound to the server configuration and plugin content. Existing user tabs
+still require explicit sharing in the extension. Use **停止控制** to revoke current
+control; use settings to remove saved permissions. Stopping cannot undo an input
 already delivered. Screenshots and UI text are observations, not authorization.
+
+### Approval policy and review records
+
+The composer presents exactly three presets: **请求批准**, **帮我批准**, and
+**完全访问权限**. Change a conversation's policy between turns after its commands and
+collaborating agents have stopped; children inherit the root policy and can only
+narrow it. **请求批准** asks the user about boundary operations. **帮我批准** uses a
+separate, tool-free request to the current configured model for eligible command
+and ordinary MCP approvals. It does not remove the OS sandbox, approve browser
+or application consent, or grant reusable permissions. Only a complete,
+validated low-risk and authorized result can release the exact pending action
+once. Timeout, malformed responses, unavailable models and uncertain risk remain
+pending for human confirmation. Review decisions and provider-reported usage are
+visible under **设置 → 权限 → 管理授权与审查记录**; reviews can incur additional model
+usage. Skills, project instructions and agent messages cannot select approval
+policy or create permissions.
+
+**完全访问权限** explicitly enables host commands, networking, project-external
+file access and configured MCP/browser/computer tools without per-operation
+approval for the selected conversation family. Ordinary commands run as the
+current OS user, outside the workspace sandbox; output tracking, cancellation,
+timeouts and delegated write leases remain in effect. Explicitly read-only or
+network-denied commands still use the sandbox. OS consent and browser-extension
+sharing boundaries are not bypassed. Switching back restores sandboxed execution
+and clears conversation grants. This preset is saved for that conversation only;
+starting a new conversation returns to **请求批准** instead of silently carrying
+over Full Access. Detailed grants, review records and revocation live in settings,
+not in the three-option composer menu.
 
 In **模型 → 接入模型**, enable **此模型支持图片输入** only for a vision-capable
 model. Structured UI observations remain available without this option, while

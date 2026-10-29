@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
-import type { PermissionMode, FileReference } from '../../shared/contracts'
+import type { PermissionMode, FileReference, ApprovalMode } from '../../shared/contracts'
 
 export type InspectorTab = 'context' | 'timeline' | 'memory'
 
@@ -14,6 +14,9 @@ export type DraftFileReference = FileReference & {
 }
 
 interface UiState {
+  approvalMode: ApprovalMode
+  setApprovalMode: (mode: ApprovalMode) => void
+  resetFullAccessDraft: () => void
   drafts: Record<string, string>
   draftFiles: Record<string, DraftFileReference[]>
   fileImports: Record<string, boolean>
@@ -38,6 +41,10 @@ interface UiState {
 export const useUiStore = create<UiState>()(
   persist(
     (set) => ({
+      approvalMode: 'ask',
+      setApprovalMode: (approvalMode) => set({ approvalMode }),
+      resetFullAccessDraft: () =>
+        set((state) => (state.approvalMode === 'full_access' ? { approvalMode: 'ask' } : {})),
       drafts: {},
       // File snapshots survive navigation, but unsent file contents are not
       // copied into localStorage. Sent snapshots belong to the durable run log.

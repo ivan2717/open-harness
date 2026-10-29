@@ -5,6 +5,7 @@ import { fileReferenceSize } from '../../shared/file-references'
 import { useUiStore, type ProjectSelection } from '../state/ui-store'
 import { errorMessage } from '../lib/format'
 import { ComposerModel } from './ComposerModel'
+import { ComposerPermissions } from './ComposerPermissions'
 import { InlineError } from './Feedback'
 import { ProjectPicker } from './ProjectPicker'
 import { FileReferences } from './FileReferences'
@@ -118,8 +119,7 @@ export function Composer({
     setProjectError(null)
     try {
       const path = await window.harness.chooseWorkspace()
-      if (path)
-        onProjectChange(path === project?.path ? project : { path, permission: 'read_only' })
+      if (path) onProjectChange({ path, permission: 'workspace_write' })
     } catch (error) {
       setProjectError(errorMessage(error))
     } finally {
@@ -271,18 +271,21 @@ export function Composer({
           aria-label="任务描述"
         />
         <div className="composer-footer">
-          <ComposerAddMenu
-            disabled={filesDisabled}
-            pending={references.pending}
-            onFiles={() => void references.importReferences(() => window.harness.chooseFiles())}
-            onSkills={() => {
-              skillCursor.current = {
-                start: textarea.current?.selectionStart ?? draft.length,
-                end: textarea.current?.selectionEnd ?? draft.length,
-              }
-              setSkillsOpen(true)
-            }}
-          />
+          <div className="composer-footer-left">
+            <ComposerAddMenu
+              disabled={filesDisabled}
+              pending={references.pending}
+              onFiles={() => void references.importReferences(() => window.harness.chooseFiles())}
+              onSkills={() => {
+                skillCursor.current = {
+                  start: textarea.current?.selectionStart ?? draft.length,
+                  end: textarea.current?.selectionEnd ?? draft.length,
+                }
+                setSkillsOpen(true)
+              }}
+            />
+            <ComposerPermissions runId={runId} disabled={pending} />
+          </div>
           <div className="composer-footer-right">
             <ComposerModel
               models={models}

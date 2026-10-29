@@ -13,12 +13,13 @@ those browser tools. Do not ask the user to bring Chrome to the foreground merel
 to complete a web-page task, and do not silently replace a missing Chrome
 connection with foreground typing.
 
-Open Harness handles capability approval: Allow applies to this conversation and
-its collaborative tasks; Always allow also applies to future conversations until
-revoked in settings. Selecting another app needed for the task does not require
-another capability approval. These choices do not grant operating-system
-permissions or authorize unrelated actions. Cancel does not grant access; do
-not immediately repeat a cancelled request.
+Open Harness handles application approval. Allow covers the selected application
+in this conversation and its collaborative tasks; Always allow also covers that
+application in future conversations until revoked. The permission survives a
+process restart, but selecting another application requires its own approval
+unless the user explicitly selects the entire computer-use capability. These
+choices do not grant operating-system permissions or authorize unrelated actions.
+Cancel grants no access; do not immediately repeat a cancelled request.
 
 1. Read `computer_status`. On macOS, missing Accessibility or Screen Recording
    is a system setting the user must enable for **Open Harness Computer Use**.
@@ -28,7 +29,7 @@ not immediately repeat a cancelled request.
    bypass permission databases, request elevation or disable security controls.
    Status never requests system permission dialogs.
 2. Use `computer_apps` to identify a running app. Select its exact `bundle_id`
-   and `pid` with `computer_select_app`; the host checks the capability permission.
+   and `pid` with `computer_select_app`; the host checks permission for that application.
    Treat `bundle_id` as an opaque identity: on Windows it identifies the executable,
    not a macOS bundle or a value to construct from an app's displayed name.
    The embedded process name helps identify the approval target; always copy the

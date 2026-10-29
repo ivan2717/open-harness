@@ -515,7 +515,10 @@ async fn pending_command_approval_does_not_block_file_leases_or_leave_locks_afte
     let runner = parent.clone();
     let command = tokio::spawn(async move {
         runner
-            .execute(call("run_command", json!({"command":"echo not-executed"})))
+            .execute(call(
+                "run_command",
+                json!({"command":"echo not-executed", "network_access":"allowed"}),
+            ))
             .await
     });
     tokio::time::timeout(Duration::from_secs(2), async {

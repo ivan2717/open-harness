@@ -1,0 +1,241 @@
+.composer-footer-left {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+.composer-permissions {
+  gap: 6px;
+  font-size: 12px;
+  color: #6b766b;
+}
+.permission-mode-item {
+  align-items: start;
+  white-space: normal;
+}
+.permission-mode-item > span {
+  flex: 1;
+}
+.permission-mode-item strong {
+  display: block;
+  font-weight: 500;
+}
+.permission-mode-item small {
+  display: block;
+  margin-top: 4px;
+  color: #788277;
+  line-height: 1.5;
+  font-size: 11px;
+}
+.permission-menu-hint {
+  padding: 6px 12px;
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: #788277;
+}
+.permission-dialog {
+  width: min(560px, calc(100vw - 32px));
+  max-height: calc(100vh - 48px);
+  overflow-y: auto;
+  margin: auto;
+  padding: 22px;
+  border: 1px solid #dfe5da;
+  border-radius: 18px;
+  background: #fcfdf9;
+  color: #303c34;
+  box-shadow: 0 16px 64px #24302126;
+}
+.permission-dialog::backdrop {
+  background: #18201540;
+}
+.permission-dialog header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+.permission-dialog h2 {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 600;
+}
+.permission-section h3 {
+  font-size: 13px;
+  font-weight: 600;
+  margin: 0 0 12px;
+}
+.permission-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 12px;
+  margin-top: 12px;
+}
+.permission-hint {
+  color: #7a8476;
+  font-size: 12px;
+  line-height: 1.7;
+  margin: 10px 0;
+}
+.permission-text-button {
+  color: #5f7057;
+  font-size: 12px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.permission-text-button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.permission-section {
+  padding-top: 20px;
+  margin-top: 20px;
+  border-top: 1px solid #e2e8dc;
+}
+.permission-list,
+.permission-reviews {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.permission-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 0;
+}
+.permission-list li > div {
+  min-width: 0;
+}
+.permission-list strong {
+  font-size: 12px;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+.permission-list small,
+.permission-reviews small {
+  display: block;
+  color: #7a8476;
+  font-size: 11px;
+  margin-top: 4px;
+}
+.permission-reviews li {
+  padding: 10px 0;
+}
+.permission-reviews summary {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.permission-reviews time {
+  color: #7a8476;
+  font-size: 11px;
+}
+.permission-reviews code {
+  display: block;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 11px;
+  margin-top: 10px;
+}
+.permission-reviews p {
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.permission-extent {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #677361;
+  font-size: 12px;
+  margin-top: 12px;
+}
+.permission-extent input {
+  flex: 0 0 15px;
+  width: 15px;
+  height: 15px;
+  accent-color: #7d9e68;
+}
+@media (max-width: 640px) {
+  .composer-permissions span {
+    max-width: 64px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .permission-dialog {
+    padding: 18px;
+  }
+}
+.composer-permissions-control {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 6px;
+}
+.composer-control.permission-full-access,
+.composer-control.permission-full-access:not(:disabled):hover,
+.composer-control.permission-full-access[aria-expanded='true'],
+.permission-mode-item.permission-full-access,
+.permission-mode-item.permission-full-access small {
+  color: #b66a29;
+}
+.permission-mode-item > svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+.permission-mode-item:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.permission-mode-error {
+  color: #a96a36;
+  font-size: 11px;
+}
+.permission-settings-details > summary {
+  cursor: pointer;
+  font-size: 13px;
+  color: #63765e;
+  padding: 10px 0;
+}
+.permission-settings-section {
+  padding-top: 20px;
+}
+.permission-settings-section h3 {
+  font-size: 13px;
+  font-weight: 600;
+}
+.permission-session-picker {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.permission-session-picker select {
+  flex: 1;
+  min-width: 150px;
+  max-width: 360px;
+  padding: 9px 12px;
+  border: 1px solid #dfe5da;
+  border-radius: 8px;
+  background: white;
+  font-size: 13px;
+}
+.permission-full-access-notice {
+  border: 1px solid #ead4b5;
+  border-radius: 10px;
+  background: #fff9ef;
+  color: #a56d31;
+  padding: 12px;
+  font-size: 12px;
+  line-height: 1.7;
+}
+.permission-full-access-notice p {
+  margin: 0 0 10px;
+}

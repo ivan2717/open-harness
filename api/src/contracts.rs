@@ -60,6 +60,9 @@ pub struct Delegation {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExecutionPolicy {
+    /// User-selected preset: reviewed sandbox access, or explicit full host access.
+    #[serde(default)]
+    pub approval_mode: agent_local::ApprovalMode,
     /// Optional per-turn model step limit. Interactive conversations default to none.
     pub max_steps: Option<u32>,
     /// Number of concurrently active direct children; the coordinator is excluded.
@@ -248,7 +251,7 @@ pub struct ResumeRunInput {
 pub struct ApprovalInput {
     pub allow: bool,
     #[serde(default)]
-    pub scope: agent_local::CommandApprovalScope,
+    pub scope: crate::service::permissions::CommandDecisionScope,
 }
 
 #[derive(Debug, Deserialize)]

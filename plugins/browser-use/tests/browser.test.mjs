@@ -632,3 +632,42 @@ test("real emoji pages preserve Unicode across labels, snapshot truncation and p
   const trimmed = assertUnicodeJson(await session.call("browser_snapshot"));
   assert.equal(trimmed.accessibility.length, crowded.accessibility.length - 1);
 });
+
+test("host website permissions protect navigation, changed pages and screenshots", async (t) => {
+  const { session, url } = await fixture(t);
+  const other = await fixture(t);
+  session.requireHostPermission = true;
+  const approved = { origins: [new URL(url).origin] };
+  await assert.rejects(session.call("browser_open", { url }), /host must approve/i);
+  const opened = data(await session.call("browser_open", { url }, approved));
+  assert.match(opened.snapshot.text, /Local browser fixture/);
+  await assert.rejects(session.call("browser_open", { url: other.url }, approved), /not approved the navigation target/);
+  assert.equal(new URL(session.page.url()).origin, new URL(url).origin);
+  await session.page.goto(other.url);
+  await assert.rejects(session.call("browser_snapshot", {}, approved), /No page content was returned/);
+  await assert.rejects(session.call("browser_screenshot", {}, approved), /No page content was returned/);
+  await assert.rejects(session.call("browser_action", { action: "scroll", delta_y: 100, revision: opened.snapshot.revision }, approved), /No page content was returned/);
+  const target = data(await session.call("__openharness_browser_target", {}));
+  assert.deepEqual(target, { origin: new URL(other.url).origin });
+  const authorized = data(await session.call("browser_snapshot", {}, { origins: [target.origin] }));
+  assert.match(authorized.text, /Local browser fixture/);
+  await session.call("browser_open", { url }, { origins: ["*"] });
+  await session.call("browser_close", {}, { origins: [] });
+});
+
+test("password and file fills are refused without dispatch, ordinary inputs still work", async (t) => {
+  const { session, url } = await fixture(t);
+  await session.call("browser_open", { url });
+  await session.page.setContent('<label>Password<input type="password" id="password"></label><label>File<input type="file" id="file"></label><label>Text<input id="text"></label>');
+  for (const name of ["Password", "File"]) {
+    const snapshot = data(await session.call("browser_snapshot"));
+    const element = snapshot.elements.find(entry => entry.name === name);
+    assert.ok(element);
+    await assert.rejects(session.call("browser_action", { action: "fill", ref: element.ref, revision: snapshot.revision, text: "must-not-be-written" }), /must be completed by the user/);
+    assert.equal(await session.page.locator(`#${name.toLowerCase()}`).inputValue(), "");
+  }
+  const snapshot = data(await session.call("browser_snapshot"));
+  const element = snapshot.elements.find(entry => entry.name === "Text");
+  await session.call("browser_action", { action: "fill", ref: element.ref, revision: snapshot.revision, text: "ordinary text" });
+  assert.equal(await session.page.locator("#text").inputValue(), "ordinary text");
+});

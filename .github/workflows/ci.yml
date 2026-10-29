@@ -92,7 +92,7 @@ jobs:
   windows-checks:
     name: Windows checks
     runs-on: windows-2022
-    timeout-minutes: 30
+    timeout-minutes: 45
     env:
       ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
       OPENHARNESS_WINDOWS_SANDBOX_HELPER: ${{ github.workspace }}\target\debug\openharness-sandbox.exe
@@ -151,6 +151,26 @@ jobs:
       - name: Check Windows Chrome transport
         if: ${{ !cancelled() && steps.sandbox-helper.outcome == 'success' }}
         run: node --test ../../plugins/chrome-use/tests/bridge.test.mjs ../../plugins/chrome-use/tests/launch.test.mjs ../../plugins/chrome-use/tests/controller.test.mjs
+
+      - name: Install Electron for permission workflow checks
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: ""
+        run: node node_modules/electron/install.js
+      - name: Build debug backend for permission workflow checks
+        run: node scripts/backend.mjs debug
+      - name: Build desktop for permission workflow checks
+        run: pnpm build
+      - name: Check Windows permission workflow in Electron
+        timeout-minutes: 10
+        run: pnpm test:e2e:permissions
+      - name: Upload Windows permission workflow evidence
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-permissions-e2e
+          path: apps/desktop/test-results/permissions/
+          if-no-files-found: ignore
+          retention-days: 7
 
   windows:
     name: Windows x64 installer

@@ -1,5 +1,6 @@
 import type {
   CommandApprovalScope,
+  UpdateRunPermissionsInput,
   ConfigureModelInput,
   CreateRunInput,
   ResolvedModelConfiguration,
@@ -9,7 +10,13 @@ import type {
 } from '../shared/contracts'
 import { MODEL_TOKEN_LIMIT, resolveModelLimits } from '../shared/model-limits'
 import { validReasoningId, validateReasoningCapability } from '../shared/model-reasoning'
-import type { ControlApprovalDecision, ExtensionConfig } from '../shared/extensions'
+import type {
+  ApprovalExtent,
+  ControlApprovalDecision,
+  ControlPermission,
+  ExtensionConfig,
+} from '../shared/extensions'
+import { controlPermission, executionPolicy, runPermissionsInput } from './permission-protocol'
 import { extensionConfiguration, pluginIdentifier } from './extension-protocol'
 import {
   MAX_REFERENCE_FILES,
@@ -47,6 +54,11 @@ export const channels = {
 } as const
 
 export type BridgeRequest =
+  | { operation: 'permissions' }
+  | { operation: 'runPermissions'; id: string }
+  | { operation: 'updateRunPermissions'; id: string; input: UpdateRunPermissionsInput }
+  | { operation: 'revokeRunPermissions'; id: string; stop: boolean }
+  | { operation: 'revokePermission'; permission: ControlPermission; runId?: string }
   | { operation: 'extensionSettings' }
   | { operation: 'skillCatalog'; workspacePath?: string }
   | { operation: 'setPluginEnabled'; id: string; enabled: boolean }
@@ -58,6 +70,7 @@ export type BridgeRequest =
       id: string
       approvalId: string
       decision: ControlApprovalDecision
+      extent?: ApprovalExtent
     }
   | { operation: 'revokeControl'; id: string }
   | { operation: 'revokeControlPermission'; serverId: string }
@@ -99,7 +112,10 @@ export interface ApiRequest {
     | { message?: string; files?: FileReference[] }
     | { path: string }
     | { allow: boolean; scope?: CommandApprovalScope }
-    | { decision: ControlApprovalDecision }
+    | { decision: ControlApprovalDecision; extent?: ApprovalExtent }
+    | UpdateRunPermissionsInput
+    | { stop: boolean }
+    | { permission: ControlPermission; run_id?: string }
     | { enabled: boolean }
     | { source_path: string; expected_id?: string }
     | { replacement_model_id: string; allow_configuration_change?: boolean }
@@ -333,6 +349,32 @@ export function apiRequest(value: unknown): ApiRequest {
       }
     case 'uninstallPlugin':
       return { path: `/api/plugins/${pluginIdentifier(request.id)}`, method: 'DELETE' }
+    case 'permissions':
+      return { path: '/api/permissions', method: 'GET' }
+    case 'runPermissions':
+      return { path: `/api/runs/${identifier(request.id)}/permissions`, method: 'GET' }
+    case 'updateRunPermissions':
+      return {
+        path: `/api/runs/${identifier(request.id)}/permissions`,
+        method: 'PATCH',
+        body: runPermissionsInput(request.input),
+      }
+    case 'revokeRunPermissions':
+      if (typeof request.stop !== 'boolean') throw new Error('Invalid stop decision')
+      return {
+        path: `/api/runs/${identifier(request.id)}/permissions/revoke`,
+        method: 'POST',
+        body: { stop: request.stop },
+      }
+    case 'revokePermission':
+      return {
+        path: '/api/permissions/revoke',
+        method: 'POST',
+        body: {
+          permission: controlPermission(request.permission),
+          ...(request.runId === undefined ? {} : { run_id: identifier(request.runId) }),
+        },
+      }
     case 'extensionSettings':
       return { path: '/api/extensions', method: 'GET' }
     case 'skillCatalog': {
@@ -368,10 +410,16 @@ export function apiRequest(value: unknown): ApiRequest {
         request.decision !== 'cancel'
       )
         throw new Error('Invalid approval decision')
+      if (
+        request.extent !== undefined &&
+        request.extent !== 'target' &&
+        request.extent !== 'capability'
+      )
+        throw new Error('Invalid approval extent')
       return {
         path: `/api/runs/${identifier(request.id)}/extensions/approvals/${identifier(request.approvalId)}`,
         method: 'POST',
-        body: { decision: request.decision },
+        body: { decision: request.decision, ...(request.extent ? { extent: request.extent } : {}) },
       }
     case 'revokeControlPermission':
       return {
@@ -395,7 +443,12 @@ export function apiRequest(value: unknown): ApiRequest {
       }
     case 'approveCommand':
       if (typeof request.allow !== 'boolean') throw new Error('Invalid approval decision')
-      if (request.scope !== undefined && request.scope !== 'once' && request.scope !== 'session')
+      if (
+        request.scope !== undefined &&
+        request.scope !== 'once' &&
+        request.scope !== 'session' &&
+        request.scope !== 'always'
+      )
         throw new Error('Invalid approval scope')
       return {
         path: `/api/runs/${identifier(request.id)}/approvals/${identifier(request.approvalId)}`,
@@ -460,6 +513,7 @@ export function apiRequest(value: unknown): ApiRequest {
       const input = object(request.input)
       const files = fileReferences(input.files)
       const reasoning_effort = reasoningEffort(input.reasoning_effort)
+      const policy = executionPolicy(input.execution_policy)
       let workspace: Pick<CreateRunInput, 'workspace_path' | 'permission_mode'> = {}
       if (input.workspace_path !== undefined) {
         const path = boundedText(input.workspace_path, 4096, 'project path')
@@ -480,6 +534,7 @@ export function apiRequest(value: unknown): ApiRequest {
           ...(reasoning_effort ? { reasoning_effort } : {}),
           ...(files?.length ? { files } : {}),
           ...workspace,
+          ...(policy ? { execution_policy: policy } : {}),
         },
       }
     }

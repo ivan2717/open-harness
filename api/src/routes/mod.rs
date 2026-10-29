@@ -21,11 +21,13 @@ use std::{convert::Infallible, time::Duration};
 mod attachments;
 mod documents;
 mod health_router;
+mod permissions;
 mod plugins;
 
 pub(crate) fn router(state: AppState) -> Router {
     Router::new()
         .merge(health_router::health_router())
+        .merge(permissions::router())
         .route(
             "/documents/extract",
             post(documents::extract).layer(DefaultBodyLimit::max(
@@ -197,8 +199,8 @@ async fn approve_extension(
     Json(input): Json<ExtensionApprovalInput>,
 ) -> Result<Json<crate::extensions::RunExtensions>, ServiceError> {
     match input {
-        ExtensionApprovalInput::Decision { decision } => {
-            state.decide_extension(&id, &approval, decision)
+        ExtensionApprovalInput::Decision { decision, extent } => {
+            state.decide_extension_with_extent(&id, &approval, decision, extent)
         }
         ExtensionApprovalInput::Legacy { allow, session } => {
             state.approve_extension_scoped(&id, &approval, allow, session)
@@ -211,6 +213,8 @@ async fn approve_extension(
 enum ExtensionApprovalInput {
     Decision {
         decision: crate::extensions::ApprovalDecision,
+        #[serde(default)]
+        extent: crate::extensions::ApprovalExtent,
     },
     Legacy {
         allow: bool,
@@ -343,7 +347,7 @@ async fn approve(
     Json(input): Json<ApprovalInput>,
 ) -> Result<Json<agent_local::WorkspaceReview>, ServiceError> {
     state
-        .approve_command(&id, &approval, input.allow, input.scope)
+        .decide_command(&id, &approval, input.allow, input.scope)
         .await
         .map(Json)
 }

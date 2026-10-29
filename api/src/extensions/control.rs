@@ -1,5 +1,8 @@
 //! Ephemeral UI-control grants. Never restored from conversation history.
-use super::control_permissions::{CapabilityPermissions, ControlCapability, ControlPermission};
+use super::control_permissions::{
+    CapabilityPermissions, ControlCapability, ControlPermission, PermissionLifetime,
+    PermissionTarget,
+};
 use serde::Serialize;
 use std::{collections::HashMap, io};
 
@@ -7,6 +10,9 @@ use std::{collections::HashMap, io};
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ControlScope {
     Browser,
+    BrowserOrigin {
+        origin: String,
+    },
     Application {
         bundle_id: String,
         pid: u32,
@@ -19,6 +25,22 @@ pub enum ControlScope {
     ChromeNewTab {
         origin: String,
     },
+}
+
+impl ControlScope {
+    pub fn permission_target(&self) -> Option<PermissionTarget> {
+        match self {
+            Self::Browser => None,
+            Self::BrowserOrigin { origin }
+            | Self::ChromeTab { origin, .. }
+            | Self::ChromeNewTab { origin } => Some(PermissionTarget::Origin {
+                origin: origin.clone(),
+            }),
+            Self::Application { bundle_id, .. } => Some(PermissionTarget::Application {
+                bundle_id: bundle_id.clone(),
+            }),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -40,6 +62,9 @@ pub struct ControlAccess {
 #[derive(Default)]
 pub struct ControlRegistry {
     permissions: CapabilityPermissions,
+    /// Live host policy. This is restored from the root conversation, never
+    /// from tool parameters or persistent MCP grants.
+    approval_modes: HashMap<String, agent_local::ApprovalMode>,
     /// Host-owned delegation binding. A model can never choose its approval family.
     families: HashMap<String, String>,
     epochs: HashMap<String, u64>,
@@ -53,6 +78,24 @@ pub struct ControlRegistry {
 }
 
 impl ControlRegistry {
+    pub fn approval_mode(&self, run: &str) -> agent_local::ApprovalMode {
+        self.approval_modes
+            .get(self.authorization_scope(run))
+            .copied()
+            .unwrap_or_default()
+    }
+    pub fn set_approval_mode(&mut self, run: &str, mode: agent_local::ApprovalMode) -> bool {
+        // A restored child's older snapshot must never overwrite its parent's
+        // current policy. Children always read the live root value above.
+        if self.authorization_scope(run) != run {
+            return false;
+        }
+        // First injection restores the saved root policy. It must not suppress
+        // existing Always permissions merely because the process restarted.
+        self.approval_modes
+            .insert(run.into(), mode)
+            .is_some_and(|previous| previous != mode)
+    }
     pub fn open(path: &std::path::Path) -> io::Result<Self> {
         Ok(Self {
             permissions: CapabilityPermissions::open(path)?,
@@ -64,12 +107,10 @@ impl ControlRegistry {
     }
     pub fn persistent_permission_matches(
         &self,
-        server: &str,
+        permission: &ControlPermission,
         binding: &str,
-        capability: ControlCapability,
     ) -> bool {
-        self.permissions
-            .persistent_matches(server, binding, capability)
+        self.permissions.persistent_matches(permission, binding)
     }
     pub fn session_permissions(&self, run: &str) -> Vec<ControlPermission> {
         self.permissions.session_list(self.authorization_scope(run))
@@ -86,21 +127,73 @@ impl ControlRegistry {
         binding: &str,
         capability: ControlCapability,
     ) -> bool {
-        self.permissions
-            .permits(self.authorization_scope(run), server, binding, capability)
+        self.permissions.permits(
+            self.authorization_scope(run),
+            server,
+            binding,
+            capability,
+            None,
+        )
     }
-    pub fn remember_capability(
+    pub fn target_permits(
+        &self,
+        run: &str,
+        server: &str,
+        binding: &str,
+        capability: ControlCapability,
+        target: Option<&PermissionTarget>,
+    ) -> bool {
+        self.permissions.permits(
+            self.authorization_scope(run),
+            server,
+            binding,
+            capability,
+            target,
+        )
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub fn remember_permission(
         &mut self,
         run: &str,
         server: &str,
         name: &str,
         binding: &str,
         capability: ControlCapability,
+        target: Option<PermissionTarget>,
         always: bool,
     ) -> io::Result<()> {
         let root = self.authorization_scope(run).to_owned();
         self.permissions
-            .remember(&root, server, name, binding, capability, always)
+            .remember(&root, server, name, binding, capability, target, always)
+    }
+    pub fn revoke_target(
+        &mut self,
+        run: Option<&str>,
+        permission: &ControlPermission,
+    ) -> io::Result<()> {
+        let root = run.map(|run| self.authorization_scope(run).to_owned());
+        self.permissions
+            .revoke_target(root.as_deref(), permission)?;
+        // Invalidate handles without discarding unrelated saved permissions.
+        let runs: Vec<String> = if permission.lifetime == PermissionLifetime::Always {
+            self.server_runs
+                .get(&permission.server_id)
+                .into_iter()
+                .flatten()
+                .cloned()
+                .collect()
+        } else {
+            self.family_members(root.as_deref().unwrap())
+        };
+        for run in runs {
+            *self.epochs.entry(run.clone()).or_default() += 1;
+            self.release_server(&run, &permission.server_id);
+            self.remembered.remove(&(
+                self.authorization_scope(&run).to_owned(),
+                permission.server_id.clone(),
+            ));
+        }
+        Ok(())
     }
 
     pub fn bind_scope(&mut self, run: &str, root: &str) {
@@ -146,13 +239,21 @@ impl ControlRegistry {
     ) -> bool {
         if let Some(scope) = scope {
             let capability = match scope {
-                ControlScope::Browser => ControlCapability::Browser,
+                ControlScope::Browser | ControlScope::BrowserOrigin { .. } => {
+                    ControlCapability::Browser
+                }
                 ControlScope::Application { .. } => ControlCapability::Computer,
                 ControlScope::ChromeTab { .. } | ControlScope::ChromeNewTab { .. } => {
                     ControlCapability::Chrome
                 }
             };
-            if self.capability_permits(run, server, binding, capability) {
+            if self.target_permits(
+                run,
+                server,
+                binding,
+                capability,
+                scope.permission_target().as_ref(),
+            ) {
                 return true;
             }
             return self

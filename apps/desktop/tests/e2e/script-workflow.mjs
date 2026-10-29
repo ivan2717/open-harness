@@ -187,7 +187,12 @@ const server = createServer(async (request, response) => {
       .filter(
         (message) =>
           message.role === 'user' &&
-          ['SCRIPT_OUTPUT', 'SCRIPT_BACKGROUND', 'SCRIPT_AFTER_REVOKE'].includes(message.content),
+          [
+            'SCRIPT_OUTPUT',
+            'SCRIPT_NETWORK_GRANT',
+            'SCRIPT_BACKGROUND',
+            'SCRIPT_AFTER_REVOKE',
+          ].includes(message.content),
       )
       .at(-1)?.content
     assert(prompt, 'request must retain the fixture task')
@@ -230,6 +235,19 @@ const server = createServer(async (request, response) => {
           text = '脚本已完成。\n\n[下载报告](outputs/report.csv)\n\n![生成图片](outputs/plot.png)'
         }
       }
+    } else if (prompt === 'SCRIPT_NETWORK_GRANT') {
+      if (count === 0)
+        tool = [
+          'run_command',
+          {
+            command:
+              process.platform === 'win32'
+                ? 'Write-Output NETWORK_SCOPE_APPROVED'
+                : 'printf NETWORK_SCOPE_APPROVED',
+            network_access: 'allowed',
+          },
+        ]
+      else text = '已验证本会话的联网授权。'
     } else if (prompt === 'SCRIPT_BACKGROUND') {
       if (count === 0)
         tool = [
@@ -249,12 +267,19 @@ const server = createServer(async (request, response) => {
       else if (count === 1)
         tool = [
           'run_command',
-          { command: invokeNode('.openharness-tmp/background.cjs'), yield_time_ms: 0 },
+          {
+            command: invokeNode('.openharness-tmp/background.cjs'),
+            yield_time_ms: 0,
+            network_access: 'allowed',
+          },
         ]
     } else if (prompt === 'SCRIPT_AFTER_REVOKE') {
       if (count === 0)
-        tool = ['run_command', { command: invokeNode('.openharness-tmp/report.cjs') }]
-      else text = '命令已拒绝，未执行。'
+        tool = [
+          'run_command',
+          { command: invokeNode('.openharness-tmp/report.cjs'), network_access: 'allowed' },
+        ]
+      else text = '已取消本次命令，未执行。'
     }
     response.writeHead(200, { 'Content-Type': 'text/event-stream' })
     response.write(
@@ -423,12 +448,7 @@ try {
         window.location.hash = `/runs/${id}`
       }, run.id)
       await expect(page.getByRole('button', { name: '打开会话文件夹', exact: true })).toBeVisible()
-      await expect(page.getByRole('button', { name: '允许本次', exact: true })).toBeVisible({
-        timeout: 30_000,
-      })
-      await checkpoint('approve script execution')
-      await page.screenshot({ path: join(artifacts, 'script-approval.png') })
-      await page.getByRole('button', { name: '本会话同范围允许', exact: true }).click()
+      await checkpoint('run local script without an approval prompt')
       await expect
         .poll(async () => (await page.evaluate((id) => window.harness.getRun(id), run.id)).status, {
           timeout: 30_000,
@@ -456,6 +476,14 @@ try {
       const review = await page.evaluate((id) => window.harness.getWorkspace(id), run.id)
       assert.equal(review.root, run.execution_directory)
       assert.equal(review.commands.at(-1).status, 'completed')
+      assert.equal(review.commands.at(-1).network_access, 'denied')
+      assert.deepEqual(review.approvals, [])
+      assert.deepEqual(
+        review.command_grants,
+        [],
+        'automatic local execution must not create grants',
+      )
+      await expect(page.getByRole('region', { name: '待批准命令' })).toHaveCount(0)
       assert(review.commands.at(-1).output.includes('RUNTIME_OK'))
       await checkpoint('verify shared runtime without automatic dependency environments')
       const runtimeReport = JSON.parse(
@@ -554,7 +582,26 @@ try {
         .poll(() => application.evaluate(() => globalThis.__scriptOpenedDirectory))
         .toBe(await realpath(run.execution_directory))
 
-      await checkpoint('start background script')
+      await checkpoint('approve explicit network scope for this conversation')
+      await page.evaluate((id) => window.harness.submitInput(id, 'SCRIPT_NETWORK_GRANT'), run.id)
+      const networkApproval = page.getByRole('region', { name: '待批准命令' })
+      await expect(networkApproval).toContainText('允许执行并联网？')
+      await expect(
+        networkApproval.getByRole('button', { name: '始终允许', exact: true }),
+      ).toBeVisible()
+      await expect(networkApproval.getByRole('button', { name: '取消', exact: true })).toBeVisible()
+      await page.screenshot({ path: join(artifacts, 'script-approval.png') })
+      await networkApproval.getByRole('button', { name: '允许', exact: true }).click()
+      await expect
+        .poll(async () => (await page.evaluate((id) => window.harness.getRun(id), run.id)).status)
+        .toBe('waiting_for_input')
+      const granted = await page.evaluate((id) => window.harness.getWorkspace(id), run.id)
+      assert.deepEqual(granted.command_grants, [
+        { access: 'workspace_write', network_access: 'allowed' },
+      ])
+      assert.match(granted.commands.at(-1).output, /NETWORK_SCOPE_APPROVED/)
+
+      await checkpoint('start background script with the existing network grant')
       await page.evaluate((id) => window.harness.submitInput(id, 'SCRIPT_BACKGROUND'), run.id)
       await expect
         .poll(async () => (await page.evaluate((id) => window.harness.getRun(id), run.id)).status)
@@ -608,7 +655,8 @@ try {
       await page.evaluate((id) => window.harness.submitInput(id, 'SCRIPT_AFTER_REVOKE'), run.id)
       const approval = page.getByRole('region', { name: '待批准命令' })
       await expect(approval).toBeVisible()
-      await approval.getByRole('button', { name: '拒绝', exact: true }).click()
+      await expect(approval).toContainText('允许执行并联网？')
+      await approval.getByRole('button', { name: '取消', exact: true }).click()
       await expect
         .poll(
           async () =>

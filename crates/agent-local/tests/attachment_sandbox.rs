@@ -75,17 +75,6 @@ async fn original_attachment_read_is_exact_and_read_only_in_native_commands() {
                 })
                 .await
         });
-        let approval = tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                if let Some(approval) = tools.review().unwrap().approvals.into_iter().next() {
-                    break approval.id;
-                }
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .expect("command approval did not appear");
-        tools.approve(&approval, true).unwrap();
         let response = tokio::time::timeout(Duration::from_secs(15), task)
             .await
             .expect("sandbox command did not finish")

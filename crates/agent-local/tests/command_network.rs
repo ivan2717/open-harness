@@ -50,6 +50,14 @@ mod macos {
                 .await
         });
         for _ in 0..200 {
+            if network != Some("allowed") && task.is_finished() {
+                assert!(tools.review().unwrap().approvals.is_empty());
+                return task
+                    .await
+                    .unwrap()
+                    .map_err(|e| e.to_string())
+                    .unwrap_or_else(|e| e);
+            }
             let review = tools.review().unwrap();
             if let Some(approval) = review.approvals.first() {
                 assert_eq!(

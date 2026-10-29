@@ -55,7 +55,10 @@ const server = createServer(async (request, response) => {
       { patch: '*** Begin Patch\n*** Add File: blocked.txt\n+must not exist\n*** End Patch' },
     ]
   } else if (user === 'DENY_COMMAND' && count === 0) {
-    call = ['run_command', { command: 'printf denied > denied.txt', timeout_seconds: 5 }]
+    call = [
+      'run_command',
+      { command: 'printf denied > denied.txt', timeout_seconds: 5, network_access: 'allowed' },
+    ]
   } else if (user === 'SLEEP_BEFORE_CLOSE' && count === 0) {
     call = [
       'run_command',
@@ -119,6 +122,9 @@ async function launch() {
   const page = await application.firstWindow()
   page.on('pageerror', (error) => errors.push(error.message))
   await expect(page.getByRole('heading', { name: '开始一个新任务' })).toBeVisible()
+  await application.evaluate(({ safeStorage }) => {
+    safeStorage.isEncryptionAvailable = () => false
+  })
   return page
 }
 async function settled(page, id) {
@@ -182,13 +188,10 @@ try {
     dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [root] })
   }, root)
   await page.getByRole('button', { name: '选择项目', exact: true }).click()
-  await expect(page.getByRole('button', { name: '项目权限', exact: true })).toContainText('只读')
-  await page.getByRole('button', { name: '项目权限', exact: true }).click()
-  await expect(page.getByRole('menuitemradio', { name: /只读/ })).toHaveAttribute(
-    'aria-checked',
-    'true',
+  await expect(page.getByRole('button', { name: '项目权限', exact: true })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: '审批方式', exact: true })).toContainText(
+    '请求批准',
   )
-  await page.getByRole('menuitemradio', { name: /允许修改/ }).click()
   await page.getByRole('textbox', { name: '任务描述', exact: true }).fill('E2E_LOCAL_WORK')
   await page.getByRole('button', { name: '项目', exact: true }).click()
   await page.getByRole('menuitem', { name: '移除项目', exact: true }).click()
@@ -196,13 +199,10 @@ try {
   await expect(page.getByRole('button', { name: '项目权限', exact: true })).toHaveCount(0)
   await expect(page.getByRole('textbox', { name: '任务描述', exact: true })).toHaveValue('')
   await page.getByRole('button', { name: '选择项目', exact: true }).click()
-  await expect(page.getByRole('button', { name: '项目权限', exact: true })).toContainText('只读')
-  await page.getByRole('button', { name: '项目权限', exact: true }).click()
-  await expect(page.getByRole('menuitemradio', { name: /只读/ })).toHaveAttribute(
-    'aria-checked',
-    'true',
+  await expect(page.getByRole('button', { name: '项目权限', exact: true })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: '审批方式', exact: true })).toContainText(
+    '请求批准',
   )
-  await page.getByRole('menuitemradio', { name: /允许修改/ }).click()
   await expect(page.getByRole('textbox', { name: '任务描述', exact: true })).toBeEditable()
   await expect(page.getByRole('link', { name: '添加模型', exact: true })).toBeVisible()
   await expect(page.getByRole('button', { name: '开始运行', exact: true })).toBeDisabled()
@@ -216,8 +216,8 @@ try {
   await page.getByRole('link', { name: '添加模型', exact: true }).click()
   await expect(page.getByRole('heading', { name: '接入模型', exact: true })).toBeVisible()
   await page.getByRole('link', { name: '会话', exact: true }).click()
-  await expect(page.getByRole('button', { name: '项目权限', exact: true })).toContainText(
-    '允许修改',
+  await expect(page.getByRole('button', { name: '审批方式', exact: true })).toContainText(
+    '请求批准',
   )
   await expect(
     page.locator('.composer-context-bar').getByRole('button', { name: '项目', exact: true }),
@@ -246,8 +246,8 @@ try {
   await expect(page.getByRole('button', { name: '选择模型', exact: true })).toContainText(
     configured.model.name,
   )
-  await expect(page.getByRole('button', { name: '项目权限', exact: true })).toContainText(
-    '允许修改',
+  await expect(page.getByRole('button', { name: '审批方式', exact: true })).toContainText(
+    '请求批准',
   )
   await expect(
     page.locator('.composer-context-bar').getByRole('button', { name: '项目', exact: true }),
@@ -275,9 +275,9 @@ try {
   await expect(page.getByRole('button', { name: '选择模型', exact: true })).toContainText(
     configured.model.name,
   )
-  await expect(page.getByRole('button', { name: '项目权限', exact: true })).toContainText('只读')
-  await page.getByRole('button', { name: '项目权限', exact: true }).click()
-  await page.getByRole('menuitemradio', { name: /允许修改/ }).click()
+  await expect(page.getByRole('button', { name: '审批方式', exact: true })).toContainText(
+    '请求批准',
+  )
   await expect(
     page.locator('.composer-context-bar').getByRole('button', { name: '项目', exact: true }),
   ).toHaveAttribute('title', root)
@@ -290,7 +290,7 @@ try {
     .locator('.composer-stack')
     .screenshot({ path: join(artifacts, 'desktop-composer-reference.png') })
   const projectPicker = page.getByRole('button', { name: '项目', exact: true })
-  const permission = page.getByRole('button', { name: '项目权限', exact: true })
+  const permission = page.getByRole('button', { name: '审批方式', exact: true })
   const modelPicker = page.getByRole('button', { name: '选择模型', exact: true })
   await projectPicker.focus()
   await projectPicker.press('Enter')
@@ -306,7 +306,7 @@ try {
   await permission.click()
   await expect(projectPicker).toHaveAttribute('aria-expanded', 'false')
   await expect(page.getByRole('menu')).toHaveCount(1)
-  await expect(page.getByRole('menuitemradio', { name: /允许修改/ })).toHaveAttribute(
+  await expect(page.getByRole('menuitemradio', { name: /请求批准/ })).toHaveAttribute(
     'aria-checked',
     'true',
   )
@@ -333,8 +333,9 @@ try {
     await expect(control).toBeInViewport()
   await expect(page.getByRole('button', { name: '开始运行', exact: true })).toBeInViewport()
   await permission.click()
-  await expect(page.getByRole('menuitemradio', { name: /只读/ })).toBeInViewport()
-  await expect(page.getByRole('menuitemradio', { name: /允许修改/ })).toBeInViewport()
+  await expect(page.getByRole('menuitemradio', { name: /帮我批准/ })).toBeInViewport()
+  await expect(page.getByRole('menuitemradio', { name: /请求批准/ })).toBeInViewport()
+  await expect(page.getByRole('menuitemradio', { name: /完全访问权限/ })).toBeInViewport()
   await page.screenshot({ path: join(artifacts, 'desktop-composer-compact.png') })
   await page.keyboard.press('Escape')
   assert.equal(
@@ -351,13 +352,11 @@ try {
   await page.getByRole('button', { name: '开始运行', exact: true }).click()
   await expect.poll(() => page.evaluate(() => window.location.hash)).toContain('/runs/')
   const id = await page.evaluate(() => window.location.hash.split('/runs/')[1])
-  await expect(page.getByRole('button', { name: '允许本次', exact: true })).toBeVisible({
-    timeout: 20_000,
-  })
-  assert.equal(await readFile(join(project, 'note.txt'), 'utf8'), `${original}Agent addition.\n`)
-  await page.screenshot({ path: join(artifacts, 'desktop-workspace-approval.png') })
-  await page.getByRole('button', { name: '允许本次', exact: true }).click()
+  // Completion without clicking approval proves local sandbox commands run automatically.
   await settled(page, id)
+  await expect(page.getByRole('region', { name: '待批准命令' })).toHaveCount(0)
+  assert.equal(await readFile(join(project, 'note.txt'), 'utf8'), `${original}Agent addition.\n`)
+  await page.screenshot({ path: join(artifacts, 'desktop-workspace-automatic-command.png') })
   const workRequests = calls.filter(
     (body) =>
       body.messages.filter((message) => message.role === 'user').at(-1)?.content ===
@@ -389,6 +388,15 @@ try {
   const review = await page.evaluate((id) => window.harness.getWorkspace(id), id)
   assert.equal(review.root, root)
   assert.equal(review.permission_mode, 'workspace_write')
+  assert.deepEqual(review.approvals, [])
+  assert.deepEqual(
+    review.command_grants,
+    [],
+    'automatic local commands do not create reusable grants',
+  )
+  assert.equal(review.commands.at(-1).network_access, 'denied')
+  assert.equal(review.commands.at(-1).status, 'completed')
+  assert.match(review.commands.at(-1).output, /LOCAL_OK/)
   assert(
     review.changes.some(
       (change) => change.path === 'note.txt' && change.before === original && change.revertible,
@@ -419,8 +427,11 @@ try {
   await page.getByRole('button', { name: '关闭项目结果' }).click()
 
   await page.evaluate((id) => window.harness.submitInput(id, 'DENY_COMMAND'), id)
-  await expect(page.getByRole('button', { name: '拒绝', exact: true })).toBeVisible()
-  await page.getByRole('button', { name: '拒绝', exact: true }).click()
+  const networkApproval = page.getByRole('region', { name: '待批准命令' })
+  await expect(networkApproval).toContainText('允许执行并联网？')
+  await expect(networkApproval.getByRole('button', { name: '允许', exact: true })).toBeVisible()
+  await expect(networkApproval.getByRole('button', { name: '始终允许', exact: true })).toBeVisible()
+  await networkApproval.getByRole('button', { name: '取消', exact: true }).click()
   await settled(page, id)
   await assert.rejects(access(join(project, 'denied.txt')))
 
@@ -469,8 +480,7 @@ try {
   assert(afterRestart.commands.some((command) => command.id === review.commands.at(-1).id))
   assert.equal(afterRestart.approvals.length, 0)
   await page.evaluate((id) => window.harness.submitInput(id, 'SLEEP_BEFORE_CLOSE'), id)
-  await expect(page.getByRole('button', { name: '允许本次', exact: true })).toBeVisible()
-  await page.getByRole('button', { name: '允许本次', exact: true }).click()
+  await expect(page.getByRole('region', { name: '待批准命令' })).toHaveCount(0)
   await expect
     .poll(async () => readFile(join(project, 'close-started.txt'), 'utf8').catch(() => ''), {
       intervals: [100],
@@ -536,7 +546,7 @@ try {
     await expect(page.getByRole('heading', { name: '界面偏好', exact: true })).toBeVisible()
     await expect(page.locator('.developer-tools button')).toBeDisabled()
     await page.getByRole('link', { name: '会话', exact: true }).click()
-    for (const name of ['开始运行', '项目', '项目权限', '选择模型']) {
+    for (const name of ['开始运行', '项目', '审批方式', '选择模型']) {
       await expect(page.getByRole('button', { name, exact: true })).toBeDisabled()
     }
     const description = page.getByRole('textbox', { name: '任务描述', exact: true })

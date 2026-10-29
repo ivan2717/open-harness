@@ -8,7 +8,7 @@ use crate::{
 };
 use serde::Deserialize;
 use serde_json::json;
-use std::{collections::BTreeMap, fs, io, path::PathBuf};
+use std::{collections::BTreeMap, io, path::PathBuf};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -17,6 +17,7 @@ struct Input {
 }
 
 struct Change {
+    journaled: bool,
     path: String,
     target: PathBuf,
     before: Option<String>,
@@ -38,7 +39,7 @@ impl LocalTools {
             }
             let path = target
                 .strip_prefix(self.root())
-                .unwrap()
+                .unwrap_or(&target)
                 .to_string_lossy()
                 .into_owned();
             // Reject aliases and ancestor conflicts before touching any file.
@@ -79,6 +80,7 @@ impl LocalTools {
             }
             let before_permissions = files::file_permissions(&target)?;
             changes.push(Change {
+                journaled: self.journal_path(&target).is_some(),
                 before_permissions,
                 path,
                 target,
@@ -86,7 +88,7 @@ impl LocalTools {
                 after,
             });
         }
-        let output = json!({"applied":true,"files":changes.iter().map(|change|json!({"path":change.path,"status":if change.before.is_none(){"added"}else if change.after.is_none(){"deleted"}else{"modified"}})).collect::<Vec<_>>()}).to_string();
+        let output = json!({"applied":true,"files":changes.iter().map(|change|json!({"path":change.path,"project_undo":change.journaled,"status":if change.before.is_none(){"added"}else if change.after.is_none(){"deleted"}else{"modified"}})).collect::<Vec<_>>()}).to_string();
         if output.len() > paths::OUTPUT_LIMIT {
             return Err(io::Error::other(
                 "patch result exceeds 64 KiB; split the patch",
@@ -100,6 +102,7 @@ impl LocalTools {
         let mut journal = self.inner.journal.lock().map_err(lock_error)?;
         let prior: BTreeMap<_, _> = changes
             .iter()
+            .filter(|change| change.journaled)
             .map(|change| {
                 (
                     change.path.clone(),
@@ -110,7 +113,7 @@ impl LocalTools {
         for change in changes {
             self.check_patch_target(change)?;
         }
-        for change in changes {
+        for change in changes.iter().filter(|change| change.journaled) {
             let previous = prior[&change.path].as_ref();
             journal.files.insert(
                 change.path.clone(),
@@ -132,13 +135,13 @@ impl LocalTools {
             let result = (|| {
                 self.check_patch_target(change)?;
                 if change.after.is_some() {
-                    fs::create_dir_all(change.target.parent().unwrap())?;
+                    paths::create_parent_directory(&change.target)?;
                     self.check_patch_target(change)?;
                 }
                 files::replace_with_permissions(
                     &change.target,
                     change.after.as_deref(),
-                    journal.files[&change.path].before_permissions.as_ref(),
+                    change.before_permissions.as_ref(),
                 )
             })();
             if let Err(error) = result {
@@ -148,7 +151,7 @@ impl LocalTools {
                 for attempted in changes[..=index].iter().rev() {
                     let current = self
                         .verify_root()
-                        .and_then(|()| paths::resolve(self.root(), &attempted.path))
+                        .and_then(|()| self.file_scope().resolve(&attempted.path))
                         .and_then(|target| paths::text_file(&target));
                     let restored = match current {
                         Ok(current) if current == attempted.before => true,
@@ -162,20 +165,23 @@ impl LocalTools {
                         }
                         _ => false,
                     };
-                    if restored {
+                    if restored && attempted.journaled {
                         restore_entry(
                             &mut journal.files,
                             &attempted.path,
                             prior[&attempted.path].clone(),
                         );
-                    } else {
+                    } else if !restored {
                         incomplete = true;
                         if let Some(saved) = journal.files.get_mut(&attempted.path) {
                             saved.owned = false;
                         }
                     }
                 }
-                for unattempted in &changes[index + 1..] {
+                for unattempted in changes[index + 1..]
+                    .iter()
+                    .filter(|change| change.journaled)
+                {
                     restore_entry(
                         &mut journal.files,
                         &unattempted.path,

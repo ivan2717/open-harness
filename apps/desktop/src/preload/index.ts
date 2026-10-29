@@ -6,6 +6,7 @@ import type {
   RunDetail,
   RunSummary,
   WorkspaceReview,
+  RunPermissions,
   FileImportResult,
   ModelConfiguration,
 } from '../shared/contracts'
@@ -19,6 +20,7 @@ import type { ResolvedResource } from '../shared/message-resources'
 import type { RunMemory } from '../shared/memory'
 import type {
   ExtensionSettings,
+  ControlPermission,
   RunExtensions,
   McpCatalog,
   SkillCatalog,
@@ -49,6 +51,14 @@ async function importedImages(files: File[]): Promise<FileImportResult> {
 }
 
 const bridge: DesktopBridge = {
+  runPermissions: (id) => invoke<RunPermissions>({ operation: 'runPermissions', id }),
+  updateRunPermissions: (id, input) =>
+    invoke<RunPermissions>({ operation: 'updateRunPermissions', id, input }),
+  revokeRunPermissions: (id, stop) =>
+    invoke<RunPermissions>({ operation: 'revokeRunPermissions', id, stop }),
+  permissions: () => invoke<ControlPermission[]>({ operation: 'permissions' }),
+  revokePermission: (permission, runId) =>
+    invoke<void>({ operation: 'revokePermission', permission, runId }),
   installPlugin: (expectedId, sourceKind = 'directory') =>
     ipcRenderer.invoke(
       channels.installPlugin,
@@ -66,8 +76,14 @@ const bridge: DesktopBridge = {
   runExtensions: (id) => invoke<RunExtensions>({ operation: 'runExtensions', id }),
   runMemory: (id) => invoke<RunMemory>({ operation: 'runMemory', id }),
   refreshRunSkills: (id) => invoke<RunExtensions>({ operation: 'refreshRunSkills', id }),
-  approveExtension: (id, approvalId, decision) =>
-    invoke<RunExtensions>({ operation: 'approveExtension', id, approvalId, decision }),
+  approveExtension: (id, approvalId, decision, extent) =>
+    invoke<RunExtensions>({
+      operation: 'approveExtension',
+      id,
+      approvalId,
+      decision,
+      ...(extent ? { extent } : {}),
+    }),
   revokeControl: (id) => invoke<RunExtensions>({ operation: 'revokeControl', id }),
   revokeControlPermission: (serverId) =>
     invoke<ExtensionSettings>({ operation: 'revokeControlPermission', serverId }),

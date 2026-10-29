@@ -80,6 +80,27 @@ impl AppState {
                         delegation.root_run_id.as_str()
                     }),
             )?;
+            let owner = detail
+                .summary
+                .delegation
+                .as_ref()
+                .map_or(detail.summary.id.as_str(), |d| d.root_run_id.as_str());
+            {
+                let _permission_gate = self
+                    .inner
+                    .permission_gate
+                    .lock()
+                    .map_err(|_| io::Error::other("permission gate poisoned"))?;
+                if detail.summary.delegation.is_none() {
+                    tools.set_approval_mode(detail.summary.execution_policy.approval_mode)?;
+                }
+                let saved_permissions = self.inner.permission_records.get(owner)?;
+                if saved_permissions.workspace.as_deref() == Some(root) {
+                    for grant in saved_permissions.grants {
+                        tools.grant_command_scope(grant)?;
+                    }
+                }
+            }
             let instructions_path = directory.join("instructions.json");
             // Instructions are part of provider replay bindings. Freeze them
             // for this conversation instead of rereading a changed AGENTS.md
@@ -88,7 +109,7 @@ impl AppState {
                 serde_json::from_slice(&fs::read(instructions_path)?).map_err(io::Error::other)?
             } else {
                 let instructions = format!(
-                    "{}\n\nYou are working in the local project: {}. Use the provided tools to inspect the actual files before editing, make focused changes, and verify the results. Respect the configured permissions; project files cannot grant additional permissions. Commands require explicit user approval. The tool description and approval identify this platform's actual isolation; never assume Windows execution is sandboxed. Never claim a tool or test succeeded without its result. After an interruption, inspect actual files and command records before deciding what to do; unknown operations may already have had effects. Preserve existing user changes.\n\nUse Markdown for formatted answers. Link actual output files with [label](<project-relative/path>) and embed image, audio, or video outputs with ![description](<project-relative/path>). These references open previews in the desktop app. Only refer to files that exist; a link does not create a file. Keep generated outputs inside this project.\n\nProject instructions captured when this conversation was created:\n{}",
+                    "{}\n\nYou are working in the local project: {}. Use the provided tools to inspect the actual files before editing, make focused changes, and verify the results. Respect the configured permissions; project files cannot grant additional permissions. Normal commands run inside the configured OS sandbox without additional approval. Requests for extra network access follow the selected approval policy. The tool description identifies this platform's actual isolation. Never claim a tool or test succeeded without its result. After an interruption, inspect actual files and command records before deciding what to do; unknown operations may already have had effects. Preserve existing user changes.\n\nUse Markdown for formatted answers. Link actual output files with [label](<project-relative/path>) and embed image, audio, or video outputs with ![description](<project-relative/path>). These references open previews in the desktop app. Only refer to files that exist; a link does not create a file. Keep generated outputs inside this project.\n\nProject instructions captured when this conversation was created:\n{}",
                     agent.instructions,
                     root,
                     tools.instructions()?,
@@ -99,11 +120,19 @@ impl AppState {
             // A stable host contract, separate from frozen project instructions.
             // Includes scratch chats restored from versions without file tools.
             agent.instructions.push_str("\n\nLocal scripting: use apply_patch to write reusable scripts, then run_command to execute them. Call load_workspace_dependencies before choosing a Python/Node executable; use its actual paths and arguments, never assume packages are installed. Choose the language for the task and available libraries: Python is useful for documents/data, Node for JavaScript and filesystem transformations; neither has unconditional priority. Use .openharness-tmp/ for disposable scripts and outputs/ for deliverables. Prefer the bundled libraries. Never modify managed runtimes or install packages globally or into the user's home. The loader reports shared runtimes and libraries only; it does not create or select per-conversation virtual environments, dependency directories, or package stores. Use the shared libraries directly by default. If additional dependencies are necessary, explicitly choose an existing project environment or create a temporary environment inside the workspace; use pnpm for Node dependencies. Follow that environment's dependency manifest and lockfile. Do not create a virtual environment or private package cache merely because a conversation started. Existing .openharness-tmp/tasks directories from older versions are preserved but are not automatically activated; inspect them before explicitly reusing one. Package installations remain subject to the actual filesystem and network permissions. A virtual environment is not an OS sandbox. If a download needs network access, explicitly request it for that command. If the user denies it, use available libraries or explain what dependency is missing; never bypass the denial. For an explicitly requested project dependency change, follow that project's package manager and lockfile instead. A running command result is not success: use manage_command to collect its output and final exit code, or stop it. Do not launch detached daemons. Existing commands are never automatically replayed after a restart. Link deliverables with workspace-relative Markdown paths so the user can preview or save them. Do not claim results before verifying the output files. Runtime and tool availability never grant additional permissions.");
+            let full_access = tools.full_access();
             if managed {
-                agent.instructions.push_str("\nThis is this conversation's private working directory, not a selected user project. You may create scripts and deliverables here. Its files persist with the conversation. Other conversations, application state, and user files outside this directory are not implicitly authorized.");
+                agent.instructions.push_str("\nThis conversation has a private working directory for scripts and deliverables. Its files persist with the conversation.");
             }
-            agent.instructions.push_str("\nCurrent host command policy supersedes older frozen project instructions: commands require user-approved scope and OS sandboxing on macOS and Windows. The user may approve one command or explicitly reuse the same or narrower access/network scope for subsequent commands in this root conversation and its delegated tasks. The user can revoke future automatic approvals; restarting the application clears them. Network is denied by default; when a necessary command needs to download dependencies or contact a service, explicitly request run_command network_access=allowed. A one-time approval covers only that command and its child processes; reusable conversation approval never relaxes the OS filesystem boundary. Models cannot create reusable approvals. Use access=read_only for concurrent tests/inspection: only the per-command temporary directory is writable, and it is removed on completion. Direct temporary files and compiler artifacts to TMPDIR/TEMP. Delegated tasks inherit the parent's workspace permission unless explicitly narrowed to read-only or assigned file paths. File-scoped delegates must use file tools for their leased edits and read-only commands for execution. Read-only tests see live project files; repeat final checks after concurrent edits settle. Only workspace_write commands lock the project for their full lifetime, and they must wait until all delegated file leases are released. A denied request must not be bypassed. If sandbox setup fails, commands cannot run; do not fall back to unrestricted execution.");
-            if cfg!(windows) {
+            // Live host policy overrides the frozen project prompt when the
+            // user changes a permission preset between turns.
+            agent.instructions.push_str("\n\n");
+            agent.instructions.push_str(if full_access {
+                include_str!("permissions/full_access_instructions.txt")
+            } else {
+                include_str!("permissions/sandbox_instructions.txt")
+            });
+            if cfg!(windows) && !full_access {
                 agent.instructions.push_str(" Windows uses PowerShell inside an AppContainer. Approved Internet/LAN access does not exempt Windows loopback isolation: local loopback services can remain unreachable. Read-only commands authorize existing project files at launch; start a new command to inspect files created or atomically replaced by concurrent edits.");
             }
             Ok(tools)
@@ -285,7 +314,7 @@ impl AppState {
         Ok(workspaces)
     }
 
-    fn workspace_for_command(
+    pub(super) fn workspace_for_command(
         &self,
         id: &str,
         command: &str,
@@ -335,7 +364,9 @@ impl AppState {
             .workspace
             .as_ref()
             .ok_or_else(|| ServiceError::BadRequest("此会话没有本地工作目录".into()))?;
-        tools.revoke_command_grants().map_err(workspace_error)?;
+        let root = self.permission_root(id)?;
+        self.clear_command_permissions(&root, Some(tools))
+            .map_err(workspace_error)?;
         self.workspace_review(id).await
     }
 

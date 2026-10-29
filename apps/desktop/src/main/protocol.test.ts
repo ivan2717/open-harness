@@ -111,7 +111,7 @@ describe('desktop bridge request boundary', () => {
     expect(() => apiRequest({ operation: 'resumeRun', id: 'run-1', message: '' })).toThrow()
   })
   it('validates command approval scope and exposes only the fixed revocation route', () => {
-    for (const scope of ['once', 'session']) {
+    for (const scope of ['once', 'session', 'always']) {
       expect(
         apiRequest({
           operation: 'approveCommand',

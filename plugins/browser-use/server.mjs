@@ -3,6 +3,7 @@ import { tools } from "./schema.mjs";
 
 const session = new BrowserSession({
   headless: process.argv.includes("--headless") ? true : undefined,
+  requireHostPermission: process.argv.includes("--host-permissions"),
 });
 const versions = new Set([
   "2025-11-25",
@@ -87,7 +88,8 @@ async function handle(request) {
     else if (method === "tools/list") result = { tools };
     else if (method === "tools/call") {
       try {
-        result = await session.call(params.name, params.arguments ?? {});
+        const { _host_permission: authorization, ...arguments_ } = params.arguments ?? {};
+        result = await session.call(params.name, arguments_, authorization);
       } catch (error) {
         result = {
           isError: true,

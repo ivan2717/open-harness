@@ -33,6 +33,7 @@ export function AppShell() {
       ) {
         event.preventDefault()
         useUiStore.getState().setProject(null)
+        useUiStore.getState().resetFullAccessDraft()
         void navigate({ to: '/' })
       }
     }

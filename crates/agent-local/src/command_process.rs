@@ -7,6 +7,8 @@ use tokio::process::{Child, ChildStdin, Command};
 
 #[derive(Default)]
 pub(crate) struct CommandProcessOptions {
+    /// Explicit host policy, never inferred from sandbox startup failure.
+    pub unrestricted: bool,
     /// None retains workspace writes; Some([]) is a read-only workspace.
     pub write_paths: Option<Vec<PathBuf>>,
     /// An exact host-owned scratch directory, never a model-supplied path.
@@ -81,31 +83,39 @@ impl CommandProcess {
         runtime.read_paths.extend(tools.attachment_read_paths()?);
         #[cfg(not(windows))]
         let mut command = {
-            // EOF on the separate supervision pipe kills the process group,
-            // including if the API process exits without running destructors.
-            const WRAPPER: &str = "owner=$$\n(while IFS= read -r line; do :; done; kill -KILL -- \"-$owner\") <&0 >/dev/null 2>&1 &\n/usr/bin/sandbox-exec -p \"$1\" /bin/sh -c \"$2\" </dev/null\nexit \"$?\"";
             let mut command = Command::new("/bin/sh");
-            command.args([
-                "-c",
-                WRAPPER,
-                "openharness-command",
-                &sandbox_profile(
+            // Both execution paths keep the same supervision pipe/process group.
+            // Sandbox errors cannot choose the unrestricted branch.
+            if options.unrestricted {
+                const WRAPPER: &str = "owner=$$\n(while IFS= read -r line; do :; done; kill -KILL -- \"-$owner\") <&0 >/dev/null 2>&1 &\n/bin/sh -c \"$1\" </dev/null\nexit \"$?\"";
+                command.args(["-c", WRAPPER, "openharness-command", script]);
+            } else {
+                let mut profile = sandbox_profile(
                     tools.root(),
                     &tools.inner.state_dir,
                     &runtime.read_paths,
                     &runtime.public_certificates,
                     network_access,
                     &write_paths,
-                ),
-                script,
-            ]);
+                );
+                profile.push_str(&command_links::restrictions(tools.root(), &write_paths)?);
+                const WRAPPER: &str = "owner=$$\n(while IFS= read -r line; do :; done; kill -KILL -- \"-$owner\") <&0 >/dev/null 2>&1 &\n/usr/bin/sandbox-exec -p \"$1\" /bin/sh -c \"$2\" </dev/null\nexit \"$?\"";
+                command.args(["-c", WRAPPER, "openharness-command", &profile, script]);
+            }
             command.process_group(0);
             command
         };
         #[cfg(windows)]
         let mut command = {
-            let mut command = Command::new(windows_helper()?);
-            // The trusted helper and all its children enter the Job before execution.
+            let mut command = if options.unrestricted {
+                let mut command = Command::new(windows::shell());
+                command.args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", &format!("[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); $OutputEncoding = [Console]::OutputEncoding; {script}")]);
+                command
+            } else {
+                Command::new(windows_helper()?)
+            };
+            // Even unrestricted host processes enter the kill-on-close Job
+            // before executing. This controls lifetime, not filesystem access.
             command.creation_flags(
                 windows_sys::Win32::System::Threading::CREATE_SUSPENDED
                     | windows_sys::Win32::System::Threading::CREATE_NO_WINDOW,
@@ -156,21 +166,26 @@ impl CommandProcess {
         #[cfg(windows)]
         let supervision = {
             use tokio::io::AsyncWriteExt;
-            let request = serde_json::json!({
-                "version":1, "program":windows::shell(),
-                "args":["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", &format!("[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); $OutputEncoding = [Console]::OutputEncoding; {script}")],
-                "cwd":tools.root(), "workspace":tools.root(), "read_paths":runtime.read_paths, "write_paths":write_paths,
-                "denied_paths":[tools.inner.state_dir],
-                "network_allowed":network_access == NetworkAccess::Allowed,
-            });
-            let mut encoded = serde_json::to_vec(&request).map_err(io::Error::other)?;
-            encoded.push(b'\n');
-            let mut pipe = child
-                .stdin
-                .take()
-                .ok_or_else(|| io::Error::other("missing sandbox input"))?;
-            pipe.write_all(&encoded).await?;
-            pipe.shutdown().await?;
+            if options.unrestricted {
+                // Host commands are noninteractive; no sandbox request is sent.
+                drop(child.stdin.take());
+            } else {
+                let request = serde_json::json!({
+                    "version":1, "program":windows::shell(),
+                    "args":["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", &format!("[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); $OutputEncoding = [Console]::OutputEncoding; {script}")],
+                    "cwd":tools.root(), "workspace":tools.root(), "read_paths":runtime.read_paths, "write_paths":write_paths,
+                    "denied_paths":[tools.inner.state_dir],
+                    "network_allowed":network_access == NetworkAccess::Allowed,
+                });
+                let mut encoded = serde_json::to_vec(&request).map_err(io::Error::other)?;
+                encoded.push(b'\n');
+                let mut pipe = child
+                    .stdin
+                    .take()
+                    .ok_or_else(|| io::Error::other("missing sandbox input"))?;
+                pipe.write_all(&encoded).await?;
+                pipe.shutdown().await?;
+            }
             None
         };
         Ok(Self {
@@ -221,7 +236,7 @@ fn sandbox_profile(
     write_paths: &[PathBuf],
 ) -> String {
     let mut profile = String::from(
-        "(version 1)\n(deny default)\n(allow process*)\n(allow sysctl-read)\n(allow mach-lookup)\n(allow file-read-metadata)\n(allow file-read* (literal \"/\"))\n",
+        "(version 1)\n(deny default)\n(deny file-link)\n(allow process*)\n(allow sysctl-read)\n(allow mach-lookup)\n(allow file-read-metadata)\n(allow file-read* (literal \"/\"))\n",
     );
     if network_access == NetworkAccess::Allowed {
         profile.push_str("(allow network*)\n");
@@ -299,6 +314,10 @@ fn sandbox_profile(
 #[cfg(windows)]
 #[path = "command_windows.rs"]
 mod windows;
+
+#[cfg(not(windows))]
+#[path = "command_links.rs"]
+mod command_links;
 
 struct RuntimeEnvironment {
     path: std::ffi::OsString,

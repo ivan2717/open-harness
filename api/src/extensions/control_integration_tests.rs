@@ -162,6 +162,8 @@ async fn approval_cannot_cross_runs_or_upgrade_an_unscoped_operation() {
                     source_run_id: None,
                     task_title: None,
                     session_scope: None,
+                    permission_target: None,
+                    can_allow_capability: false,
                 },
             )
             .await
@@ -236,6 +238,7 @@ fn control_package(root: &Path, id: &str, mode: &str, marker: &Path) -> PathBuf 
         fs::write(source.join("fixture.py"), r#"import json,sys,time,pathlib,urllib.parse
 mode,marker=sys.argv[1:3]
 next_tab=42
+browser_origin=None
 for line in sys.stdin:
     req=json.loads(line)
     if 'id' not in req: continue
@@ -244,12 +247,23 @@ for line in sys.stdin:
         result={'protocolVersion':req['params']['protocolVersion'],'serverInfo':{'name':'control-fixture','version':'1'},'capabilities':{'tools':{}}}
     elif method=='tools/list':
         result={'tools':[{'name':'computer_select_app','description':'Fixture selection','inputSchema':{'type':'object'}}]}
+    elif method=='resources/read':
+        result={'contents':[{'uri':req['params']['uri'],'text':'fixture resource'}]}
+    elif method=='prompts/get':
+        result={'messages':[{'role':'user','content':{'type':'text','text':'fixture prompt'}}]}
     elif method=='tools/call':
+        if req['params']['name']=='__openharness_browser_target':
+            result={'content':[{'type':'text','text':json.dumps({'origin':browser_origin})}]}
+            print(json.dumps({'jsonrpc':'2.0','id':req['id'],'result':result}),flush=True)
+            continue
+        if req['params']['name']=='browser_open':
+            parsed=urllib.parse.urlsplit(req['params']['arguments']['url'])
+            browser_origin='https://redirect.example' if mode=='browser_redirect' else parsed.scheme+'://'+parsed.netloc
         if mode=='serialized':
             with open(marker,'a',newline='\n') as output: output.write('start\n')
             time.sleep(0.1)
             with open(marker,'a',newline='\n') as output: output.write('end\n')
-        else: pathlib.Path(marker).write_text('called')
+        else: pathlib.Path(marker).write_text(json.dumps(req['params']['arguments']) if mode=='record_args' else 'called')
         if mode=='hang': time.sleep(30)
         if mode=='open_pause' and req['params']['arguments'].get('url','').endswith('/pending'):
             time.sleep(30)
@@ -1100,3 +1114,9 @@ async fn failed_child_selection_never_leaks_a_family_session_grant() {
 
 #[path = "capability_integration_tests.rs"]
 mod capability_tests;
+
+#[path = "target_permission_tests.rs"]
+mod target_permission_tests;
+
+#[path = "full_access_tests.rs"]
+mod full_access_tests;

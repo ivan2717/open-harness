@@ -1,5 +1,5 @@
 use super::approvals::ApprovalGrant;
-use super::{ControlCapability, ControlScope, ExtensionApproval, ExtensionHost};
+use super::{ControlCapability, ControlScope, ExtensionApproval, ExtensionHost, PermissionTarget};
 use agent_core::{ModelImage, ToolOutput};
 use agent_runtime::{ToolCall, ToolDefinition, ToolExecutor};
 use serde_json::{Value, json};
@@ -59,6 +59,13 @@ impl ExtensionTools {
             .lock()
             .unwrap()
             .bind_scope(&self.run, root_run_id);
+        self
+    }
+
+    /// The host injects user-selected policy after binding the root task.
+    /// Child snapshots cannot set root policy; every operation reads it live.
+    pub fn with_approval_mode(self, mode: agent_local::ApprovalMode) -> Self {
+        self.host.set_approval_mode(&self.run, mode);
         self
     }
 
@@ -195,7 +202,14 @@ impl ToolExecutor for ExtensionTools {
             return Err(io::Error::other("tool arguments must be an object"));
         }
         if call.name == "list_mcp_servers" {
-            return Ok(json!({"servers":self.host.servers().iter().map(|server| json!({"id":server.id,"name":server.name})).collect::<Vec<_>>(),"authorization":"MCP operations require approval outside the project sandbox. Trusted browser/computer capabilities support revocable conversation or persistent grants."}).to_string().into());
+            let full_access = self.host.controls.lock().unwrap().approval_mode(&self.run)
+                == agent_local::ApprovalMode::FullAccess;
+            let authorization = if full_access {
+                "The user selected full access for this conversation and its delegated tasks. MCP operations do not need additional host approval. Browser sharing, service access and operating-system permissions still apply."
+            } else {
+                "MCP operations require approval outside the project sandbox. Trusted browser/computer capabilities support revocable conversation or persistent grants."
+            };
+            return Ok(json!({"servers":self.host.servers().iter().map(|server| json!({"id":server.id,"name":server.name})).collect::<Vec<_>>(),"authorization":authorization}).to_string().into());
         }
         if !matches!(
             call.name.as_str(),
@@ -234,8 +248,24 @@ impl ToolExecutor for ExtensionTools {
             .lock()
             .unwrap()
             .operation_epoch(&self.run, server_id);
+        if arguments
+            .get("name")
+            .and_then(Value::as_str)
+            .is_some_and(|name| name.starts_with("__openharness_"))
+            || arguments
+                .get("arguments")
+                .and_then(Value::as_object)
+                .is_some_and(|args| args.contains_key("_host_permission"))
+        {
+            return Err(io::Error::other(
+                "host authorization metadata is not a model tool",
+            ));
+        }
         let plugin = self.host.control_plugin(server_id);
-        let (control_call, scope) = control_scope(plugin.as_deref(), &call.name, &arguments)?;
+        let (control_call, mut scope) = control_scope(plugin.as_deref(), &call.name, &arguments)?;
+        if control_call && plugin.as_deref() == Some("browser-use") {
+            scope = self.browser_scope(&server, &arguments, epoch).await?;
+        }
         if control_call && plugin.as_deref() == Some("chrome-use") && scope.is_none() {
             let controls = self.host.controls.lock().unwrap();
             validate_chrome_target(
@@ -253,20 +283,64 @@ impl ToolExecutor for ExtensionTools {
             .unwrap()
             .authorization_scope(&self.run)
             .to_owned();
-        let initially_granted = control_call
-            && self.host.controls.lock().unwrap().permits(
-                &self.run,
-                server_id,
-                &binding,
-                scope.as_ref(),
-            );
-        // Only serialize initial consent (and legacy provisional grants). Authorized
-        // child tasks retain their independent concurrent MCP connections.
-        let approval_guard = if control_call && !initially_granted && !discovery {
+        let capability = plugin
+            .as_deref()
+            .and_then(ControlCapability::for_plugin)
+            .filter(|_| control_call)
+            .unwrap_or(ControlCapability::Mcp);
+        let permission_target = if control_call {
+            scope
+                .as_ref()
+                .and_then(ControlScope::permission_target)
+                .or_else(|| {
+                    self.host
+                        .controls
+                        .lock()
+                        .unwrap()
+                        .current_scope(&self.run, server_id, &binding)
+                        .and_then(ControlScope::permission_target)
+                })
+        } else {
+            mcp_permission_target(&call.name, &arguments)?
+        };
+        let needs_approval = matches!(
+            call.name.as_str(),
+            "call_mcp_tool" | "read_mcp_resource" | "get_mcp_prompt"
+        ) && !discovery;
+        // Full access is a live root-task policy, not a reusable MCP permission.
+        // Downgrading increments the same operation epoch checked below.
+        let full_access = self.host.controls.lock().unwrap().approval_mode(&self.run)
+            == agent_local::ApprovalMode::FullAccess;
+        let is_granted = || {
+            let controls = self.host.controls.lock().unwrap();
+            if full_access {
+                true
+            } else if control_call {
+                controls.permits(&self.run, server_id, &binding, scope.as_ref())
+            } else {
+                permission_target.is_some()
+                    && controls.target_permits(
+                        &self.run,
+                        server_id,
+                        &binding,
+                        capability,
+                        permission_target.as_ref(),
+                    )
+            }
+        };
+        let initially_granted = is_granted();
+        let approval_guard = if needs_approval && !initially_granted {
             Some(
                 self.host
                     .approvals
-                    .capability_gate(&family, server_id)
+                    .permission_gate(
+                        &family,
+                        server_id,
+                        &permission_target
+                            .as_ref()
+                            .map(PermissionTarget::key)
+                            .unwrap_or_else(|| "capability".into()),
+                    )
                     .await?,
             )
         } else {
@@ -277,28 +351,38 @@ impl ToolExecutor for ExtensionTools {
             .lock()
             .unwrap()
             .check_epoch(&self.run, epoch)?;
-        let granted = control_call
-            && self.host.controls.lock().unwrap().permits(
+        let granted = is_granted();
+        let mut approval_guard = if granted { None } else { approval_guard };
+        // Record use of a durable permission in this conversation so it remains
+        // visible/revocable after the active target is released.
+        let mut capability_to_record = if !full_access
+            && granted
+            && needs_approval
+            && self.host.controls.lock().unwrap().target_permits(
                 &self.run,
                 server_id,
                 &binding,
-                scope.as_ref(),
-            );
-        let mut approval_guard = if granted { None } else { approval_guard };
-        let mut capability_to_record = plugin
-            .as_deref()
-            .and_then(ControlCapability::for_plugin)
-            .filter(|capability| {
-                control_call
-                    && !discovery
-                    && self.host.controls.lock().unwrap().capability_permits(
-                        &self.run,
-                        server_id,
-                        &binding,
-                        *capability,
-                    )
-            })
-            .map(|capability| (capability, false));
+                capability,
+                permission_target.as_ref(),
+            ) {
+            let whole = self
+                .host
+                .controls
+                .lock()
+                .unwrap()
+                .capability_permits(&self.run, server_id, &binding, capability);
+            Some((
+                capability,
+                if whole {
+                    None
+                } else {
+                    permission_target.clone()
+                },
+                false,
+            ))
+        } else {
+            None
+        };
         let mut new_grant_id = None;
         let mut new_tab_approval = None;
         let mut remember_on_success = false;
@@ -330,8 +414,10 @@ impl ToolExecutor for ExtensionTools {
                         source_run_id: None,
                         task_title: None,
                         session_scope: scope.clone(),
+                        permission_target: permission_target.clone(),
+                        can_allow_capability: control_call && permission_target.is_some(),
                     },
-                    control_call.then_some(family.as_str()),
+                    Some(family.as_str()),
                 )
                 .await?;
             if self.host.control_binding(&self.host.server(server_id)?)? != binding {
@@ -339,14 +425,34 @@ impl ToolExecutor for ExtensionTools {
                     "MCP configuration changed; request approval again",
                 ));
             }
-            if matches!(decision, ApprovalGrant::Session | ApprovalGrant::Always) {
-                let capability = plugin
-                    .as_deref()
-                    .and_then(ControlCapability::for_plugin)
-                    .ok_or_else(|| {
-                        io::Error::other("capability permission requires a trusted built-in plugin")
-                    })?;
-                capability_to_record = Some((capability, decision == ApprovalGrant::Always));
+            if matches!(
+                decision,
+                ApprovalGrant::Session
+                    | ApprovalGrant::Always
+                    | ApprovalGrant::SessionCapability
+                    | ApprovalGrant::AlwaysCapability
+            ) {
+                let whole = matches!(
+                    decision,
+                    ApprovalGrant::SessionCapability | ApprovalGrant::AlwaysCapability
+                );
+                if !whole && permission_target.is_none() {
+                    return Err(io::Error::other(
+                        "Select a concrete application or website before granting permission",
+                    ));
+                }
+                capability_to_record = Some((
+                    capability,
+                    if whole {
+                        None
+                    } else {
+                        permission_target.clone()
+                    },
+                    matches!(
+                        decision,
+                        ApprovalGrant::Always | ApprovalGrant::AlwaysCapability
+                    ),
+                ));
             }
             let remembered = decision != ApprovalGrant::Once;
             let mut controls = self.host.controls.lock().unwrap();
@@ -372,8 +478,17 @@ impl ToolExecutor for ExtensionTools {
             let mut controls = self.host.controls.lock().unwrap();
             controls.check_epoch(&self.run, epoch)?;
             if let ControlScope::ChromeNewTab { origin } = scope {
-                new_tab_approval = Some((origin.clone(), true));
+                new_tab_approval = Some((origin.clone(), !full_access));
                 controls.clear_active_tab(&self.run, server_id);
+            } else if full_access {
+                new_grant_id = Some(controls.grant(
+                    &self.run,
+                    server_id,
+                    server.name.as_deref().unwrap_or(server_id),
+                    &binding,
+                    scope.clone(),
+                    false,
+                )?);
             } else {
                 new_grant_id = controls.activate_remembered(
                     &self.run,
@@ -393,7 +508,7 @@ impl ToolExecutor for ExtensionTools {
         // Capability consent authorizes future use independently of whether a
         // particular application launch/navigation succeeds. The selected target
         // remains provisional and is rolled back by PendingControl on failure.
-        if let Some((capability, always)) = capability_to_record {
+        if let Some((capability, target, always)) = capability_to_record {
             if self.host.control_binding(&self.host.server(server_id)?)? != binding {
                 return Err(io::Error::other(
                     "MCP configuration changed; request approval again",
@@ -401,14 +516,19 @@ impl ToolExecutor for ExtensionTools {
             }
             let mut controls = self.host.controls.lock().unwrap();
             controls.check_epoch(&self.run, epoch)?;
-            controls.remember_capability(
+            let whole = target.is_none();
+            controls.remember_permission(
                 &self.run,
                 server_id,
                 server.name.as_deref().unwrap_or(server_id),
                 &binding,
                 capability,
+                target,
                 always,
             )?;
+            if whole {
+                self.host.approvals.satisfy_capability(&family, server_id);
+            }
             drop(controls);
             drop(approval_guard.take());
         }
@@ -440,17 +560,14 @@ impl ToolExecutor for ExtensionTools {
                     &arguments,
                 )?
             }
-            "call_mcp_tool" => client
-                .call_tool(
-                    field(&arguments, "name")?,
-                    arguments
-                        .get("arguments")
-                        .and_then(Value::as_object)
-                        .cloned()
-                        .ok_or_else(|| io::Error::other("arguments must be an object"))?,
-                )
-                .await
-                .map_err(io::Error::other)?,
+            "call_mcp_tool" => {
+                let mut parameters = arguments["arguments"].as_object().cloned().ok_or_else(|| io::Error::other("arguments must be an object"))?;
+                if control_call && plugin.as_deref() == Some("browser-use") {
+                    let whole = full_access || self.host.controls.lock().unwrap().capability_permits(&self.run, server_id, &binding, ControlCapability::Browser);
+                    parameters.insert("_host_permission".into(), json!({ "origins": if whole { vec!["*".to_string()] } else { permission_target.as_ref().and_then(|target| match target { PermissionTarget::Origin { origin } => Some(vec![origin.clone()]), _ => None }).unwrap_or_default() } }));
+                }
+                client.call_tool(field(&arguments, "name")?, parameters).await.map_err(io::Error::other)?
+            },
             "list_mcp_resources" => match arguments.get("templates") {
                 Some(Value::Bool(true)) => page(
                     "resource_templates",
@@ -532,6 +649,66 @@ impl ToolExecutor for ExtensionTools {
         }
         result
     }
+}
+
+impl ExtensionTools {
+    async fn browser_scope(
+        &self,
+        server: &agent_mcp::McpServerConfig,
+        arguments: &Value,
+        epoch: u64,
+    ) -> io::Result<Option<ControlScope>> {
+        let name = field(arguments, "name")?;
+        if name == "browser_close" {
+            let binding = self.host.control_binding(server)?;
+            return Ok(self
+                .host
+                .controls
+                .lock()
+                .unwrap()
+                .current_scope(&self.run, &server.id, &binding)
+                .cloned());
+        }
+        if name == "browser_open" {
+            return Ok(Some(ControlScope::BrowserOrigin {
+                origin: chrome_url_origin(field(&arguments["arguments"], "url")?)?,
+            }));
+        }
+        // This fixed host-only operation returns URL metadata, never page text,
+        // screenshots or DOM. The model cannot call it or provide authorization.
+        let client = self
+            .host
+            .client_with_epoch(&self.run, server, Some(epoch))?;
+        let result = client
+            .call_tool(
+                "__openharness_browser_target",
+                serde_json::from_value(json!({ "tab_id": arguments["arguments"].get("tab_id") }))
+                    .map_err(io::Error::other)?,
+            )
+            .await
+            .map_err(io::Error::other)?;
+        let metadata = result["content"].as_array().and_then(|blocks| blocks.iter().find(|block| block["type"] == "text")).and_then(|block| block["text"].as_str()).and_then(|text| serde_json::from_str::<Value>(text).ok()).ok_or_else(|| io::Error::other("Browser authorization metadata unavailable; update the built-in browser plugin"))?;
+        let origin = metadata["origin"]
+            .as_str()
+            .ok_or_else(|| io::Error::other("Open a website before using the browser"))?;
+        Ok(Some(ControlScope::BrowserOrigin {
+            origin: chrome_origin(origin)?,
+        }))
+    }
+}
+fn mcp_permission_target(call: &str, arguments: &Value) -> io::Result<Option<PermissionTarget>> {
+    Ok(match call {
+        "call_mcp_tool" => Some(PermissionTarget::McpTool {
+            name: field(arguments, "name")?.into(),
+        }),
+        "read_mcp_resource" => Some(PermissionTarget::McpResource {
+            uri: field(arguments, "uri")?.into(),
+        }),
+        "get_mcp_prompt" => Some(PermissionTarget::McpPrompt {
+            name: field(arguments, "name")?.into(),
+        }),
+        _ => None,
+    })
 }
 
 fn field<'a>(arguments: &'a Value, key: &str) -> io::Result<&'a str> {
@@ -752,6 +929,7 @@ fn trusted_control_discovery(plugin: Option<&str>, call: &str, arguments: &Value
             Some("computer-use"),
             Some("computer_status" | "computer_apps")
         ) | (Some("chrome-use"), Some("chrome_status" | "chrome_tabs"))
+            | (Some("browser-use"), Some("browser_close"))
     )
 }
 

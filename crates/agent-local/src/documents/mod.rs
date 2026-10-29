@@ -98,22 +98,27 @@ struct SearchInput {
     #[serde(default)]
     offset: usize,
 }
-fn load(root: &Path, path: &str) -> io::Result<ExtractedDocument> {
-    let target = paths::resolve(root, path)?;
+fn load(scope: paths::Scope<'_>, path: &str) -> io::Result<ExtractedDocument> {
+    let target = scope.resolve(path)?;
     extract_document(path, &paths::read_bytes(&target, MAX_DOCUMENT_BYTES)?)
 }
-pub(crate) fn call(root: &Path, call: &ToolCall) -> io::Result<String> {
+pub(crate) fn call(scope: paths::Scope<'_>, call: &ToolCall) -> io::Result<String> {
     if call.name == "read_document" {
         let input: ReadInput = parse(&call.arguments)?;
-        read(root, &input.path, input.unit, input.offset)
+        read(scope, &input.path, input.unit, input.offset)
     } else {
         let input: SearchInput = parse(&call.arguments)?;
-        search(root, &input.path, &input.query, input.offset)
+        search(scope, &input.path, &input.query, input.offset)
     }
 }
 
-pub(crate) fn read(root: &Path, path: &str, unit: usize, offset: usize) -> io::Result<String> {
-    read_page(&load(root, path)?, path, unit, offset).map(|value| value.to_string())
+pub(crate) fn read(
+    scope: paths::Scope<'_>,
+    path: &str,
+    unit: usize,
+    offset: usize,
+) -> io::Result<String> {
+    read_page(&load(scope, path)?, path, unit, offset).map(|value| value.to_string())
 }
 
 /// Page already admitted document bytes without resolving a filesystem path.
@@ -178,9 +183,14 @@ pub(crate) fn read_page(
     )
 }
 
-pub(crate) fn search(root: &Path, path: &str, query: &str, offset: usize) -> io::Result<String> {
+pub(crate) fn search(
+    scope: paths::Scope<'_>,
+    path: &str,
+    query: &str,
+    offset: usize,
+) -> io::Result<String> {
     validate_query(query)?;
-    search_page(&load(root, path)?, path, query, offset).map(|value| value.to_string())
+    search_page(&load(scope, path)?, path, query, offset).map(|value| value.to_string())
 }
 
 pub(crate) fn validate_query(query: &str) -> io::Result<()> {

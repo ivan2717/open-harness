@@ -2,7 +2,7 @@
 use crate::{documents, files::parse, paths};
 use serde::Deserialize;
 use serde_json::json;
-use std::{io, path::Path};
+use std::io;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -30,7 +30,7 @@ struct SearchInput {
     offset: usize,
 }
 
-pub(crate) fn read(root: &Path, arguments: &str) -> io::Result<String> {
+pub(crate) fn read(scope: paths::Scope<'_>, arguments: &str) -> io::Result<String> {
     let input: ReadInput = parse(arguments)?;
     if input.cursor.is_some() && (input.unit.is_some() || input.offset.is_some()) {
         return Err(io::Error::other(
@@ -41,9 +41,9 @@ pub(crate) fn read(root: &Path, arguments: &str) -> io::Result<String> {
         unit: input.unit.unwrap_or(1),
         offset: input.offset.unwrap_or(0),
     });
-    let target = paths::resolve(root, &input.path)?;
+    let target = scope.resolve(&input.path)?;
     if documents::supported(&target) {
-        return documents::read(root, &input.path, cursor.unit, cursor.offset);
+        return documents::read(scope, &input.path, cursor.unit, cursor.offset);
     }
     if cursor.unit != 1 {
         return Err(io::Error::other("text files use cursor unit 1"));
@@ -71,12 +71,12 @@ pub(crate) fn read(root: &Path, arguments: &str) -> io::Result<String> {
     )
 }
 
-pub(crate) fn search(root: &Path, arguments: &str) -> io::Result<String> {
+pub(crate) fn search(scope: paths::Scope<'_>, arguments: &str) -> io::Result<String> {
     let input: SearchInput = parse(arguments)?;
-    let target = paths::resolve(root, &input.path)?;
+    let target = scope.resolve(&input.path)?;
     // A directory with a document-like suffix must still be a bounded text scan.
     if target.is_file() && documents::supported(&target) {
-        return documents::search(root, &input.path, &input.query, input.offset);
+        return documents::search(scope, &input.path, &input.query, input.offset);
     }
-    Ok(crate::search::search(root, &input.path, &input.query, input.offset)?.to_string())
+    Ok(crate::search::search(scope, &input.path, &input.query, input.offset)?.to_string())
 }

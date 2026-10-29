@@ -76,9 +76,12 @@ async fn pending(tools: &LocalTools) -> String {
 }
 
 async fn approved(tools: &LocalTools, arguments: Value) -> Value {
+    let needs_approval = arguments.get("network_access").and_then(Value::as_str) == Some("allowed");
     let worker = tools.clone();
     let task = tokio::spawn(async move { worker.execute(call("run_command", arguments)).await });
-    tools.approve(&pending(tools).await, true).unwrap();
+    if needs_approval {
+        tools.approve(&pending(tools).await, true).unwrap();
+    }
     serde_json::from_str(&task.await.unwrap().unwrap()).unwrap()
 }
 
@@ -116,7 +119,7 @@ async fn inherited_child_writes_reuse_root_approval_and_respect_peer_leases_and_
     .unwrap();
     let worker = parent.clone();
     let initial = tokio::spawn(async move {
-        worker.execute(call("run_command", json!({"command":"[IO.File]::WriteAllText('parent.txt','parent')", "yield_time_ms":30000}))).await
+        worker.execute(call("run_command", json!({"command":"[IO.File]::WriteAllText('parent.txt','parent')", "yield_time_ms":30000, "network_access":"allowed"}))).await
     });
     parent
         .approve_with_scope(&pending(&parent).await, true, CommandApprovalScope::Session)
@@ -129,7 +132,7 @@ async fn inherited_child_writes_reuse_root_approval_and_respect_peer_leases_and_
             .execute(call(
                 "run_command",
                 json!({
-                    "command":"[IO.File]::WriteAllText('child.txt','child')", "yield_time_ms":30000
+                    "command":"[IO.File]::WriteAllText('child.txt','child')", "yield_time_ms":30000, "network_access":"allowed"
                 }),
             ))
             .await
@@ -171,7 +174,7 @@ async fn inherited_child_writes_reuse_root_approval_and_respect_peer_leases_and_
             worker
                 .execute(call(
                     "run_command",
-                    json!({"command":"[IO.File]::WriteAllText('denied.txt','invalid')"}),
+                    json!({"command":"[IO.File]::WriteAllText('denied.txt','invalid')", "network_access":"allowed"}),
                 ))
                 .await
         });
@@ -190,7 +193,7 @@ async fn approval_is_required_single_use_and_cancellable_before_execution() {
         worker
             .execute(call(
                 "run_command",
-                json!({"command":"[IO.File]::WriteAllText('denied.txt','unexpected')"}),
+                json!({"command":"[IO.File]::WriteAllText('denied.txt','unexpected')", "network_access":"allowed"}),
             ))
             .await
     });
@@ -211,7 +214,7 @@ async fn approval_is_required_single_use_and_cancellable_before_execution() {
         worker
             .execute(call(
                 "run_command",
-                json!({"command":"[IO.File]::WriteAllText('cancelled.txt','unexpected')"}),
+                json!({"command":"[IO.File]::WriteAllText('cancelled.txt','unexpected')", "network_access":"allowed"}),
             ))
             .await
     });

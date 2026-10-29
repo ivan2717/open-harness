@@ -15,12 +15,13 @@ connect. Do not require the user to start Chrome manually. If setup is missing,
 explain the specific extension connection step. Do not fall back to foreground computer typing without user intent. This
 connection does not require Screen Recording or Accessibility permissions.
 
-Open Harness handles capability approval: Allow applies to this conversation and
-its collaborative tasks; Always allow also applies to future conversations until
-revoked in settings. Within that permission, opening task tabs and selecting
-other websites does not require another capability approval. Cancel does not
-grant access; respect that decision instead of immediately repeating the request.
-This permission does not share the user's existing private tabs.
+Open Harness handles website approval. Allow covers the exact website origin in
+this conversation and its collaborative tasks; Always allow also covers that
+origin in future conversations until revoked. Other websites require separate
+approval unless the user explicitly selects the entire Chrome capability.
+New task tabs on the same approved origin reuse that permission. Cancel grants
+no access; do not immediately repeat a cancelled request. Website or whole
+capability permission never shares the user's existing private tabs.
 
 For a URL established by the user's task, use `chrome_open`. It creates and
 selects a background tab with `active: false` inside this conversation's
@@ -32,9 +33,10 @@ For an existing tab, use `chrome_tabs`, which exposes only explicitly shared tab
 and this conversation's task tabs. Use `chrome_select_tab` with its exact `tab_id`
 and `origin`. Do not guess IDs or read other tabs. After `origin_changed` or
 `selection_required`, call `chrome_tabs` and select the same existing tab with
-its actual new origin, then use the fresh snapshot. Do not repeat `chrome_open`
-or ask for another website approval for an agent-created task tab. Existing user
-tabs still need a changed origin shared in the extension popup. Never activate
+its actual new origin; the host requests approval if that website is not yet
+authorized. Then use the fresh snapshot. Do not repeat `chrome_open` to recover
+from navigation or ask for a second approval outside the host's pending request.
+Existing user tabs still need a changed origin shared in the extension popup. Never activate
 tabs or windows just to operate them.
 
 If Chrome has no normal window, opening a task creates an unfocused window.
@@ -64,5 +66,5 @@ session when its task is done, if it is inactive, still in its task group and
 on the selected origin. Check `closed` in the result; never close a whole
 group. Moving an agent tab out of its group revokes control. Disconnect leaves
 pages available for review; reconnecting does not restore tab ownership,
-sharing or snapshots. A saved capability permission does not restore those
+sharing or snapshots. A saved website or capability permission does not restore those
 transport resources either.
