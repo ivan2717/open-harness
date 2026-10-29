@@ -65,3 +65,28 @@ test('large Windows UI Automation observations keep focused edits and exact Wind
   assert.ok(result.elements.every(element => [element.name, element.automation_id, element.value].every(value => value.isWellFormed())));
   assert.equal(source.elements[249].value, long, 'budgeting must not mutate the native snapshot');
 });
+
+test('window catalogs preserve exact IDs and the selected window within metadata budget', () => {
+  const windows = Array.from({ length: 800 }, (_, i) => ({ id: i + 1, title: '窗口🙂'.repeat(400), bounds: { x: 0, y: 0, width: 600, height: 400 } }));
+  const text = metadataText({ selected_window_id: 800, windows });
+  const output = JSON.parse(text);
+  assert.ok(Buffer.byteLength(JSON.stringify({ content: [{ type: 'text', text }] })) <= MAX_METADATA_BYTES);
+  assert.equal(output.selected_window_id, 800);
+  assert.ok(output.windows.some(window => window.id === 800));
+  assert.ok(output.windows.length > 1);
+  assert.equal(windows.length, 800);
+});
+
+test('errors preserve native delivery certainty and refresh guidance', async () => {
+  const { errorMetadata } = await import('../output.mjs');
+  const error = Object.assign(new Error('TARGET_CHANGED: Observe again.'), {
+    computer: { code: 'TARGET_CHANGED', recoverable: true, dispatched: false, next: 'Call computer_observe.' },
+  });
+  assert.deepEqual(errorMetadata(error, true), {
+    error: error.message, code: 'TARGET_CHANGED', recoverable: true, dispatched: false, next: 'Call computer_observe.',
+  });
+  error.computer.dispatched = null;
+  assert.equal(errorMetadata(error, true).dispatched, null);
+  assert.equal(errorMetadata(new Error('Connection failed.'), true).dispatched, null);
+  assert.equal(errorMetadata(new Error('Invalid key.'), false).dispatched, false);
+});

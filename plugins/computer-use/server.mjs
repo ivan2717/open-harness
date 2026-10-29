@@ -1,6 +1,6 @@
 import { ComputerBridge } from './bridge.mjs';
 import { tools, validate } from './tools.mjs';
-import { metadataText } from './output.mjs';
+import { errorMetadata, metadataText } from './output.mjs';
 import { computerEndpoint, requireComputerEndpoint, requireComputerPlatform } from './endpoint.mjs';
 
 const helperPath = computerEndpoint();
@@ -44,7 +44,7 @@ async function handle(request) {
   if (method === 'initialize') {
     initialized = true;
     const supported = ['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05'];
-    send({ id, result: { protocolVersion: supported.includes(params.protocolVersion) ? params.protocolVersion : '2025-11-25', capabilities: { tools: {} }, serverInfo: { name: 'openharness-computer-use', version: '0.3.0' } } }); return;
+    send({ id, result: { protocolVersion: supported.includes(params.protocolVersion) ? params.protocolVersion : '2025-11-25', capabilities: { tools: {} }, serverInfo: { name: 'openharness-computer-use', version: '0.4.0' } } }); return;
   }
   if (method === 'ping') { send({ id, result: {} }); return; }
   if (!initialized) { send({ id, error: { code: -32000, message: 'Initialize first.' } }); return; }
@@ -52,6 +52,7 @@ async function handle(request) {
   if (method !== 'tools/call') { send({ id, error: { code: -32601, message: 'Method not found.' } }); return; }
   const controller = new AbortController();
   active.set(id, controller);
+  let requested = false;
   try {
     const args = params.arguments ?? {};
     validate(params.name, args);
@@ -61,6 +62,7 @@ async function handle(request) {
     }
     requireComputerPlatform();
     requireComputerEndpoint(helperPath);
+    requested = true;
     const result = await bridge.request(params.name.replace('computer_', ''), args, controller.signal);
     const content = [];
     const { image, ...metadata } = result;
@@ -71,6 +73,6 @@ async function handle(request) {
     }
     send({ id, result: { content } });
   } catch (error) {
-    send({ id, result: { isError: true, content: [text({ error: error instanceof Error ? error.message : 'Computer operation failed.' })] } });
+    send({ id, result: { isError: true, content: [text(errorMetadata(error, requested))] } });
   } finally { active.delete(id); }
 }

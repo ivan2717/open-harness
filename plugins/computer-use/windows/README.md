@@ -29,8 +29,8 @@ differ between Windows accessibility compatibility modes.
 With no arguments, the helper reads bounded UTF-8 JSON lines of
 `{ "id": 1, "method": "status", "params": {} }` and writes
 `{ "id": 1, "result": {} }` or `{ "id": 1, "error": { "code": "...", "message": "..." } }`.
-Methods are `status`, `apps`, `select_app`, `observe`, `click`, `type`, `key`, and
-`scroll`. Status reports actual interactive desktop availability, Windows
+Methods are `status`, `apps`, `windows`, `select_app`, `observe`, `click`, `type`,
+`key`, `scroll`, `drag`, `set_value`, and `action`. Status reports actual interactive desktop availability, Windows
 capabilities, helper PID and path; Windows has no macOS permission prompts.
 Keep stdin open while awaiting a response. EOF terminates the process even when
 a target UI Automation provider or capture call hangs. Each request also has a
@@ -41,11 +41,31 @@ process name makes approval readable, while the hash binds the canonical
 executable path. Selection additionally binds the PID, process creation time,
 session, top-level HWND, owning thread and UIA runtime identity. An HWND is not
 implicitly replaced if a dialog or another window appears. Input requires the
-exact selected foreground window and unchanged focus; it consumes a snapshot
-valid for 60 seconds. Ref actions address verified elements. Coordinate actions
-require unchanged window-only pixels and a hit test inside the selected window.
+exact selected foreground window; keyboard actions additionally require the
+observed focused control. Each action consumes a snapshot valid for 60 seconds.
+Ref actions validate the observed UIA runtime identity. Coordinate actions require
+a screenshot and a current hit test matching the observed control. Unrelated
+UIA changes or animated pixels do not invalidate a snapshot. Resizing does; moving
+the same window updates the coordinate translation.
 All coordinates are physical pixels relative to the window's top-left corner,
 not the pixels of the potentially resized screenshot.
+
+`windows` lists only the selected app's windows. Pass an exact integer `window_id`
+to `select_app` to pin a particular HWND. Without an explicit ID, the foreground
+window is preferred when it belongs to the selected app; otherwise a sole window
+is selected. An app with no unique window stays selected successfully with
+`selected_window_id: null`, so `windows` can enumerate candidates without losing
+the host grant. An explicit missing/foreign ID still fails. Observation requires
+a bound window and never retargets to a dialog.
+`click` accepts left/right/middle, one to three clicks, and modifier arrays.
+Default ref clicks use a listed UIA action; other ref clicks require a screenshot
+and use the observed bounds. `drag` sends one left-button gesture. `key` accepts
+navigation keys, letters, digits, F1–F12 and application chords such as
+`control+shift+a`. Windows logo-key and system switching shortcuts are rejected.
+`set_value` only accepts refs observed with `settable_value: true`; `action` only
+accepts an exact name in that ref's observed `actions` array. Error replies include
+`recoverable`, `dispatched` (false or null when delivery is uncertain), and `next`.
+No action is automatically replayed. Status explicitly reports `background_input: false`.
 
 Only explicit application selection requests foreground activation. If normal
 activation is refused, the helper tries the selected UIA window's `SetFocus`,

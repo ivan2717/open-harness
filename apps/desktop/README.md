@@ -633,6 +633,13 @@ administrator elevation. Apps that cannot produce a window-only capture can
 still expose accessibility refs, but coordinate actions require a valid capture.
 
 Both executors only control a selected running app and its observed window.
+On macOS, Computer Use 0.4 binds a window ID and directs input to that application
+without requiring it to be frontmost. Other windows can cover the target;
+unrelated animation no longer invalidates an entire observation. The agent must
+still verify each result, and some application-specific shortcuts may ignore
+background input. The isolated native GUI smoke verifies two fixture apps with
+the target behind the foreground app; it does not prove compatibility with every
+third-party application.
 Native Linux desktop input, secure-field typing and cross-app shortcuts are
 not supported. For concurrent background web work, use the Chrome plugin.
 

@@ -7,6 +7,7 @@ mod control_permissions;
 #[cfg(test)]
 mod plugin_tests;
 mod plugins;
+mod server_handles;
 #[cfg(test)]
 mod tests;
 mod tools;

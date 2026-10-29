@@ -61,7 +61,11 @@ export class ComputerBridge {
         try { message = JSON.parse(line); } catch { return this.stop('Invalid computer helper response.'); }
         if (child !== this.child || !this.pending || message.id !== this.pending.id) return this.stop('Mismatched computer helper response.');
         const pending = this.pending; this.pending = null;
-        if (message.error) pending.reject(new Error(`${message.error.code}: ${message.error.message}`));
+        if (message.error) {
+          const error = new Error(`${message.error.code}: ${message.error.message}`);
+          error.computer = message.error;
+          pending.reject(error);
+        }
         else if (message.result && typeof message.result === 'object') pending.resolve(message.result);
         else { pending.reject(new Error('Invalid computer helper result.')); this.stop(); }
       }

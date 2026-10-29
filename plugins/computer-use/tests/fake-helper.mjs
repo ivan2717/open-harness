@@ -11,7 +11,7 @@ for await (const line of createInterface({ input: process.stdin })) {
   if (method === 'select_app') selected = true;
   if (method === 'bad_json') { process.stdout.write('not-json\n'); continue; }
   if (method === 'wrong_id') { process.stdout.write(JSON.stringify({ id: -1, result: {} }) + '\n'); continue; }
-  if (method === 'fail') { process.stdout.write(JSON.stringify({ id, error: { code: 'STATE_CHANGED', message: 'Observe again.' } }) + '\n'); continue; }
+  if (method === 'fail') { process.stdout.write(JSON.stringify({ id, error: { code: 'STATE_CHANGED', message: 'Observe again.', recoverable: true, dispatched: false, next: 'Call computer_observe.' } }) + '\n'); continue; }
   if (method === 'crash') process.exit(1);
   if (method === 'unicode_chunks') {
     const data = Buffer.from(JSON.stringify({ id, result: { text: '中文🙂' } }) + '\n');

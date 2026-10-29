@@ -32,13 +32,14 @@ namespace OpenHarness.ComputerUse {
             IntPtr original = Native.GetForegroundWindow();
             Ready(identity, original);
             if (original == identity.Window) return;
+            Input.DeliveryAttempted = true;
             Native.SetForegroundWindow(identity.Window);
             if (Wait(identity, original)) return;
 
             // UIA providers can perform their own supported activation. This
             // cross-process call must happen before any input queues are joined.
             Ready(identity, original);
-            try { AutomationElement.FromHandle(identity.Window).SetFocus(); }
+            try { Input.DeliveryAttempted = true; AutomationElement.FromHandle(identity.Window).SetFocus(); }
             catch (ElementNotAvailableException) { /* The next identity check rejects replaced windows. */ }
             catch (InvalidOperationException) { /* Some top-level providers cannot accept focus. */ }
             catch (COMException) { /* Native activation below does not depend on provider support. */ }
@@ -74,6 +75,7 @@ namespace OpenHarness.ComputerUse {
                 uint targetOwner;
                 if (Native.GetWindowThreadProcessId(identity.Window, out targetOwner) != identity.WindowThread || targetOwner != identity.Pid ||
                     !Native.IsWindowVisible(identity.Window) || Native.IsIconic(identity.Window) || !Native.IsWindowEnabled(identity.Window)) throw Refused();
+                Input.DeliveryAttempted = true;
                 Native.SetForegroundWindow(identity.Window);
             } finally {
                 if (!Native.AttachThreadInput(currentThread, foregroundThread, false)) {

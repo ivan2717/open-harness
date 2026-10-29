@@ -26,7 +26,7 @@ const manifest = `<?xml version="1.0" encoding="UTF-8"?>
 <key>CFBundleExecutable</key><string>OpenHarnessComputerUse</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleVersion</key><string>1</string>
-<key>CFBundleShortVersionString</key><string>0.2.0</string>
+<key>CFBundleShortVersionString</key><string>0.4.0</string>
 <key>LSMinimumSystemVersion</key><string>14.0</string>
 <key>LSUIElement</key><true/>
 </dict></plist>\n`;

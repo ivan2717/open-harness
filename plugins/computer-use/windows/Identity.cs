@@ -47,11 +47,16 @@ namespace OpenHarness.ComputerUse {
                 }
             } finally { Native.CloseHandle(process); }
         }
+        internal object SelectedWindowId { get { return Window == IntPtr.Zero ? null : (object)Window.ToInt64(); } }
         internal object ToJson() { return Json.Object("pid", Pid, "bundle_id", Bundle); }
-        internal void Validate() {
+        internal void ValidateProcess() {
             Native.RequireDesktop();
             AppIdentity now = Read(Pid);
             if (now.Started != Started || now.Session != Session || !String.Equals(now.Path, Path, StringComparison.Ordinal)) throw new ComputerError("APP_CHANGED", "The selected process identity changed. Select the application again.");
+        }
+        internal void Validate() {
+            ValidateProcess();
+            if (Window == IntPtr.Zero) throw new ComputerError("WINDOW_NOT_SELECTED", "The app is selected but no window is bound. List computer_windows and select_app with an exact window_id.");
             uint pid;
             if (!Native.IsWindow(Window) || Native.GetWindowThreadProcessId(Window, out pid) != WindowThread || pid != Pid || !Native.IsWindowVisible(Window) || Native.IsIconic(Window)) throw new ComputerError("WINDOW_CHANGED", "The selected window closed, changed, or is minimized. Select the intended window again.");
             var root = AutomationElement.FromHandle(Window);
@@ -62,32 +67,60 @@ namespace OpenHarness.ComputerUse {
             if (Native.GetForegroundWindow() != Window) throw new ComputerError("FOCUS_CHANGED", "The selected window is no longer foreground. No input was dispatched. Select the application and observe again.");
             if (!Native.IsWindowEnabled(Window)) throw new ComputerError("WINDOW_BLOCKED", "The selected window is blocked by a dialog. Select the intended window explicitly.");
         }
-        internal static AppIdentity Select(string bundle, int pid) {
+        internal static AppIdentity Select(string bundle, int pid, long? windowId) {
             Native.RequireDesktop();
             AppIdentity identity = Read(pid);
             if (!String.Equals(bundle, identity.Bundle, StringComparison.Ordinal)) throw new ComputerError("APP_NOT_FOUND", "Exact application identity and PID must match a listed running application.");
-            IntPtr chosen = IntPtr.Zero;
+            var candidates = new List<IntPtr>();
             IntPtr foreground = Native.GetForegroundWindow();
             Native.EnumWindows(delegate(IntPtr window, IntPtr ignored) {
                 if (Native.WindowProcess(window) == pid && Native.IsWindowVisible(window) && Native.GetAncestor(window, 2) == window) {
                     Native.Rect rectangle;
-                    if (Native.GetWindowRect(window, out rectangle) && rectangle.Width > 0 && rectangle.Height > 0) {
-                        if (chosen == IntPtr.Zero || window == foreground) chosen = window;
-                    }
+                    if (Native.GetWindowRect(window, out rectangle) && rectangle.Width > 0 && rectangle.Height > 0) candidates.Add(window);
                 }
                 return true;
             }, IntPtr.Zero);
-            if (chosen == IntPtr.Zero) throw new ComputerError("WINDOW_UNAVAILABLE", "The selected application has no visible top-level window.");
+            IntPtr chosen = ChooseWindow(candidates, foreground, windowId);
+            // Preserve the approved app selection when a window needs choosing.
+            // Returning an error here would make the host discard a fresh grant
+            // and terminate this helper before computer_windows can enumerate it.
+            if (chosen == IntPtr.Zero) return identity;
             identity.Window = chosen; uint owner;
             identity.WindowThread = Native.GetWindowThreadProcessId(chosen, out owner);
             var element = AutomationElement.FromHandle(chosen);
             identity.WindowRuntime = Observation.Runtime(element);
             Input.IdleInput();
-            if (Native.IsIconic(chosen)) Native.ShowWindowAsync(chosen, 9);
+            if (Native.IsIconic(chosen)) { Input.DeliveryAttempted = true; Native.ShowWindowAsync(chosen, 9); }
             for (int i = 0; i < 20 && Native.IsIconic(chosen); i++) Thread.Sleep(25);
             Foreground.Activate(identity);
             identity.RequireForeground();
             return identity;
+        }
+        internal static IntPtr ChooseWindow(List<IntPtr> candidates, IntPtr foreground, long? requested) {
+            if (requested.HasValue) {
+                foreach (IntPtr candidate in candidates) if (candidate.ToInt64() == requested.Value) return candidate;
+                throw new ComputerError("WINDOW_NOT_FOUND", "The explicit window_id is not a current window of the selected application.");
+            }
+            if (candidates.Contains(foreground)) return foreground;
+            return candidates.Count == 1 ? candidates[0] : IntPtr.Zero;
+        }
+        internal object Windows() {
+            ValidateProcess();
+            var windows = new List<object>();
+            Native.EnumWindows(delegate(IntPtr window, IntPtr ignored) {
+                if (windows.Count >= 128) return false;
+                if (Native.WindowProcess(window) != Pid || !Native.IsWindowVisible(window) || Native.GetAncestor(window, 2) != window) return true;
+                Native.Rect bounds;
+                if (!Native.GetWindowRect(window, out bounds) || bounds.Width <= 0 || bounds.Height <= 0) return true;
+                var title = new StringBuilder(1024);
+                Native.GetWindowText(window, title, title.Capacity);
+                windows.Add(Json.Object("id", window.ToInt64(), "title", Json.Text(title.ToString(), 400),
+                    "bounds", Observation.Bounds(bounds.Left, bounds.Top, bounds.Width, bounds.Height),
+                    "selected", window == Window, "minimized", Native.IsIconic(window), "foreground", window == Native.GetForegroundWindow()));
+                return true;
+            }, IntPtr.Zero);
+            ValidateProcess();
+            return Json.Object("selected_app", ToJson(), "selected_window_id", SelectedWindowId, "windows", windows, "untrusted_content", true);
         }
         internal static object Apps() {
             Native.RequireDesktop();

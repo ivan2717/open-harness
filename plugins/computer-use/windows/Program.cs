@@ -12,26 +12,35 @@ namespace OpenHarness.ComputerUse {
     internal sealed class Session {
         private AppIdentity selected;
         private Observation last;
-        private string snapshotId, screenshotDigest;
+        private string snapshotId;
         private long observedAt;
         internal const string Coordinates = "window-local physical pixels; origin top left";
-        private void ClearSnapshot() { last = null; snapshotId = null; screenshotDigest = null; }
+        private void ClearSnapshot() { last = null; snapshotId = null; }
 
         internal object Handle(string method, Dictionary<string, object> args) {
             if (method == "status") {
                 Arguments.Keys(args);
                 return Json.Object("platform", "windows", "desktop_available", Native.DesktopAvailable(),
-                    "selected_app", selected == null ? null : selected.ToJson(), "permissions_requested", false,
+                    "selected_app", selected == null ? null : selected.ToJson(), "selected_window_id", selected == null ? null : selected.SelectedWindowId, "permissions_requested", false,
                     "helper_path", Assembly.GetExecutingAssembly().Location, "helper_pid", Process.GetCurrentProcess().Id,
                     "coordinate_space", Coordinates, "capabilities", Json.Object("ui_automation", true, "window_screenshot", true,
                     "foreground_input", true, "background_input", false, "elevated_apps", false, "password_input", false));
             }
             if (method == "apps") { Arguments.Keys(args); return AppIdentity.Apps(); }
+            if (method == "windows") {
+                Arguments.Keys(args);
+                if (selected == null) throw new ComputerError("APP_NOT_SELECTED", "Select an application first.");
+                return selected.Windows();
+            }
             if (method == "select_app") {
                 selected = null; ClearSnapshot();
-                Arguments.Keys(args, "bundle_id", "pid");
-                selected = AppIdentity.Select(Arguments.String(args, "bundle_id", 256), Arguments.Integer(args, "pid", 1, Int32.MaxValue));
-                return Json.Object("selected_app", selected.ToJson(), "dispatched", true, "verified", false, "next", "Call computer_observe to read the selected window.");
+                Arguments.Keys(args, "bundle_id", "pid", "window_id");
+                selected = AppIdentity.Select(Arguments.String(args, "bundle_id", 256), Arguments.Integer(args, "pid", 1, Int32.MaxValue), args.ContainsKey("window_id") ? (long?)Arguments.WindowId(args, "window_id") : null);
+                return Json.Object("selected_app", selected.ToJson(), "selected_window_id", selected.SelectedWindowId,
+                    "activated", selected.Window != IntPtr.Zero, "dispatched", Input.DeliveryAttempted, "verified", false,
+                    "next", selected.Window == IntPtr.Zero
+                        ? "Call computer_windows, then computer_select_app with an exact window_id before observing or sending input."
+                        : "Call computer_observe to read the selected window.");
             }
             if (method == "observe") {
                 Arguments.Keys(args, "screenshot");
@@ -40,10 +49,10 @@ namespace OpenHarness.ComputerUse {
                 ClearSnapshot();
                 Observation initial = Observation.Read(selected);
                 WindowImage image = includeImage ? WindowImage.Capture(selected, initial) : null;
-                Observation verified = Observation.Read(selected);
-                if (initial.Fingerprint != verified.Fingerprint) throw new ComputerError("STATE_CHANGED", "The window changed during observation. Observe again.");
+                initial.RefreshWindow(selected);
+                Observation verified = initial;
+                verified.HasScreenshot = image != null;
                 last = verified; snapshotId = Guid.NewGuid().ToString(); observedAt = Stopwatch.GetTimestamp();
-                screenshotDigest = image == null ? null : image.Digest;
                 var result = verified.ToJson(selected);
                 result["snapshot_id"] = snapshotId; result["selected_app"] = selected.ToJson();
                 result["coordinate_space"] = Coordinates; result["expires_in_seconds"] = 60; result["untrusted_content"] = true;
@@ -55,31 +64,25 @@ namespace OpenHarness.ComputerUse {
                 }
                 return result;
             }
-            if (method != "click" && method != "type" && method != "key" && method != "scroll") throw new ComputerError("UNKNOWN_METHOD", "Unknown computer helper operation.");
+            if (method != "click" && method != "type" && method != "key" && method != "scroll" && method != "drag" && method != "set_value" && method != "action") throw new ComputerError("UNKNOWN_METHOD", "Unknown computer helper operation.");
             string token = Arguments.String(args, "snapshot_id", 256);
             if (selected == null || last == null || token != snapshotId || (Stopwatch.GetTimestamp() - observedAt) / (double)Stopwatch.Frequency > 60) throw new ComputerError("STALE_SNAPSHOT", "Snapshot is missing, consumed, expired, or belongs to another session. Observe again.");
-            Observation previous = last; string pixels = screenshotDigest;
+            Observation previous = last;
             ClearSnapshot(); // Consume before validation or dispatch, including failed actions.
             if (method == "click") {
-                Arguments.Keys(args, "snapshot_id", "ref", "x", "y");
+                Arguments.Keys(args, "snapshot_id", "ref", "x", "y", "button", "click_count", "modifiers");
                 bool reference = args.ContainsKey("ref");
                 if (reference ? args.ContainsKey("x") || args.ContainsKey("y") : !args.ContainsKey("x") || !args.ContainsKey("y")) throw Arguments.Invalid();
             } else if (method == "type") Arguments.Keys(args, "snapshot_id", "text");
             else if (method == "key") Arguments.Keys(args, "snapshot_id", "key");
-            else Arguments.Keys(args, "snapshot_id", "x", "y", "delta_y");
+            else if (method == "scroll") Arguments.Keys(args, "snapshot_id", "x", "y", "delta_y");
+            else if (method == "drag") Arguments.Keys(args, "snapshot_id", "from_x", "from_y", "to_x", "to_y", "modifiers");
+            else if (method == "set_value") Arguments.Keys(args, "snapshot_id", "ref", "value");
+            else Arguments.Keys(args, "snapshot_id", "ref", "action");
             selected.RequireForeground();
-            Observation current = Observation.Read(selected);
-            if (current.Fingerprint != previous.Fingerprint || current.FocusRuntime != previous.FocusRuntime) throw new ComputerError("STATE_CHANGED", "The window, focus or accessibility tree changed. No input was dispatched. Observe again.");
-            if (method == "scroll" || method == "click" && !args.ContainsKey("ref")) {
-                if (pixels == null) throw new ComputerError("SCREENSHOT_REQUIRED", "Coordinate input requires computer_observe with screenshot: true.");
-                if (WindowImage.Capture(selected, current).Digest != pixels) throw new ComputerError("STATE_CHANGED", "Window pixels changed after the screenshot. No input was dispatched. Observe again.");
-            }
-            if (args.ContainsKey("ref")) {
-                string reference = Arguments.String(args, "ref", 256); string before, after;
-                if (!previous.RuntimeIds.TryGetValue(reference, out before) || !current.RuntimeIds.TryGetValue(reference, out after) || before != after) throw new ComputerError("INVALID_REF", "The referenced element is absent or was replaced. Observe again.");
-            }
-            Input.Dispatch(method, args, current, selected);
-            return Json.Object("dispatched", true, "verified", false, "next", "Observe again and verify the result before continuing.");
+            previous.RefreshWindow(selected);
+            Input.Dispatch(method, args, previous, selected);
+            return Json.Object("dispatched", true, "verified", false, "verification", Json.Object("status", "not_verified", "method", method), "next", "Observe again and verify the result before continuing.");
         }
     }
 
@@ -99,6 +102,7 @@ namespace OpenHarness.ComputerUse {
             var session = new Session();
             foreach (string line in lines.GetConsumingEnumerable()) {
                 object id = null;
+                Input.DeliveryAttempted = false;
                 try {
                     var request = Json.Serializer.DeserializeObject(line) as Dictionary<string, object>;
                     if (request == null) throw Arguments.Invalid();
@@ -149,7 +153,13 @@ namespace OpenHarness.ComputerUse {
                 Input.EmergencyRelease(); Environment.Exit(1);
             }
         }
-        private static void Error(object id, string code, string message) { Emit(Json.Object("id", id, "error", Json.Object("code", code, "message", message))); }
+        private static void Error(object id, string code, string message) {
+            bool uncertain = Input.DeliveryAttempted || code == "INPUT_UNCERTAIN" || code == "NATIVE_TIMEOUT";
+            Emit(Json.Object("id", id, "error", Json.Object("code", code, "message", message, "recoverable", true,
+                "dispatched", uncertain ? null : (object)false, "next", uncertain
+                    ? "Input may have been delivered. Select the intended window and observe before deciding on another action. This operation was not replayed."
+                    : "Refresh with computer_observe before another input; reselect the intended window if its identity or foreground changed.")));
+        }
         private static void Emit(object value) {
             try {
                 byte[] bytes = Utf8.GetBytes(Json.Encode(value) + "\n");
@@ -171,13 +181,42 @@ namespace OpenHarness.ComputerUse {
                     try { Arguments.Integer(bad, "pid", 1, Int32.MaxValue); } catch (ComputerError) { rejected = true; }
                     if (!rejected) throw new Exception("PID validation");
                 }
+                var windows = new List<IntPtr> { new IntPtr(11), new IntPtr(22) };
+                if (AppIdentity.ChooseWindow(windows, new IntPtr(99), null) != IntPtr.Zero ||
+                    AppIdentity.ChooseWindow(new List<IntPtr>(), IntPtr.Zero, null) != IntPtr.Zero ||
+                    AppIdentity.ChooseWindow(windows, new IntPtr(22), null) != new IntPtr(22) ||
+                    AppIdentity.ChooseWindow(new List<IntPtr> { new IntPtr(11) }, new IntPtr(99), null) != new IntPtr(11) ||
+                    AppIdentity.ChooseWindow(windows, new IntPtr(99), 22) != new IntPtr(22)) throw new Exception("explicit and ambiguous window selection");
+                bool invalidWindow = false;
+                try { AppIdentity.ChooseWindow(windows, IntPtr.Zero, 99); } catch (ComputerError error) { invalidWindow = error.Code == "WINDOW_NOT_FOUND"; }
+                if (!invalidWindow) throw new Exception("unknown explicit window rejected");
+                ushort key; List<string> modifiers;
+                Input.ParseKey("ctrl+shift+a", out key, out modifiers);
+                if (key != 65 || modifiers.Count != 2 || modifiers[0] != "control") throw new Exception("key chord parsing");
+                foreach (string invalid in new[] { "ctrl+control+a", "alt+tab", "control+alt+delete", "meta+a", "alt+f4", "shift+", "f13" }) {
+                    bool rejected = false;
+                    try { Input.ParseKey(invalid, out key, out modifiers); } catch (ComputerError) { rejected = true; }
+                    if (!rejected) throw new Exception("unsafe key chord");
+                }
+                if (Arguments.String(Json.Object("value", ""), "value", 2000, true) != "") throw new Exception("empty text value");
+                if (Arguments.WindowId(Json.Object("window_id", 1234), "window_id") != 1234) throw new Exception("window identity");
+                foreach (var bad in new[] { Json.Object("window_id", 0), Json.Object("window_id", 1.5), Json.Object("window_id", "1234"), Json.Object("window_id", 9007199254740992d) }) {
+                    bool rejected = false;
+                    try { Arguments.WindowId(bad, "window_id"); } catch (ComputerError) { rejected = true; }
+                    if (!rejected) throw new Exception("window identity validation");
+                }
+                foreach (var bad in new[] { Json.Object("modifiers", "shift"), Json.Object("modifiers", new[] { "shift", "shift" }), Json.Object("modifiers", new[] { "command" }) }) {
+                    bool rejected = false;
+                    try { Arguments.Modifiers(bad); } catch (ComputerError) { rejected = true; }
+                    if (!rejected) throw new Exception("modifier validation");
+                }
                 var session = new Session();
-                foreach (string method in new[] { "click", "type", "key", "scroll" }) {
+                foreach (string method in new[] { "click", "type", "key", "scroll", "drag", "set_value", "action" }) {
                     bool rejected = false;
                     try { session.Handle(method, Json.Object("snapshot_id", "unissued")); } catch (ComputerError error) { rejected = error.Code == "STALE_SNAPSHOT"; }
                     if (!rejected) throw new Exception("snapshot validation");
                 }
-                Emit(Json.Object("self_test", true, "checks", new[] { "native input layout", "Unicode truncation", "readable bound application identity", "strict numeric validation", "unissued snapshots rejected" }));
+                Emit(Json.Object("self_test", true, "checks", new[] { "native input layout", "Unicode truncation", "readable bound application identity", "strict numeric validation", "unissued snapshots rejected", "key chord parsing", "system chord rejection", "window identity validation", "empty text values", "modifier validation", "explicit and ambiguous window selection" }));
                 return 0;
             } catch { Emit(Json.Object("self_test", false)); return 1; }
         }

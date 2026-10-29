@@ -209,7 +209,8 @@ impl ToolExecutor for ExtensionTools {
             } else {
                 "MCP operations require approval outside the project sandbox. Trusted browser/computer capabilities support revocable conversation or persistent grants."
             };
-            return Ok(json!({"servers":self.host.servers().iter().map(|server| json!({"id":server.id,"name":server.name})).collect::<Vec<_>>(),"authorization":authorization}).to_string().into());
+            let servers = self.host.servers();
+            return Ok(json!({"servers":servers.iter().map(|server| json!({"id":super::server_handles::model_id(&servers, server),"name":server.name})).collect::<Vec<_>>(),"authorization":authorization}).to_string().into());
         }
         if !matches!(
             call.name.as_str(),
@@ -222,8 +223,10 @@ impl ToolExecutor for ExtensionTools {
         ) {
             return Err(io::Error::other("unknown tool"));
         }
-        let server_id = field(&arguments, "server_id")?;
-        let server = self.host.server(server_id)?;
+        let server =
+            super::server_handles::resolve(&self.host.servers(), field(&arguments, "server_id")?)?;
+        // All security, grant, client and revocation paths use the canonical ID.
+        let server_id = server.id.as_str();
         if call.name == "read_mcp_resource" {
             field(&arguments, "uri")?;
         }
@@ -883,10 +886,14 @@ fn control_scope(
             if matches!(
                 name,
                 "computer_observe"
+                    | "computer_windows"
                     | "computer_click"
                     | "computer_type"
                     | "computer_key"
                     | "computer_scroll"
+                    | "computer_drag"
+                    | "computer_set_value"
+                    | "computer_action"
                     | "computer_release"
             ) =>
         {

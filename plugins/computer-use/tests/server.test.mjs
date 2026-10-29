@@ -20,7 +20,7 @@ function fixture(t, options) {
 }
 
 test('tool arguments reject ambiguous targets and invalid input before native execution', () => {
-  assert.equal(tools.length, 9);
+  assert.equal(tools.length, 13);
   assert.ok(tools.every(tool => !tool.name.includes('request_accessibility') && !tool.name.includes('request_screen_recording')));
   assert.throws(() => validate('computer_request_accessibility', {}));
   assert.throws(() => validate('request_screen_recording', {}));
@@ -53,7 +53,11 @@ test('helper UTF-8 characters remain intact across pipe chunk boundaries', async
 test('correlated application errors preserve the session without replaying', async t => {
   const { bridge, calls } = fixture(t);
   const before = await bridge.request('select_app', {});
-  await assert.rejects(bridge.request('fail', {}), /STATE_CHANGED/);
+  await assert.rejects(bridge.request('fail', {}), error => {
+    assert.match(error.message, /STATE_CHANGED/);
+    assert.deepEqual(error.computer, { code: 'STATE_CHANGED', message: 'Observe again.', recoverable: true, dispatched: false, next: 'Call computer_observe.' });
+    return true;
+  });
   const after = await bridge.request('observe', {});
   assert.equal(before.pid, after.pid);
   assert.deepEqual(calls(), ['select_app', 'fail', 'observe']);
@@ -136,7 +140,7 @@ test('packaged MCP server negotiates and checks native permissions without promp
   assert.equal(forbiddenTool.result.isError, true);
   assert.match(forbiddenTool.result.content[0].text, /Unknown computer tool/);
   const catalog = await request('tools/list', {});
-  assert.equal(catalog.result.tools.length, 9);
+  assert.equal(catalog.result.tools.length, 13);
   const status = await request('tools/call', { name: 'computer_status' });
   assert.equal(status.result.isError, undefined, status.result.content[0].text);
   const state = JSON.parse(status.result.content[0].text);

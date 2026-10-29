@@ -491,6 +491,61 @@ async fn application_switching_reuses_only_previously_approved_processes() {
 }
 
 #[tokio::test]
+async fn short_handles_preserve_application_grants_and_revocation_for_new_actions() {
+    use agent_runtime::{ToolCall, ToolExecutor};
+    let fixture = Fixture::new();
+    let bundled = fixture.0.join("bundled");
+    let source = control_package(&bundled, "computer-use", "ok", &fixture.0.join("called"));
+    let host = ExtensionHost::open_with_bundled(&fixture.0.join("state"), Some(bundled)).unwrap();
+    let installed = host.install_plugin(&source, None).unwrap();
+    let canonical = &installed.plugins[0].mcp_servers[0].id;
+    let tools = ExtensionTools::new(host.clone(), "r".into(), None, None);
+    let listed = tools
+        .execute(ToolCall {
+            id: "list".into(),
+            name: "list_mcp_servers".into(),
+            arguments: "{}".into(),
+        })
+        .await
+        .unwrap();
+    let listed: serde_json::Value = serde_json::from_str(&listed).unwrap();
+    let handle = listed["servers"][0]["id"].as_str().unwrap();
+    assert!(handle.len() < canonical.len());
+    let selection = select_task(host.clone(), "r", handle);
+    let approval = pending_control(&host, "r").await;
+    assert_eq!(&approval.server_id, canonical);
+    host.approvals
+        .decide_scoped("r", &approval.id, true, true)
+        .unwrap();
+    assert!(complete_control(selection).await.is_ok());
+    assert_eq!(
+        &host.controls.lock().unwrap().list("r")[0].server_id,
+        canonical
+    );
+    // Each new operation must use the existing app grant, not generic MCP approval.
+    for name in [
+        "computer_windows",
+        "computer_drag",
+        "computer_set_value",
+        "computer_action",
+    ] {
+        assert!(
+            complete_control(control_task(host.clone(), "r", handle, name, json!({})))
+                .await
+                .is_ok()
+        );
+        assert!(host.approvals.list("r").is_empty());
+    }
+    host.revoke_run("r");
+    let selection = select_task(host.clone(), "r", handle);
+    let approval = pending_control(&host, "r").await;
+    assert_eq!(&approval.server_id, canonical);
+    host.approvals.decide("r", &approval.id, false).unwrap();
+    assert!(complete_control(selection).await.is_err());
+    host.shutdown().await;
+}
+
+#[tokio::test]
 async fn chrome_tab_origin_scope_does_not_authorize_other_tabs_origins_or_opening_urls() {
     let fixture = Fixture::new();
     let bundled = fixture.0.join("bundled");
