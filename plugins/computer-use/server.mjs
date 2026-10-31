@@ -44,7 +44,7 @@ async function handle(request) {
   if (method === 'initialize') {
     initialized = true;
     const supported = ['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05'];
-    send({ id, result: { protocolVersion: supported.includes(params.protocolVersion) ? params.protocolVersion : '2025-11-25', capabilities: { tools: {} }, serverInfo: { name: 'openharness-computer-use', version: '0.4.0' } } }); return;
+    send({ id, result: { protocolVersion: supported.includes(params.protocolVersion) ? params.protocolVersion : '2025-11-25', capabilities: { tools: {} }, serverInfo: { name: 'openharness-computer-use', version: '0.5.0' } } }); return;
   }
   if (method === 'ping') { send({ id, result: {} }); return; }
   if (!initialized) { send({ id, error: { code: -32000, message: 'Initialize first.' } }); return; }

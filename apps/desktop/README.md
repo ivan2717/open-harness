@@ -511,22 +511,38 @@ pnpm run package:dir
 `build` compiles the desktop JavaScript and renderer. `package:dir` additionally
 builds a release Rust binary, places it in the desktop resources, and creates an
 unpacked application for the current OS and architecture. On macOS, this local
-directory build explicitly uses electron-builder's ad-hoc signing for the entire
-bundle, including its nested helpers. The post-sign hook verifies the bundle with
+directory build writes to `release-next/` (so it cannot overwrite the running
+`release/` app) and uses a persistent, self-signed development certificate for the
+entire bundle, including Computer Use. The private identity is created once in
+`~/Library/Application Support/Open Harness Development/signing/`, outside the
+repository and installation bundle. It is stored in a dedicated locked keychain;
+its password file and directory are restricted to the current user. The build
+temporarily adds that keychain to the signing search list and removes it afterward.
+It does not install a trusted root or alter Gatekeeper, SIP, or TCC. Do not delete
+this identity between builds: replacing it requires renewed system authorization.
+Incomplete identities fail the build instead of being silently regenerated.
+The post-sign hook verifies the bundle with
 `codesign --verify --deep --strict` and checks its signing identifier. A missing or
-invalid signature fails packaging; resources must not be changed after signing.
+invalid signature fails packaging; local builds also verify that desktop and
+Computer Use pin the same certificate. Resources must not be changed after signing.
 Other platforms do not receive the macOS signing override.
 
 `pnpm run package` creates the configured distributable and does not force ad-hoc
 signing. macOS distribution requires a configured signing certificate (for example,
 Developer ID through electron-builder's signing configuration); missing signing
 credentials fail the build. Public distribution also requires the appropriate
-platform notarization configuration. Local ad-hoc signatures are not stable
-developer identities: a rebuilt app can require renewed macOS permissions. Use a
+platform notarization configuration. The local development certificate is not a
+Developer ID and does not make the app suitable for public distribution. Use a
 stable Developer ID for distributed updates. See the
 [electron-builder v26 signing configuration](https://www.electron.build/v26/docs/features/code-signing/code-signing-mac/).
 An already packaged app does not load changes from `out/`: rebuild with
 `package:dir`, quit the old app and reopen the new bundle to see source changes.
+Archive rollback copies with `node scripts/archive-mac-app.mjs /path/to/previous.app`
+instead of leaving renamed `.app` directories that macOS can register as duplicate
+applications. The command verifies a ZIP archive before removing the old bundle;
+it does not touch session data or system permissions. When migrating from old
+ad-hoc builds, remove/re-add the current Computer Use component in Accessibility
+and Screen Recording once; subsequent builds reuse its certificate identity.
 
 `test:e2e` launches a real Electron window with isolated temporary data. It checks
 creating and stopping runs, actual context compaction, restart recovery, and

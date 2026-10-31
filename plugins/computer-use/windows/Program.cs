@@ -13,7 +13,6 @@ namespace OpenHarness.ComputerUse {
         private AppIdentity selected;
         private Observation last;
         private string snapshotId;
-        private long observedAt;
         internal const string Coordinates = "window-local physical pixels; origin top left";
         private void ClearSnapshot() { last = null; snapshotId = null; }
 
@@ -51,11 +50,11 @@ namespace OpenHarness.ComputerUse {
                 WindowImage image = includeImage ? WindowImage.Capture(selected, initial) : null;
                 initial.RefreshWindow(selected);
                 Observation verified = initial;
-                verified.HasScreenshot = image != null;
-                last = verified; snapshotId = Guid.NewGuid().ToString(); observedAt = Stopwatch.GetTimestamp();
+                verified.Screenshot = image;
+                last = verified; snapshotId = Guid.NewGuid().ToString();
                 var result = verified.ToJson(selected);
                 result["snapshot_id"] = snapshotId; result["selected_app"] = selected.ToJson();
-                result["coordinate_space"] = Coordinates; result["expires_in_seconds"] = 60; result["untrusted_content"] = true;
+                result["coordinate_space"] = Coordinates; result["snapshot_policy"] = "single_action_until_replaced"; result["untrusted_content"] = true;
                 if (image != null) {
                     result["image"] = image.ToJson();
                     result["screenshot"] = Json.Object("width", image.Width, "height", image.Height,
@@ -66,7 +65,7 @@ namespace OpenHarness.ComputerUse {
             }
             if (method != "click" && method != "type" && method != "key" && method != "scroll" && method != "drag" && method != "set_value" && method != "action") throw new ComputerError("UNKNOWN_METHOD", "Unknown computer helper operation.");
             string token = Arguments.String(args, "snapshot_id", 256);
-            if (selected == null || last == null || token != snapshotId || (Stopwatch.GetTimestamp() - observedAt) / (double)Stopwatch.Frequency > 60) throw new ComputerError("STALE_SNAPSHOT", "Snapshot is missing, consumed, expired, or belongs to another session. Observe again.");
+            if (selected == null || last == null || token != snapshotId) throw new ComputerError("STALE_SNAPSHOT", "Snapshot is missing, consumed, replaced, or belongs to another session. Observe again.");
             Observation previous = last;
             ClearSnapshot(); // Consume before validation or dispatch, including failed actions.
             if (method == "click") {

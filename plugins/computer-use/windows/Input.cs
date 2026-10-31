@@ -81,6 +81,7 @@ namespace OpenHarness.ComputerUse {
             int delta = Arguments.Integer(args, "delta_y", -1000, 1000);
             Native.Point point = Point(args, state, identity);
             if (delta == 0) return;
+            state.ValidateVisualTargets(identity, Arguments.Number(args, "x"), Arguments.Number(args, "y"));
             AutomationElement target = AutomationElement.FromPoint(new System.Windows.Point(point.X, point.Y));
             var visited = new HashSet<string>();
             for (int depth = 0; target != null && depth < 32; depth++) {
@@ -236,6 +237,7 @@ namespace OpenHarness.ComputerUse {
                     if (current.IsEmpty || !current.Contains(state.Frame.Left + x, state.Frame.Top + y)) throw new ComputerError("TARGET_CHANGED", "The referenced pointer target moved within the window. Observe again.");
                 } else { x = Arguments.Number(args, "x"); y = Arguments.Number(args, "y"); }
                 Native.Point point = Point(x, y, state, identity);
+                state.ValidateVisualTargets(identity, x, y);
                 uint down = button == "left" ? 2u : button == "right" ? 8u : 32u;
                 uint up = down * 2;
                 var events = new List<Native.Input>(); var releases = new List<Native.Input>();
@@ -250,6 +252,7 @@ namespace OpenHarness.ComputerUse {
                 double toX = Arguments.Number(args, "to_x"), toY = Arguments.Number(args, "to_y");
                 var modifiers = Arguments.Modifiers(args); RequireModifiers(modifiers);
                 Native.Point from = Point(fromX, fromY, state, identity), to = Point(toX, toY, state, identity);
+                state.ValidateVisualTargets(identity, fromX, fromY, toX, toY);
                 var events = new List<Native.Input>(); var releases = new List<Native.Input>();
                 BeginModifiers(modifiers, events, releases); events.Add(Move(from)); events.Add(Mouse(2, 0, 0, 0));
                 for (int step = 1; step <= 16; step++) {

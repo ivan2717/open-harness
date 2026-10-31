@@ -152,6 +152,11 @@ jobs:
         if: ${{ !cancelled() && steps.sandbox-helper.outcome == 'success' }}
         run: node --test ../../plugins/chrome-use/tests/bridge.test.mjs ../../plugins/chrome-use/tests/launch.test.mjs ../../plugins/chrome-use/tests/controller.test.mjs
 
+      - name: Build and check Windows computer helper
+        run: node ../../plugins/computer-use/windows/build.mjs
+      - name: Check Windows visual target validation
+        run: node --test ../../plugins/computer-use/tests/visual-guard.test.mjs
+
       - name: Install Electron for permission workflow checks
         env:
           ELECTRON_SKIP_BINARY_DOWNLOAD: ""

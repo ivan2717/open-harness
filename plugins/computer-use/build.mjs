@@ -16,7 +16,7 @@ const output = path.join(bin, 'computer-helper');
 const app = path.join(bin, 'Open Harness Computer Use.app');
 const appExecutable = path.join(app, 'Contents', 'MacOS', 'OpenHarnessComputerUse');
 const stamp = path.join(bin, 'build-stamp.json');
-const sources = ['Main', 'Access', 'Input', 'IPC'].map(name => `native/${name}.swift`);
+const sources = ['Main', 'Access', 'Windows', 'Observation', 'VisualGuard', 'Input', 'IPC'].map(name => `native/${name}.swift`);
 const manifest = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
@@ -26,7 +26,7 @@ const manifest = `<?xml version="1.0" encoding="UTF-8"?>
 <key>CFBundleExecutable</key><string>OpenHarnessComputerUse</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleVersion</key><string>1</string>
-<key>CFBundleShortVersionString</key><string>0.4.0</string>
+<key>CFBundleShortVersionString</key><string>0.5.0</string>
 <key>LSMinimumSystemVersion</key><string>14.0</string>
 <key>LSUIElement</key><true/>
 </dict></plist>\n`;

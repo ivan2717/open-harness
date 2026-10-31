@@ -32,8 +32,7 @@ import Foundation
         var selectedWindow: WindowBinding?
         var last: Observation?
         var snapshotID: String?
-        var snapshotTime = Date.distantPast
-        var screenshotTime: Date?
+        var screenshotImage: CGImage?
         for await line in lines {
             var id: Any = NSNull()
             do {
@@ -46,7 +45,7 @@ import Foundation
                 var result: [String: Any] = [:]
                 switch method {
                 case "status":
-                    result = ["platform": "macos", "capabilities": ["input_scope": "background_window", "window_selection": true, "coordinates_require_screenshot": true, "actions": ["click", "type", "key", "scroll", "drag", "set_value", "action"], "verification": "dispatch_only_except_accessibility_readback", "text_select_all": "accessibility_selection_range", "routing": "pid_and_window", "system_focus_changes": false], "accessibility": AXIsProcessTrusted(), "screen_recording": CGPreflightScreenCaptureAccess(), "selected_app": selected?.json as Any? ?? NSNull(), "selected_window_id": selectedWindow.map { Int($0.id) } as Any? ?? NSNull(), "permissions_requested": false, "helper_path": URL(fileURLWithPath: CommandLine.arguments[0]).standardizedFileURL.path, "permission_app_name": LocalIPC.displayName, "permission_bundle_id": Bundle.main.bundleIdentifier as Any? ?? NSNull(), "permission_settings": ["accessibility": "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility", "screen_recording": "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"]]
+                    result = ["platform": "macos", "capabilities": ["input_scope": "background_window", "window_selection": true, "window_discovery": "window_server", "accessibility_tree_optional": true, "keyboard_window_fallback": true, "coordinates_require_screenshot": true, "actions": ["click", "type", "key", "scroll", "drag", "set_value", "action"], "verification": "dispatch_only_except_accessibility_readback", "text_select_all": "accessibility_selection_range", "routing": "pid_and_window", "system_focus_changes": false], "accessibility": AXIsProcessTrusted(), "screen_recording": CGPreflightScreenCaptureAccess(), "selected_app": selected?.json as Any? ?? NSNull(), "selected_window_id": selectedWindow.map { Int($0.id) } as Any? ?? NSNull(), "permissions_requested": false, "helper_path": URL(fileURLWithPath: CommandLine.arguments[0]).standardizedFileURL.path, "permission_app_name": LocalIPC.displayName, "permission_bundle_id": Bundle.main.bundleIdentifier as Any? ?? NSNull(), "permission_settings": ["accessibility": "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility", "screen_recording": "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"]]
                 case "request_accessibility", "request_screen_recording":
                     // Host-only entry points, deliberately absent from the MCP tool catalog.
                     // The desktop UI calls these only after the user clicks a permission button.
@@ -67,7 +66,7 @@ import Foundation
                         return ["name": app.localizedName ?? bundle, "bundle_id": bundle, "pid": app.processIdentifier]
                     }]
                 case "select_app":
-                    selected = nil; selectedWindow = nil; last = nil; snapshotID = nil; screenshotTime = nil
+                    selected = nil; selectedWindow = nil; last = nil; snapshotID = nil; screenshotImage = nil
                     try requireAX(); try requireUnlocked()
                     guard let bundle = params["bundle_id"] as? String, let pid = params["pid"] as? Int32,
                           let app = NSRunningApplication(processIdentifier: pid), app.bundleIdentifier == bundle, app.activationPolicy == .regular else {
@@ -87,43 +86,42 @@ import Foundation
                 case "observe":
                     guard let identity = selected else { throw ComputerError("APP_NOT_SELECTED", "Select an application first.") }
                     guard let binding = selectedWindow else { throw ComputerError("WINDOW_NOT_SELECTED", "List the selected application's windows and select an exact window_id first.") }
-                    last = nil; snapshotID = nil; screenshotTime = nil
+                    last = nil; snapshotID = nil; screenshotImage = nil
                     let state = try observe(identity, binding)
-                    var captured: [String: Any]?
-                    if params["screenshot"] as? Bool == true { captured = try await screenshot(identity, state) }
+                    var captured: CGImage?
+                    if params["screenshot"] as? Bool == true || state.nodes.isEmpty { captured = try await screenshot(identity, state) }
                     // Animated content and unrelated accessibility changes do
                     // not invalidate a target. Only the bound window's identity
                     // and dimensions must survive observation/capture.
                     let finalFrame = try validateWindow(identity, binding, expectedSize: state.frame)
                     let verified = state.withFrame(finalFrame)
-                    last = verified; snapshotID = UUID().uuidString; snapshotTime = Date()
-                    if captured != nil { screenshotTime = snapshotTime }
+                    last = verified; snapshotID = UUID().uuidString; screenshotImage = captured
                     result = verified.json
                     result["snapshot_id"] = snapshotID
                     result["selected_app"] = identity.json
                     result["selected_window_id"] = Int(binding.id)
                     result["coordinate_space"] = "window-local points; origin top left"
-                    result["expires_in_seconds"] = 60
-                    result["coordinate_expires_in_seconds"] = 15
+                    result["snapshot_policy"] = "single_action_until_replaced"
+                    result["keyboard_requires_screenshot"] = state.focused == nil
                     result["untrusted_content"] = true
                     if let captured {
-                        result["image"] = ["mimeType": captured["mimeType"]!, "data": captured["data"]!]
-                        result["screenshot"] = ["width": captured["width"]!, "height": captured["height"]!, "window_width_points": state.frame.width, "window_height_points": state.frame.height]
+                        result["image"] = try screenshotJSON(captured)
+                        result["screenshot"] = ["width": captured.width, "height": captured.height, "window_width_points": state.frame.width, "window_height_points": state.frame.height]
                     }
                 case "click", "type", "key", "scroll", "drag", "set_value", "action":
-                    guard let identity = selected, let previous = last, let token = snapshotID, params["snapshot_id"] as? String == token, Date().timeIntervalSince(snapshotTime) <= 60 else {
-                        throw ComputerError("STALE_SNAPSHOT", "Snapshot is missing, consumed, expired, or belongs to another session. Observe again.")
+                    guard let identity = selected, let previous = last, let token = snapshotID, params["snapshot_id"] as? String == token else {
+                        throw ComputerError("STALE_SNAPSHOT", "Snapshot is missing, consumed, replaced, or belongs to another session. Observe again.")
                     }
-                    let capturedAt = screenshotTime
+                    let captured = screenshotImage
                     // Consume before any validation/dispatch; uncertain actions
                     // cannot be replayed using the same observation.
-                    last = nil; snapshotID = nil; screenshotTime = nil
-                    if requiresScreenshot(method, params) {
-                        guard let capturedAt, Date().timeIntervalSince(capturedAt) <= 15 else {
-                            throw ComputerError("SCREENSHOT_REQUIRED", "Coordinate input requires a screenshot from the last 15 seconds. Observe with screenshot: true.")
+                    last = nil; snapshotID = nil; screenshotImage = nil
+                    if requiresScreenshot(method, params) || (["type", "key"].contains(method) && previous.focused == nil) {
+                        guard captured != nil else {
+                            throw ComputerError("SCREENSHOT_REQUIRED", "Visual pointer or canvas keyboard input requires a screenshot in this observation. Observe with screenshot: true.")
                         }
                     }
-                    result = try dispatchInput(method, params, previous, identity)
+                    result = try await dispatchInput(method, params, previous, identity, screenshotImage: captured)
                 default: throw ComputerError("UNKNOWN_METHOD", "Unknown helper operation.")
                 }
                 emit(["id": id, "result": result])

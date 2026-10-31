@@ -1,6 +1,21 @@
 import AppKit
 import Foundation
 
+// Real AX behavior switches, confined to disposable fixture apps. This exercises
+// missing AXWindows and a fully unexposed window through the production driver.
+var fixtureAXMode = "normal"
+final class FixtureApplication: NSApplication {
+    override func accessibilityWindows() -> [Any]? { fixtureAXMode == "normal" ? super.accessibilityWindows() : [] }
+    override func accessibilityFocusedWindow() -> Any? { fixtureAXMode == "unavailable" ? nil : super.accessibilityFocusedWindow() }
+    override func accessibilityMainWindow() -> Any? { fixtureAXMode == "unavailable" ? nil : super.accessibilityMainWindow() }
+    override var accessibilityFocusedUIElement: Any? { fixtureAXMode == "unavailable" ? nil : super.accessibilityFocusedUIElement }
+}
+final class FixtureWindow: NSWindow {
+    override func accessibilityFrame() -> NSRect {
+        let frame = super.accessibilityFrame()
+        return fixtureAXMode == "geometry_mismatch" ? frame.offsetBy(dx: 20, dy: 20) : frame
+    }
+}
 // This disposable app changes only its own windows and responders. It never
 // injects global input or touches a user application.
 final class InstrumentedTextField: NSTextField {
@@ -22,12 +37,14 @@ final class PointerPad: NSView {
     var middleClicks = 0
     var lastClickCount = 0
     var lastModifiers: UInt = 0
+    var typed = ""
+    var changedAppearance = false
     var dragStart: NSPoint?
     var dragEnd: NSPoint?
     override var acceptsFirstResponder: Bool { true }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
     override func draw(_ dirtyRect: NSRect) {
-        NSColor.systemTeal.withAlphaComponent(0.2).setFill()
+        (changedAppearance ? NSColor.systemRed : NSColor.systemTeal.withAlphaComponent(0.2)).setFill()
         bounds.fill()
         ("Fixture pointer pad" as NSString).draw(at: NSPoint(x: 12, y: 15), withAttributes: [.foregroundColor: NSColor.labelColor])
     }
@@ -49,6 +66,7 @@ final class PointerPad: NSView {
     }
     override func rightMouseDown(with event: NSEvent) { rightClicks += 1; changed?() }
     override func otherMouseDown(with event: NSEvent) { middleClicks += 1; changed?() }
+    override func keyDown(with event: NSEvent) { typed += event.characters ?? ""; changed?() }
 }
 
 final class Fixture: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
@@ -90,7 +108,7 @@ final class Fixture: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
         edit.submenu?.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
         menu.addItem(edit)
         NSApp.mainMenu = menu
-        window = NSWindow(contentRect: NSRect(x: 180, y: 180, width: 560, height: 480), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+        window = FixtureWindow(contentRect: NSRect(x: 180, y: 180, width: 560, height: 480), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.title = "\(label) Primary"
         guard let view = window.contentView else { return }
@@ -195,6 +213,11 @@ final class Fixture: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
               id != lastTestCommand else { return }
         lastTestCommand = id
         switch command {
+        case "change_canvas": pad.changedAppearance.toggle(); pad.needsDisplay = true; pad.displayIfNeeded()
+        case "ax_windows_empty": fixtureAXMode = "windows_empty"
+        case "ax_unavailable": fixtureAXMode = "unavailable"
+        case "ax_geometry": fixtureAXMode = "geometry_mismatch"
+        case "ax_restore": fixtureAXMode = "normal"
         case "resize": window.setContentSize(NSSize(width: 600, height: 500))
         case "move": window.setFrameOrigin(NSPoint(x: window.frame.minX + 20, y: window.frame.minY + 20))
         case "move_button": incrementButton.setFrameOrigin(NSPoint(x: 290, y: 340))
@@ -244,13 +267,15 @@ final class Fixture: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
         if let point = pad.dragStart { object["drag_start"] = ["x": point.x, "y": point.y] }
         if let point = pad.dragEnd { object["drag_end"] = ["x": point.x, "y": point.y] }
         object["key_event_details"] = keyEventDetails
+        object["ax_mode"] = fixtureAXMode
+        object["canvas_text"] = pad.typed
         object["text_mouse_tracking_started"] = textMouseTrackingStarted
         object["text_mouse_tracking_finished"] = textMouseTrackingFinished
         object["text_mouse_tracking"] = textMouseTracking
         if let data = try? JSONSerialization.data(withJSONObject: object) { try? data.write(to: output, options: .atomic) }
     }
 }
-let app = NSApplication.shared
+let app = FixtureApplication.shared
 app.setActivationPolicy(.regular)
 let fixture = Fixture(URL(fileURLWithPath: CommandLine.arguments[1]))
 app.delegate = fixture

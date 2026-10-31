@@ -229,7 +229,7 @@ try {
       state = await request('observe', { screenshot: true });
       const beforeButtonMove = center(node(state, 'fixture-increment'));
       await command('A', 'move_button');
-      await rejectedWithoutInput('click', state, beforeButtonMove, /STATE_CHANGED|AX_UNAVAILABLE|TARGET_UNAVAILABLE/);
+      await rejectedWithoutInput('click', state, beforeButtonMove, /STATE_CHANGED|AX_UNAVAILABLE|TARGET_UNAVAILABLE|VISUAL_TARGET_CHANGED/);
       await command('A', 'restore_button');
       state = await request('observe', { screenshot: true });
       const beforeButtonReplacement = center(node(state, 'fixture-increment'));
@@ -242,12 +242,26 @@ try {
       assert.equal(Buffer.from(state.image.data, 'base64').subarray(0, 8).toString('hex'), '89504e470d0a1a0a');
       if (artifacts) writeFileSync(path.join(artifacts, 'native-computer-fixture.png'), Buffer.from(state.image.data, 'base64'));
       const screenshotPoint = center(node(state, 'fixture-increment'));
+      assert.equal(state.snapshot_policy, 'single_action_until_replaced');
+      assert.equal(state.expires_in_seconds, undefined);
+      assert.equal(state.coordinate_expires_in_seconds, undefined);
+      // Opt-in real latency regression, e.g. 65,000ms, exceeds BOTH former TTLs.
+      // This is a test delay, never a production validity rule.
+      const snapshotDelay = Number(process.env.OPENHARNESS_SNAPSHOT_TEST_DELAY_MS ?? 0);
+      assert.ok(Number.isFinite(snapshotDelay) && snapshotDelay >= 0 && snapshotDelay <= 120_000);
+      if (snapshotDelay) {
+        assertForegroundB();
+        console.log(JSON.stringify({ status: 'waiting', check: 'unchanged screenshot survives model latency', delay_ms: snapshotDelay }));
+        await wait(snapshotDelay);
+        assertForegroundB();
+      }
       const animated = load('A').animation_frame;
       await until(() => load('A').animation_frame > animated + 2, 'pixels changed after screenshot');
       await act('click', state, screenshotPoint);
       await until(() => load('A').clicks === 3, 'fully covered background coordinate click');
       assertForegroundB();
       checks.push('covered-window PNG and coordinate click tolerate animation');
+      if (snapshotDelay) checks.push(`unchanged screenshot still accepts a click after ${snapshotDelay}ms`);
 
       state = await request('observe', { screenshot: true });
       const movedPoint = center(node(state, 'fixture-increment'));
@@ -347,6 +361,65 @@ try {
       assertForegroundB();
       checks.push('concurrent foreground responder typing remains isolated');
 
+      await command('A', 'ax_windows_empty');
+      await request('select_app', selection);
+      state = await request('observe');
+      assert.equal(state.window.id, initialA.window_id);
+      node(state, 'fixture-input');
+      checks.push('AXWindows empty still discovers and enriches the exact system window');
+
+      const canvasPoint = center(node(state, 'fixture-pad'));
+      await command('A', 'focus_pad');
+      await command('A', 'ax_unavailable');
+      await request('select_app', selection);
+      const visualWindows = await request('windows');
+      if (artifacts) writeFileSync(path.join(artifacts, 'native-computer-visual-windows.json'), JSON.stringify(visualWindows, null, 2));
+      assert.equal(visualWindows.windows.find(item => item.id === initialA.window_id).accessibility, false);
+      state = await request('observe');
+      assert.equal(state.accessibility, 'unavailable');
+      assert.deepEqual(state.elements, []);
+      assert.ok(state.image, 'missing AX automatically returns a window screenshot');
+      assert.equal(state.snapshot_policy, 'single_action_until_replaced');
+      assert.equal(state.keyboard_requires_screenshot, true);
+      let beforeCanvas = load('A').right_clicks;
+      await act('click', state, { ...canvasPoint, button: 'right' });
+      await until(() => load('A').right_clicks === beforeCanvas + 1, 'AX-less background canvas receives coordinate click');
+      state = await request('observe');
+      const canvasText = load('A').canvas_text;
+      await act('type', state, { text: 'Canvas中文' });
+      await until(() => load('A').canvas_text === canvasText + 'Canvas中文', 'AX-less canvas receives literal keyboard input');
+      assertForegroundB();
+      checks.push('no AX window or focused control: screenshot, background click and canvas typing succeed');
+
+      state = await request('observe');
+      await command('A', 'change_canvas');
+      await rejectedWithoutInput('click', state, { ...canvasPoint, button: 'right' }, /VISUAL_TARGET_CHANGED/);
+      await rejectedWithoutInput('click', state, { ...canvasPoint, button: 'right' }, /STALE_SNAPSHOT/);
+      const replacedState = await request('observe');
+      state = await request('observe');
+      await rejectedWithoutInput('click', replacedState, { ...canvasPoint, button: 'right' }, /STALE_SNAPSHOT/);
+      beforeCanvas = load('A').right_clicks;
+      await act('click', state, { ...canvasPoint, button: 'right' });
+      await until(() => load('A').right_clicks === beforeCanvas + 1, 'fresh observation accepts changed canvas');
+      checks.push('changed canvas blocks stale visual input; consumed/replaced snapshots refuse replay; fresh observation recovers');
+
+      await command('A', 'ax_geometry');
+      await request('select_app', selection);
+      state = await request('observe');
+      assert.equal(state.accessibility, 'unavailable', 'mismatched AX geometry cannot supply actionable refs');
+      assert.ok(state.image, 'system window screenshot remains available');
+      beforeCanvas = load('A').right_clicks;
+      await act('click', state, { ...canvasPoint, button: 'right' });
+      await until(() => load('A').right_clicks === beforeCanvas + 1, 'coordinate input uses authoritative system geometry');
+      checks.push('inconsistent AX geometry disables refs while visual control remains usable');
+
+      await command('A', 'ax_restore');
+      await command('A', 'focus_input');
+      state = await request('observe');
+      node(state, 'fixture-input');
+      assert.equal(state.accessibility, 'available');
+      checks.push('AX capabilities recover on the existing window binding');
+
       state = await request('observe');
       await rejectedWithoutInput('click', state, { x: 100, y: 100 }, /SCREENSHOT_REQUIRED/);
       state = await request('observe', { screenshot: true });
@@ -371,6 +444,15 @@ try {
       assert.equal(load('A').second_clicks, 0);
       assertForegroundB();
       checks.push('same-app focused-window change preserves bound window identity');
+
+      state = await request('observe', { screenshot: true });
+      await rejectedWithoutInput('key', state, { key: 'space' }, /FOCUS_CHANGED/);
+      await command('A', 'ax_unavailable');
+      await request('select_app', selection);
+      state = await request('observe');
+      await rejectedWithoutInput('type', state, { text: 'must not reach another window' }, /FOCUS_CHANGED/);
+      await command('A', 'ax_restore');
+      checks.push('keyboard fallback refuses ambiguous or changed same-app key windows');
 
       state = await request('observe', { screenshot: true });
       await command('A', 'close_primary');

@@ -33,7 +33,7 @@ describe('computer permission presentation', () => {
   it('reports each confirmed permission independently', () => {
     const html = render({ accessibility: true, screenRecording: false, helperPath: '/helper' })
     expect(html).toContain('辅助功能 · 已授权')
-    expect(html).toContain('屏幕录制 · 未授权')
+    expect(html).toContain('屏幕录制 · 未生效')
   })
 
   it('does not tell the user to reauthorize when the check failed', () => {
@@ -47,7 +47,7 @@ describe('computer permission presentation', () => {
     expect(html).toContain('屏幕录制 · 检查失败')
     expect(html).toContain('role="alert"')
     expect(html).toContain('权限检查超时，请重试。')
-    expect(html).not.toContain(' · 未授权')
+    expect(html).not.toContain(' · 未生效')
     expect(html).not.toContain('待授权')
   })
 

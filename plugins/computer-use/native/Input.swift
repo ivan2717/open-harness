@@ -2,6 +2,7 @@ import AppKit
 import ApplicationServices
 import Foundation
 import Darwin
+import Carbon
 
 // EOF and SIGTERM stop new input while giving an in-flight mouse transaction
 // time to send its matching release. SIGKILL/process crashes cannot be cleaned up.
@@ -150,7 +151,8 @@ func targetPoint(_ params: [String: Any], _ state: Observation, xKey: String = "
     }
     return CGPoint(x: x, y: y)
 }
-func requireNonSecure(_ target: ElementState, _ window: AXUIElement) throws {
+func requireNonSecure(_ target: ElementState, _ window: AXUIElement?) throws {
+    guard let window else { throw ComputerError("TARGET_UNAVAILABLE", "Accessibility window is unavailable for this semantic action. Observe again.") }
     var item: AXUIElement? = target.element
     for _ in 0..<32 {
         guard let current = item else { return }
@@ -165,8 +167,25 @@ func requireNonSecure(_ target: ElementState, _ window: AXUIElement) throws {
     }
     throw ComputerError("TARGET_UNAVAILABLE", "Cannot verify whether this control contains protected input.")
 }
-func checkedFocus(_ previous: Observation, _ identity: AppIdentity, frame: CGRect) throws -> ElementState {
-    guard let prior = previous.focused, let focused = try focusedElement(identity, previous.binding), CFEqual(prior.element, focused) else {
+func checkedFocus(_ previous: Observation, _ identity: AppIdentity, frame: CGRect) throws -> ElementState? {
+    try validateKeyboardWindow(identity, previous.binding, frame: frame)
+    guard !IsSecureEventInputEnabled() else { throw ComputerError("SECURE_INPUT_UNSUPPORTED", "Secure keyboard input is active. The user must complete protected input directly.") }
+    guard let prior = previous.focused else {
+        // Screenshot-based canvas input does not require an AX responder.
+        // Still reject a newly exposed control and any known protected focus.
+        if let current = try? elementAttribute(AXUIElementCreateApplication(previous.binding.owner.pid), "AXFocusedUIElement") {
+            let role = try attribute(current, "AXRole") as? String
+            let subrole = try attribute(current, "AXSubrole") as? String
+            guard role != "AXSecureTextField", subrole != "AXSecureTextField", (try attribute(current, "AXProtectedContent") as? Bool) != true else {
+                throw ComputerError("SECURE_INPUT_UNSUPPORTED", "The keyboard target is protected. The user must enter it directly.")
+            }
+            if let window = previous.window, (try? belongsToWindow(current, window)) == true {
+                throw ComputerError("FOCUS_CHANGED", "A focused control appeared after observation. Observe again before typing.")
+            }
+        }
+        return nil
+    }
+    guard let focused = try focusedElement(identity, previous.binding), CFEqual(prior.element, focused) else {
         throw ComputerError("FOCUS_CHANGED", "The bound window's focused control changed or is unavailable. No input was dispatched. Observe again.")
     }
     guard !prior.secure else { throw ComputerError("SECURE_INPUT_UNSUPPORTED", "The observed focus was a password or protected control. No input was dispatched.") }
@@ -202,7 +221,7 @@ func requiresScreenshot(_ method: String, _ params: [String: Any]) -> Bool {
     if method != "click" { return false }
     return params["ref"] == nil || (params["button"] as? String ?? "left") != "left" || (params["click_count"] as? Int ?? 1) != 1 || !(params["modifiers"] as? [String] ?? []).isEmpty
 }
-func dispatchInput(_ method: String, _ params: [String: Any], _ previous: Observation, _ identity: AppIdentity) throws -> [String: Any] {
+@MainActor func dispatchInput(_ method: String, _ params: [String: Any], _ previous: Observation, _ identity: AppIdentity, screenshotImage: CGImage?) async throws -> [String: Any] {
     var dispatched = false
     var outcomeVerified = false
     var transport = "window_events"
@@ -249,6 +268,7 @@ func dispatchInput(_ method: String, _ params: [String: Any], _ previous: Observ
                 guard let box = target.box, box.width > 0, box.height > 0 else { throw ComputerError("TARGET_UNAVAILABLE", "Referenced control has no usable bounds for pointer input.") }
                 local = try targetPoint(["x": box.midX, "y": box.midY], state)
             } else { local = try targetPoint(params, state) }
+            try await validateVisualTargets([local], previous, identity, screenshotImage)
             let poster = try WindowEventPoster()
             let source = CGEventSource(stateID: .privateState)
             let button: CGMouseButton = buttonName == "right" ? .right : buttonName == "middle" ? .center : .left
@@ -274,7 +294,7 @@ func dispatchInput(_ method: String, _ params: [String: Any], _ previous: Observ
             // Choose this transport before dispatch, never after an uncertain key.
             if method == "key" {
                 let (code, flags) = try parseKey(params["key"])
-                if code == 0, flags == .maskCommand,
+                if let focus, code == 0, flags == .maskCommand,
                    ["AXTextField", "AXTextArea", "AXComboBox"].contains(focus.role) {
                     var settable: DarwinBoolean = false
                     guard AXUIElementIsAttributeSettable(focus.element, "AXSelectedTextRange" as CFString, &settable) == .success, settable.boolValue else {
@@ -330,6 +350,7 @@ func dispatchInput(_ method: String, _ params: [String: Any], _ previous: Observ
             guard let delta = params["delta_y"] as? Int32, delta >= -1000, delta <= 1000,
                   let event = CGEvent(scrollWheelEvent2Source: CGEventSource(stateID: .privateState), units: .pixel, wheelCount: 1, wheel1: delta, wheel2: 0, wheel3: 0) else { throw ComputerError("INVALID_SCROLL", "Scroll distance must be an integer between -1000 and 1000.") }
             let poster = try WindowEventPoster()
+            try await validateVisualTargets([local], previous, identity, screenshotImage)
             try refreshWindow()
             try validateCoordinateTarget(local, previous, identity, frame: state.frame)
             poster.stamp(event, state, local: local)
@@ -338,6 +359,7 @@ func dispatchInput(_ method: String, _ params: [String: Any], _ previous: Observ
             let from = try targetPoint(params, state, xKey: "from_x", yKey: "from_y")
             let to = try targetPoint(params, state, xKey: "to_x", yKey: "to_y")
             let flags = try modifierFlags(params["modifiers"])
+            try await validateVisualTargets([from, to], previous, identity, screenshotImage)
             let poster = try WindowEventPoster()
             let source = CGEventSource(stateID: .privateState)
             let group = Int64(bitPattern: DispatchTime.now().uptimeNanoseconds)

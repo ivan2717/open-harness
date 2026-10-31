@@ -182,12 +182,33 @@ the app identity for `computer_windows`; choose one of its returned IDs and call
 | Input | AX or events directed to the bound process/window | UIA or foreground input, including SendInput |
 | Coordinates | Window-local points | Window-local physical pixels |
 | Other app becomes foreground | Background operations remain available when the bound target is valid | Input is rejected until the intended window is selected/foreground again |
-| Keyboard focus | Validates the selected window's app-local focused control | Validates the observed control and selected foreground window |
+| Keyboard focus | Validates the observed control; visual canvas fallback requires a screenshot in the current observation and unambiguous app-local window | Validates the observed control and selected foreground window |
 
-Every observation supplies a random snapshot ID, valid for one action and at most
-60 seconds. The helper consumes it before native action validation, including
-failed or uncertain actions. Pointer gestures require a screenshot; macOS reports
-an additional `coordinate_expires_in_seconds: 15` limit. Nondefault button/count/
+macOS discovers windows through WindowServer, retaining the exact window ID and
+owner process birth identity. It includes verified helper processes inside the
+approved app bundle. AXWindows, AXFocusedWindow and AXMainWindow enrich these
+windows when available; AX failures or mismatched AX geometry disable semantic
+refs without blocking window screenshots. Observation reports `accessibility`
+as `available`, `partial` or `unavailable`; the last state automatically includes
+a screenshot. An empty AX tree is not treated as a missing app or missing system
+permission. AX controls can recover on the next observation without reselection.
+Covered windows remain controllable without AX. Off-screen windows need a live
+AX window: macOS can retain closed window IDs and stale image buffers, which must
+not be treated as a still-open window. This does not require the app to be foreground.
+
+Canvas keyboard input with no observed AX focus requires a current screenshot
+and either a matching app-local focused window or a sole on-screen window owned
+by the target process (covered windows count as on-screen). Multiple on-screen windows with unknown focus reject keyboard
+input; the helper never guesses a destination or changes focus. Known protected
+controls and macOS secure input remain blocked. A changed observed text control
+does not fall back to unverified canvas input.
+
+Every observation supplies a random snapshot ID and
+`snapshot_policy: "single_action_until_replaced"`. There is no fixed age limit:
+model latency alone does not invalidate an observation. A new observation, target
+selection or session shutdown replaces it; each action consumes it before native
+validation, including failed or uncertain actions. Pointer gestures require a
+screenshot in that observation. Nondefault button/count/
 modifier options on a ref are pointer gestures and also require a screenshot.
 Default ref clicks use an advertised semantic action; an unsupported semantic
 click does not automatically fall back to coordinates.
@@ -199,8 +220,14 @@ no longer requires the entire accessibility tree or every screenshot pixel to
 remain identical: unrelated animations and changing labels elsewhere do not
 invalidate a target. Coordinate input checks an observed accessible target's
 identity and local bounds when one is present. Windows also checks the current
-UIA hit target. Canvas input uses the recent screenshot and bound window,
-without requiring animated pixels to stay unchanged. A screenshot is evidence
+UIA hit target. Before pointer dispatch, both platforms capture the bound window
+again and compare only a 21×21 screenshot-pixel patch around each target (both
+endpoints for a drag). A per-channel difference over 24 affecting more than 10%
+of the patch returns `VISUAL_TARGET_CHANGED` with `dispatched: false`; capture
+failure also prevents dispatch. Minor rendering noise and animation elsewhere
+are tolerated. This local check does not detect every semantic change or changes
+after validation, and keyboard input still uses window/focus checks rather than
+pixel comparison. Semantic ref actions do not require an extra screenshot. A screenshot is evidence
 of the observed UI, not a promise that its controls cannot change before input;
 use current refs when available and observe again after any unexpected change.
 
@@ -313,7 +340,8 @@ that B stays active and A never activates. The smoke covers Unicode typing,
 combination keys, advertised AX actions, writable values, protected-field refusal,
 covered-window screenshots, animated content, right/middle/multiple clicks,
 modifiers, drag, scroll and independent foreground responder input. It also checks
-single-use snapshots, translated/resized windows, same-app focus changes and
+single-use snapshots, translated/resized windows, empty AXWindows, absent AX
+windows/focus, visual canvas input, recovered AX, same-app focus changes and
 closed-window rejection against the fixtures' own reported state.
 It does not inspect or control user apps. Missing system permissions return a
 structured `blocked` result with exit code 2; this is **not** a passing GUI test.

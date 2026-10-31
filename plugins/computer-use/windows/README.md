@@ -42,7 +42,10 @@ executable path. Selection additionally binds the PID, process creation time,
 session, top-level HWND, owning thread and UIA runtime identity. An HWND is not
 implicitly replaced if a dialog or another window appears. Input requires the
 exact selected foreground window; keyboard actions additionally require the
-observed focused control. Each action consumes a snapshot valid for 60 seconds.
+observed focused control. Each action consumes its snapshot; a new observation or target selection replaces it.
+There is no time-based expiry. Pointer actions re-capture the selected HWND and
+compare a small patch at the target before dispatch, rejecting a changed target
+with `VISUAL_TARGET_CHANGED`. Unrelated animation is ignored.
 Ref actions validate the observed UIA runtime identity. Coordinate actions require
 a screenshot and a current hit test matching the observed control. Unrelated
 UIA changes or animated pixels do not invalidate a snapshot. Resizing does; moving

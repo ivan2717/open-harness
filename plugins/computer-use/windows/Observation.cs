@@ -13,7 +13,8 @@ namespace OpenHarness.ComputerUse {
         internal Native.Rect Frame;
         internal AutomationElement Root, Focused;
         internal string FocusRuntime;
-        internal bool HasScreenshot;
+        internal WindowImage Screenshot;
+        internal bool HasScreenshot { get { return Screenshot != null; } }
         internal readonly Dictionary<string, List<string>> Actions = new Dictionary<string, List<string>>();
         internal readonly HashSet<string> Settable = new HashSet<string>();
         internal readonly Dictionary<string, System.Windows.Rect> LocalBounds = new Dictionary<string, System.Windows.Rect>();
@@ -21,6 +22,21 @@ namespace OpenHarness.ComputerUse {
         internal readonly Dictionary<string, string> RuntimeIds = new Dictionary<string, string>();
         internal readonly List<object> Nodes = new List<object>();
         internal bool Truncated;
+
+        internal void ValidateVisualTargets(AppIdentity identity, params double[] coordinates) {
+            if (Screenshot == null) throw new ComputerError("SCREENSHOT_REQUIRED", "Pointer input requires a screenshot in this observation.");
+            // Capture once per action, not once per Point()/UIA revalidation.
+            // PrintWindow remains bound to this HWND; no desktop capture fallback.
+            WindowImage current = WindowImage.Capture(identity, this);
+            using (var beforeStream = new MemoryStream(Screenshot.Bytes))
+            using (var afterStream = new MemoryStream(current.Bytes))
+            using (var before = new Bitmap(beforeStream))
+            using (var after = new Bitmap(afterStream)) {
+                for (int i = 0; i < coordinates.Length; i += 2)
+                    if (!VisualGuard.Matches(before, after, coordinates[i], coordinates[i + 1], Frame.Width, Frame.Height))
+                        throw new ComputerError("VISUAL_TARGET_CHANGED", "The image near the pointer target changed since observation. No input was dispatched. Observe again and choose the target from the new screenshot.");
+            }
+        }
 
         internal static string Runtime(AutomationElement element) {
             if (element == null) return "";
