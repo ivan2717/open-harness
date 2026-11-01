@@ -521,6 +521,8 @@ mod tests {
         ));
         let snapshot = Snapshot::new(
             RunDetail {
+                pending_inputs: Vec::new(),
+                pending_inputs_paused: false,
                 summary: RunSummary {
                     reasoning_settings_version: 1,
                     delegation: None,
@@ -641,6 +643,8 @@ mod tests {
             std::env::temp_dir().join(format!("open-harness-context-meter-{}", std::process::id()));
         fs::create_dir_all(&directory).unwrap();
         let detail = RunDetail {
+            pending_inputs: Vec::new(),
+            pending_inputs_paused: false,
             summary: RunSummary {
                 reasoning_settings_version: 1,
                 delegation: None,
@@ -718,6 +722,8 @@ mod tests {
         fs::create_dir_all(&directory).unwrap();
         let snapshot = Snapshot::new(
             RunDetail {
+                pending_inputs: Vec::new(),
+                pending_inputs_paused: false,
                 summary: RunSummary {
                     reasoning_settings_version: 1,
                     delegation: None,

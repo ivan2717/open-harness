@@ -1,4 +1,4 @@
-//! Startup-only collection of abandoned uploads. Durable logs, not UI snapshots,
+//! Startup-only collection of abandoned uploads. Durable logs and queued inputs
 //! determine reachability; an incomplete inventory prevents every deletion.
 use super::attachments::{MAX_ATTACHMENT_BYTES, valid_attachment_id};
 use agent_runtime::JsonlEventStore;
@@ -261,6 +261,22 @@ pub(super) async fn collect(root: PathBuf, now: SystemTime) -> io::Result<usize>
     };
     let store = JsonlEventStore::new(root.join("events"));
     let mut retained = BTreeSet::new();
+    for snapshot in &history.snapshots {
+        #[derive(serde::Deserialize)]
+        struct PendingInputs {
+            #[serde(default)]
+            pending_inputs: Vec<agent_runtime::PendingUserInput>,
+        }
+        let detail: PendingInputs =
+            serde_json::from_reader(File::open(&snapshot.path)?).map_err(io::Error::other)?;
+        for input in detail.pending_inputs {
+            for file in input.files {
+                if let Some(reference) = file.attachment {
+                    retained.insert(reference.id);
+                }
+            }
+        }
+    }
     for log in &history.logs {
         let mut offset = 0_u64;
         loop {

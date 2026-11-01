@@ -136,6 +136,7 @@ export class BrowserSession {
     this.initializing = null;
     this.closing = null;
     this.browserClosures = new WeakMap();
+    this.previewNavigations = new WeakMap();
   }
 
   // Preserve operation ordering even when a caller sends concurrent MCP calls.
@@ -314,6 +315,7 @@ export class BrowserSession {
     // The user or the site can navigate outside a model action. Its old refs
     // cannot be used again, even when a later document has the same DOM shape.
     page.on("framenavigated", (frame) => {
+      if (frame === page.mainFrame()) this.previewNavigations.set(page, (this.previewNavigations.get(page) ?? 0) + 1);
       if (this.page === page && frame === page.mainFrame()) this.invalidate();
     });
   }
@@ -715,6 +717,34 @@ export class BrowserSession {
         }),
       ],
     };
+  }
+
+  // Private display path: never consumes snapshot refs or exposes frames to
+  // MCP/model history. Uses the same queue so preview cannot race tool actions.
+  preview(capture) {
+    const generation = this.closedGeneration;
+    const operation = this.queue.then(async () => {
+      const page = this.page;
+      if (generation !== this.closedGeneration || !page || page.isClosed()) return { active: false };
+      const unavailable = { active: true, title: '独立浏览器', unavailable: true };
+      try {
+        this.assertOrigin(page);
+        const url = page.url();
+        const navigation = this.previewNavigations.get(page);
+        const metadata = { active: true, title: `独立浏览器 · ${new URL(url).hostname}`.slice(0, 256) };
+        if (!capture) return metadata;
+        const size = page.viewportSize();
+        const image = await page.screenshot({ type: 'jpeg', quality: 55, scale: 'css', fullPage: false, animations: 'allow', caret: 'initial', timeout: 1500 });
+        if (generation !== this.closedGeneration || page !== this.page || page.isClosed()) return { active: false };
+        this.assertOrigin(page);
+        if (!size || url !== page.url() || navigation !== this.previewNavigations.get(page) || image.length > 600_000) return unavailable;
+        return { ...metadata, ...size, jpeg: image.toString('base64') };
+      } catch {
+        return generation !== this.closedGeneration || page.isClosed() ? { active: false } : unavailable;
+      }
+    });
+    this.queue = operation.catch(() => {});
+    return operation;
   }
 
   async screenshot() {

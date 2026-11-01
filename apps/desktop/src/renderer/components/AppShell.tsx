@@ -5,6 +5,7 @@ import { PanelLeftClose, PanelLeftOpen } from 'lucide-react'
 import { configOptions } from '../lib/queries'
 import { ChatSidebar } from './ChatSidebar'
 import { NavigationRail } from './NavigationRail'
+import { ComputerPreview } from './ComputerPreview'
 import { useUiStore } from '../state/ui-store'
 
 export function AppShell() {
@@ -62,12 +63,13 @@ export function AppShell() {
           </span>
         )}
       </div>
-      <div className="desktop-body">
+      <div className="desktop-body" style={{ position: 'relative' }}>
         <NavigationRail pathname={location.pathname} runId={isChat ? (runId ?? null) : lastRunId} />
         <ChatSidebar visible={isChat && sidebarOpen} pathname={location.pathname} />
         <main className="workspace">
           <Outlet />
         </main>
+        <ComputerPreview />
       </div>
     </div>
   )

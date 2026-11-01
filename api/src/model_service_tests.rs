@@ -70,6 +70,8 @@ impl Fixture {
 
     async fn conversation(&self, id: &str) -> Arc<RunEntry> {
         let detail = RunDetail {
+            pending_inputs: Vec::new(),
+            pending_inputs_paused: false,
             summary: RunSummary {
                 reasoning_settings_version: 1,
                 reasoning_effort: None,

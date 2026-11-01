@@ -1,4 +1,5 @@
 import type {
+  PendingInputAction,
   CommandApprovalScope,
   UpdateRunPermissionsInput,
   ConfigureModelInput,
@@ -36,6 +37,9 @@ export const channels = {
   connectChrome: 'openharness:chrome:connect',
   chromeConnectionStatus: 'openharness:chrome:status',
   computerSettings: 'openharness:computer:settings',
+  computerPreview: 'openharness:computer:preview',
+  computerPreviewWatch: 'openharness:computer:preview-watch',
+  computerPreviewCollapse: 'openharness:computer:preview-collapse',
   resolveResource: 'openharness:resource:resolve',
   resourceAction: 'openharness:resource:action',
   openExternal: 'openharness:resource:external',
@@ -89,6 +93,7 @@ export type BridgeRequest =
   | { operation: 'revokeCommandGrants'; id: string }
   | { operation: 'stopCommand'; id: string; commandId: string }
   | { operation: 'revertFile'; id: string; path: string }
+  | { operation: 'updatePendingInput'; id: string; input: PendingInputAction }
   | { operation: 'resumeRun'; id: string; message?: string; files?: FileReference[] }
   | { operation: 'configureModel'; input: ConfigureModelInput }
   | { operation: 'getModelConfiguration'; id: string }
@@ -104,6 +109,7 @@ export interface ApiRequest {
   /** Main-process access check only; never forwarded in the HTTP body. */
   workspacePath?: string
   body?:
+    | PendingInputAction
     | ExtensionConfig
     | CreateRunInput
     | (ConfigureModelInput & { edit_source_id?: string })
@@ -479,6 +485,30 @@ export function apiRequest(value: unknown): ApiRequest {
                 ...(files?.length ? { files } : {}),
               },
       }
+    }
+    case 'updatePendingInput': {
+      const input = object(request.input)
+      let body: PendingInputAction
+      if (input.action === 'enqueue') {
+        const files = fileReferences(input.files)
+        body = { action: 'enqueue', content: userText(input.content, files), files }
+      } else {
+        const id = identifier(input.id)
+        if (
+          typeof input.revision !== 'number' ||
+          !Number.isSafeInteger(input.revision) ||
+          input.revision < 0
+        )
+          throw new Error('无效的消息版本')
+        if (input.action === 'edit') {
+          if (typeof input.content !== 'string' || [...input.content].length > 4000)
+            throw new Error('消息最多 4,000 个字符')
+          body = { action: 'edit', id, revision: input.revision, content: input.content }
+        } else if (input.action === 'steer' || input.action === 'remove') {
+          body = { action: input.action, id, revision: input.revision }
+        } else throw new Error('无效的消息操作')
+      }
+      return { path: `/api/runs/${identifier(request.id)}/pending-inputs`, method: 'POST', body }
     }
     case 'cancelRun':
       return { path: `/api/runs/${identifier(request.id)}/cancel`, method: 'POST' }

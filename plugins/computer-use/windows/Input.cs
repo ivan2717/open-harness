@@ -106,6 +106,7 @@ namespace OpenHarness.ComputerUse {
                         ForegroundNow(identity); IdleInput(); ExposedPoint(point, identity);
                         DeliveryAttempted = true;
                         pattern.Scroll(ScrollAmount.NoAmount, amount);
+                        VisualFeedback.Pointer(point.X - state.Frame.Left, point.Y - state.Frame.Top, false);
                         return;
                     }
                 }
@@ -130,6 +131,7 @@ namespace OpenHarness.ComputerUse {
             DeliveryAttempted = true;
             if (Native.SendMessageTimeout(window, 0x020A, new UIntPtr(wheel), new IntPtr(unchecked((int)position)), 0x23, 1500, out ignored) == IntPtr.Zero)
                 throw new ComputerError("INPUT_UNCERTAIN", "The target did not acknowledge the wheel message. It may already have scrolled. Observe before continuing; this action is not retried.");
+            VisualFeedback.Pointer(point.X - state.Frame.Left, point.Y - state.Frame.Top, false);
         }
         internal static void ParseKey(string value, out ushort code, out List<string> modifiers) {
             var parts = value.ToLowerInvariant().Split('+');
@@ -216,6 +218,9 @@ namespace OpenHarness.ComputerUse {
             identity.RequireForeground(); state.RefreshWindow(identity); state.Reference(reference, identity);
             ForegroundNow(identity); IdleInput();
             DeliveryAttempted = true; dispatch();
+            System.Windows.Rect box;
+            if (state.LocalBounds.TryGetValue(reference, out box) && !box.IsEmpty)
+                VisualFeedback.Pointer((int)(box.X + box.Width / 2), (int)(box.Y + box.Height / 2), true);
         }
         internal static void Dispatch(string method, Dictionary<string, object> args, Observation state, AppIdentity identity) {
             identity.RequireForeground(); IdleInput();
@@ -245,6 +250,7 @@ namespace OpenHarness.ComputerUse {
                 for (int i = 0; i < count; i++) { events.Add(Mouse(down, 0, 0, 0)); events.Add(Mouse(up, 0, 0, 0)); }
                 events.AddRange(releases); releases.Insert(0, Mouse(up, 0, 0, 0));
                 Send(events.ToArray(), releases.ToArray(), identity, delegate { SamePoint(point, Point(x, y, state, identity)); });
+                VisualFeedback.Pointer((int)x, (int)y, true);
                 return;
             }
             if (method == "drag") {
@@ -264,6 +270,7 @@ namespace OpenHarness.ComputerUse {
                     SamePoint(from, Point(fromX, fromY, state, identity)); SamePoint(to, Point(toX, toY, state, identity));
                     for (int step = 1; step < 16; step++) ExposedPoint(new Native.Point(from.X + (int)Math.Round((to.X - from.X) * step / 16.0), from.Y + (int)Math.Round((to.Y - from.Y) * step / 16.0)), identity);
                 });
+                VisualFeedback.Pointer((int)toX, (int)toY, true);
                 return;
             }
             if (method == "type") {

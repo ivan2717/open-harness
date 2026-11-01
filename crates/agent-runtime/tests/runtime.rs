@@ -150,6 +150,8 @@ fn event_names(run: &AgentRun) -> Vec<&'static str> {
             RunEvent::RunCompleted { .. } => "RunCompleted",
             RunEvent::RunFailed { .. } => "RunFailed",
             RunEvent::RunCancelled => "RunCancelled",
+            RunEvent::UserInputReceived { .. } => "UserInputReceived",
+            RunEvent::ModelResponseInterrupted { .. } => "ModelResponseInterrupted",
             RunEvent::RunResumed { .. } => "RunResumed",
             RunEvent::RunPaused { .. } => "RunPaused",
             RunEvent::ToolLoopWarning { .. } => "ToolLoopWarning",

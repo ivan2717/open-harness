@@ -28,6 +28,7 @@ import Foundation
         app.run()
     }
     @MainActor static func serve(_ lines: AsyncStream<String>) async {
+        defer { VisualFeedback.shared.stop() }
         var selected: AppIdentity?
         var selectedWindow: WindowBinding?
         var last: Observation?
@@ -41,11 +42,17 @@ import Foundation
                       let request = try JSONSerialization.jsonObject(with: data) as? [String: Any],
                       let method = request["method"] as? String,
                       let params = request["params"] as? [String: Any] else { throw ComputerError("INVALID_REQUEST", "Invalid helper request.") }
+                if method == "preview_control", request["id"] == nil {
+                    FeedbackPreview.emit = { value in emit(["event": "preview", "preview": value]) }
+                    VisualFeedback.shared.setEnabled(params["enabled"] as? Bool == true)
+                    continue
+                }
                 id = request["id"] ?? NSNull()
                 var result: [String: Any] = [:]
                 switch method {
                 case "status":
                     result = ["platform": "macos", "capabilities": ["input_scope": "background_window", "window_selection": true, "window_discovery": "window_server", "accessibility_tree_optional": true, "keyboard_window_fallback": true, "coordinates_require_screenshot": true, "actions": ["click", "type", "key", "scroll", "drag", "set_value", "action"], "verification": "dispatch_only_except_accessibility_readback", "text_select_all": "accessibility_selection_range", "routing": "pid_and_window", "system_focus_changes": false], "accessibility": AXIsProcessTrusted(), "screen_recording": CGPreflightScreenCaptureAccess(), "selected_app": selected?.json as Any? ?? NSNull(), "selected_window_id": selectedWindow.map { Int($0.id) } as Any? ?? NSNull(), "permissions_requested": false, "helper_path": URL(fileURLWithPath: CommandLine.arguments[0]).standardizedFileURL.path, "permission_app_name": LocalIPC.displayName, "permission_bundle_id": Bundle.main.bundleIdentifier as Any? ?? NSNull(), "permission_settings": ["accessibility": "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility", "screen_recording": "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"]]
+                    result["visual_feedback"] = VisualFeedback.shared.status
                 case "request_accessibility", "request_screen_recording":
                     // Host-only entry points, deliberately absent from the MCP tool catalog.
                     // The desktop UI calls these only after the user clicks a permission button.
@@ -66,6 +73,7 @@ import Foundation
                         return ["name": app.localizedName ?? bundle, "bundle_id": bundle, "pid": app.processIdentifier]
                     }]
                 case "select_app":
+                    VisualFeedback.shared.stop()
                     selected = nil; selectedWindow = nil; last = nil; snapshotID = nil; screenshotImage = nil
                     try requireAX(); try requireUnlocked()
                     guard let bundle = params["bundle_id"] as? String, let pid = params["pid"] as? Int32,
@@ -95,6 +103,7 @@ import Foundation
                     // and dimensions must survive observation/capture.
                     let finalFrame = try validateWindow(identity, binding, expectedSize: state.frame)
                     let verified = state.withFrame(finalFrame)
+                    VisualFeedback.shared.observe(identity, binding, frame: finalFrame)
                     last = verified; snapshotID = UUID().uuidString; screenshotImage = captured
                     result = verified.json
                     result["snapshot_id"] = snapshotID

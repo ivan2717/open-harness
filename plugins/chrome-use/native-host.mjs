@@ -45,7 +45,11 @@ export async function startNativeHost({ config, input = process.stdin, output = 
         return;
       }
       if (session_id !== socket.sessionId) { socket.destroy(); return; }
-      try { validate(method, params); } catch (error) { writeClient(socket, { id, error: error.message }); return; }
+      try {
+        if (method === '__openharness_preview') {
+          if (typeof params.frame !== 'boolean' || Object.keys(params).some(key => key !== 'frame')) throw new Error('Invalid preview request.');
+        } else validate(method, params);
+      } catch (error) { writeClient(socket, { id, error: error.message }); return; }
       if (pending.size >= 64 || [...pending.values()].some(item => item.socket === socket)) { writeClient(socket, { id, error: 'A Chrome operation is already pending.' }); return; }
       const routedId = randomUUID();
       const timer = setTimeout(() => { pending.delete(routedId); writeClient(socket, { id, error: 'Chrome response timed out; action effect may be uncertain.' }); socket.destroy(); }, 22000);

@@ -473,6 +473,12 @@ impl ControlRegistry {
         }
     }
     pub fn revoke_run(&mut self, run: &str) {
+        self.release_run(run, true);
+    }
+    pub fn interrupt_run(&mut self, run: &str) {
+        self.release_run(run, false);
+    }
+    fn release_run(&mut self, run: &str, revoke: bool) {
         let scope = self.authorization_scope(run).to_owned();
         let members = if scope == run {
             self.family_members(run)
@@ -483,7 +489,7 @@ impl ControlRegistry {
             *self.epochs.entry(member.clone()).or_default() += 1;
         }
         self.access.retain(|(owner, _), _| !members.contains(owner));
-        if scope == run {
+        if revoke && scope == run {
             self.remembered.retain(|(owner, _), _| owner != run);
             self.permissions.stop(run);
         }
@@ -522,6 +528,34 @@ impl ControlRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn interrupt_invalidates_live_handles_but_preserves_family_permissions() {
+        let mut registry = ControlRegistry::default();
+        registry.bind_scope("child", "root");
+        registry
+            .remember_permission(
+                "root",
+                "s",
+                "Browser",
+                "v1",
+                ControlCapability::Browser,
+                None,
+                false,
+            )
+            .unwrap();
+        registry
+            .grant("child", "s", "Browser", "v1", ControlScope::Browser, true)
+            .unwrap();
+        let epoch = registry.operation_epoch("child", "s");
+        registry.interrupt_run("root");
+        assert!(registry.check_epoch("child", epoch).is_err());
+        assert!(registry.current_scope("child", "s", "v1").is_none());
+        assert!(registry.capability_permits("child", "s", "v1", ControlCapability::Browser));
+        assert!(registry.permits("child", "s", "v1", Some(&ControlScope::Browser)));
+        registry.revoke_run("root");
+        assert!(!registry.capability_permits("child", "s", "v1", ControlCapability::Browser));
+        assert!(!registry.permits("child", "s", "v1", Some(&ControlScope::Browser)));
+    }
     #[test]
     fn reusable_child_grants_remain_visible_and_revocable_after_child_stops() {
         let mut registry = ControlRegistry::default();

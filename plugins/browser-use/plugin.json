@@ -1,7 +1,9 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "browser-use",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Operate an isolated local browser using page snapshots, element references and screenshots.",
-  "interface": { "displayName": "Browser Use" }
+  "interface": {
+    "displayName": "Browser Use"
+  }
 }

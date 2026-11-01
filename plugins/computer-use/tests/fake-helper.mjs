@@ -4,6 +4,7 @@ let selected = false;
 const log = process.argv[2];
 for await (const line of createInterface({ input: process.stdin })) {
   const { id, method, params } = JSON.parse(line);
+  if (method === 'preview_control') continue;
   appendFileSync(log, `${method}\n`);
   if (method === 'mark_eof') process.stdin.once('end', () => appendFileSync(log, 'graceful_eof\n'));
   if (method === 'hang') await new Promise(() => {});
@@ -13,6 +14,7 @@ for await (const line of createInterface({ input: process.stdin })) {
   if (method === 'wrong_id') { process.stdout.write(JSON.stringify({ id: -1, result: {} }) + '\n'); continue; }
   if (method === 'fail') { process.stdout.write(JSON.stringify({ id, error: { code: 'STATE_CHANGED', message: 'Observe again.', recoverable: true, dispatched: false, next: 'Call computer_observe.' } }) + '\n'); continue; }
   if (method === 'crash') process.exit(1);
+  if (method === 'preview') process.stdout.write(JSON.stringify({ event: 'preview', preview: { active: true, title: 'Fixture', width: 20, height: 20, jpeg: '/9j/abcd' } }) + '\n');
   if (method === 'unicode_chunks') {
     const data = Buffer.from(JSON.stringify({ id, result: { text: '中文🙂' } }) + '\n');
     for (const byte of data) {

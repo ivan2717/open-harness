@@ -253,7 +253,10 @@ impl AgentRun {
             .rev()
             .take_while(|entry| {
                 entry.step == self.current_step
-                    && !matches!(entry.event, RunEvent::RunResumed { .. })
+                    && !matches!(
+                        entry.event,
+                        RunEvent::RunResumed { .. } | RunEvent::UserInputReceived { .. }
+                    )
             })
             .collect();
         let mut calls = Vec::new();
@@ -375,16 +378,37 @@ impl AgentRun {
     }
 
     fn validate_event(&self, event: &RunEvent) -> Result<(RunStatus, StepPhase), AgentRunError> {
+        if let RunEvent::UserInputReceived { id, .. } = event
+            && (id.is_empty() || self.events.iter().any(|entry| {
+                matches!(
+                    &entry.event, RunEvent::UserInputReceived { id: previous, .. } if previous == id
+                )
+            }))
+        {
+            return Err(AgentRunError::InvalidResume);
+        }
         if let RunEvent::RunResumed {
             content,
             files,
             interrupted_calls,
+        }
+        | RunEvent::UserInputReceived {
+            content,
+            files,
+            interrupted_calls,
+            ..
         } = event
         {
             if (content.trim().is_empty() && files.is_empty())
                 || *interrupted_calls != self.interrupted_tool_calls()
             {
                 return Err(AgentRunError::InvalidResume);
+            }
+            return Ok((RunStatus::Running, StepPhase::Ready));
+        }
+        if let RunEvent::ModelResponseInterrupted { .. } = event {
+            if !self.is_running() || self.phase != StepPhase::AwaitingModelResponse {
+                return Err(self.invalid_phase(event.name()));
             }
             return Ok((RunStatus::Running, StepPhase::Ready));
         }
@@ -620,6 +644,9 @@ impl AgentRun {
             }
             RunEvent::RunResumed {
                 interrupted_calls, ..
+            }
+            | RunEvent::UserInputReceived {
+                interrupted_calls, ..
             } => {
                 self.pending_tool_calls.clear();
                 for call in interrupted_calls {
@@ -741,6 +768,18 @@ pub enum RunEvent {
         files: Vec<TextFileReference>,
         interrupted_calls: Vec<InterruptedToolCall>,
     },
+    /// Public text only: never authorizes tool calls or replays opaque reasoning.
+    ModelResponseInterrupted {
+        content: String,
+    },
+    /// User input delivered at an execution boundary, with unresolved work settled.
+    UserInputReceived {
+        id: String,
+        content: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        files: Vec<TextFileReference>,
+        interrupted_calls: Vec<InterruptedToolCall>,
+    },
     RunCompleted {
         answer: String,
     },
@@ -769,6 +808,7 @@ impl RunEvent {
         match self {
             Self::RunStarted { files, .. }
             | Self::InputReceived { files, .. }
+            | Self::UserInputReceived { files, .. }
             | Self::RunResumed { files, .. } => files,
             _ => &[],
         }
@@ -790,6 +830,7 @@ impl RunEvent {
             Self::ToolCallSucceeded { images, .. } => images.iter_mut().collect(),
             Self::RunStarted { files, .. }
             | Self::InputReceived { files, .. }
+            | Self::UserInputReceived { files, .. }
             | Self::RunResumed { files, .. } => files
                 .iter_mut()
                 .filter_map(|file| file.image.as_mut())
@@ -805,7 +846,9 @@ impl RunEvent {
                 files,
                 supports_images,
             )),
-            Self::InputReceived { content, files } | Self::RunResumed { content, files, .. } => {
+            Self::InputReceived { content, files }
+            | Self::UserInputReceived { content, files, .. }
+            | Self::RunResumed { content, files, .. } => {
                 Some(crate::user_input_message(content, files, supports_images))
             }
             _ => None,
@@ -819,7 +862,9 @@ impl RunEvent {
             Self::RunStarted { instruction, files } => {
                 Some(crate::format_user_input(instruction, files))
             }
-            Self::InputReceived { content, files } | Self::RunResumed { content, files, .. } => {
+            Self::InputReceived { content, files }
+            | Self::UserInputReceived { content, files, .. }
+            | Self::RunResumed { content, files, .. } => {
                 Some(crate::format_user_input(content, files))
             }
             _ => None,
@@ -831,6 +876,7 @@ impl RunEvent {
         let mut event = self.clone();
         if let Self::RunStarted { files, .. }
         | Self::InputReceived { files, .. }
+        | Self::UserInputReceived { files, .. }
         | Self::RunResumed { files, .. } = &mut event
         {
             for file in files {
@@ -883,6 +929,8 @@ impl RunEvent {
             Self::AgentMessageReceived { .. } => "AgentMessageReceived",
             Self::RunFailed { .. } => "RunFailed",
             Self::RunCancelled => "RunCancelled",
+            Self::UserInputReceived { .. } => "UserInputReceived",
+            Self::ModelResponseInterrupted { .. } => "ModelResponseInterrupted",
         }
     }
 
@@ -894,6 +942,8 @@ impl RunEvent {
             | Self::RunPaused { .. }
             | Self::AgentMessageReceived { .. }
             | Self::RunFailed { .. }
+            | Self::UserInputReceived { .. }
+            | Self::ModelResponseInterrupted { .. }
             | Self::RunCancelled => false,
 
             Self::ModelResponseReceived { .. }

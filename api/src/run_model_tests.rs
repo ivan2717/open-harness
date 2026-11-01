@@ -65,6 +65,8 @@ impl Fixture {
             .state
             .make_entry(
                 RunDetail {
+                    pending_inputs: Vec::new(),
+                    pending_inputs_paused: false,
                     summary: RunSummary {
                         reasoning_settings_version: 1,
                         id: id.into(),

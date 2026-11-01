@@ -55,7 +55,8 @@ function fixture() {
         commands.push({ target, method, args });
         if (method === 'Page.getFrameTree') return { frameTree: { frame: { id: `frame-${target.tabId}`, url: pages.get(target.tabId).url } } };
         if (method === 'Page.createIsolatedWorld') return { executionContextId: target.tabId * 100 };
-        if (method === 'Page.captureScreenshot') return { data: 'aW1hZ2U=' };
+        if (method === 'Page.captureScreenshot') return { data: '/9j/aW1hZ2U=' };
+        if (method === 'Page.getLayoutMetrics') return { cssVisualViewport: { clientWidth: 1280, clientHeight: 800, pageX: 0, pageY: 0 } };
         if (method === 'Runtime.callFunctionOn') {
           const operation = args.arguments[0].value;
           if (operation === 'snapshot') return { result: { value: { version: 0, url: pages.get(target.tabId).url, title: 'Observed', text: 'hello', elements: [{ ref: 'e1', role: 'button', name: 'Next' }] } } };
@@ -428,4 +429,45 @@ test('an isolated world refuses an uncommitted or unapproved document before rea
     const context = { location: { href, origin }, get document() { throw new Error('DOM must remain unread'); } };
     assert.throws(() => runInNewContext(`(${pageOperation.toString()})('snapshot', {expected_origin:'https://example.com'})`, context), expected);
   }
+});
+
+test('private preview captures only selected background tab without consuming action revision', async () => {
+  const { controller, pages, commands } = fixture();
+  assert.deepEqual(await controller.call(A, '__openharness_preview', { frame: true }), { active: false });
+  await controller.share(2);
+  const snapshot = await controller.call(A, 'chrome_select_tab', { tab_id: 2, origin: 'https://shared.example' });
+  const before = commands.length;
+  const frame = await controller.call(A, '__openharness_preview', { frame: true });
+  assert.equal(frame.active, true); assert.match(frame.jpeg, /^\/9j\//);
+  assert.equal(frame.width, 960); assert.equal(frame.height, 600);
+  assert.equal(controller.sessions.get(A).revision, snapshot.revision);
+  assert.equal(pages.get(1).active, true); assert.equal(pages.get(2).active, false);
+  assert(!commands.slice(before).some(command => /Input\.|bringToFront|Runtime\./.test(command.method)));
+  await controller.call(A, 'chrome_action', { action: 'click', revision: snapshot.revision, ref: 'e1' });
+  const captures = commands.filter(c => c.method === 'Page.captureScreenshot').length;
+  assert.equal((await controller.call(A, '__openharness_preview', { frame: false })).jpeg, undefined);
+  assert.equal(commands.filter(c => c.method === 'Page.captureScreenshot').length, captures);
+  await controller.revoke(2);
+  assert.deepEqual(await controller.call(A, '__openharness_preview', { frame: true }), { active: false });
+});
+
+test('preview drops frames across origin changes and revocation during capture', async () => {
+  const { controller, api, pages } = fixture();
+  await controller.share(2);
+  await controller.call(A, 'chrome_select_tab', { tab_id: 2, origin: 'https://shared.example' });
+  const send = api.debugger.sendCommand;
+  api.debugger.sendCommand = async (...args) => {
+    const result = await send(...args);
+    if (args[1] === 'Page.captureScreenshot') pages.get(2).url = 'https://private.example/secret';
+    return result;
+  };
+  const changed = await controller.call(A, '__openharness_preview', { frame: true });
+  assert.equal(changed.jpeg, undefined); assert.equal(changed.unavailable, true);
+  pages.get(2).url = 'https://shared.example/start';
+  api.debugger.sendCommand = async (...args) => {
+    const result = await send(...args);
+    if (args[1] === 'Page.captureScreenshot') await controller.revoke(2);
+    return result;
+  };
+  assert.deepEqual(await controller.call(A, '__openharness_preview', { frame: true }), { active: false });
 });

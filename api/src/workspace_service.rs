@@ -549,6 +549,9 @@ impl AppState {
                 return Err(ServiceError::internal(error));
             }
         }
+        entry
+            .snapshot
+            .update(|detail| detail.pending_inputs_paused = false)?;
         let snapshot = entry.snapshot.get();
         execute(self.clone(), entry.clone(), run);
         Ok(snapshot)

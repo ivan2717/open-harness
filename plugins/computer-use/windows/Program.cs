@@ -23,7 +23,8 @@ namespace OpenHarness.ComputerUse {
                     "selected_app", selected == null ? null : selected.ToJson(), "selected_window_id", selected == null ? null : selected.SelectedWindowId, "permissions_requested", false,
                     "helper_path", Assembly.GetExecutingAssembly().Location, "helper_pid", Process.GetCurrentProcess().Id,
                     "coordinate_space", Coordinates, "capabilities", Json.Object("ui_automation", true, "window_screenshot", true,
-                    "foreground_input", true, "background_input", false, "elevated_apps", false, "password_input", false));
+                    "foreground_input", true, "background_input", false, "elevated_apps", false, "password_input", false,
+                    "window_preview", true, "visual_cursor", true), "visual_feedback", VisualFeedback.State());
             }
             if (method == "apps") { Arguments.Keys(args); return AppIdentity.Apps(); }
             if (method == "windows") {
@@ -32,6 +33,7 @@ namespace OpenHarness.ComputerUse {
                 return selected.Windows();
             }
             if (method == "select_app") {
+                VisualFeedback.Stop();
                 selected = null; ClearSnapshot();
                 Arguments.Keys(args, "bundle_id", "pid", "window_id");
                 selected = AppIdentity.Select(Arguments.String(args, "bundle_id", 256), Arguments.Integer(args, "pid", 1, Int32.MaxValue), args.ContainsKey("window_id") ? (long?)Arguments.WindowId(args, "window_id") : null);
@@ -51,6 +53,7 @@ namespace OpenHarness.ComputerUse {
                 initial.RefreshWindow(selected);
                 Observation verified = initial;
                 verified.Screenshot = image;
+                VisualFeedback.Observe(selected);
                 last = verified; snapshotId = Guid.NewGuid().ToString();
                 var result = verified.ToJson(selected);
                 result["snapshot_id"] = snapshotId; result["selected_app"] = selected.ToJson();
@@ -78,9 +81,12 @@ namespace OpenHarness.ComputerUse {
             else if (method == "drag") Arguments.Keys(args, "snapshot_id", "from_x", "from_y", "to_x", "to_y", "modifiers");
             else if (method == "set_value") Arguments.Keys(args, "snapshot_id", "ref", "value");
             else Arguments.Keys(args, "snapshot_id", "ref", "action");
-            selected.RequireForeground();
-            previous.RefreshWindow(selected);
-            Input.Dispatch(method, args, previous, selected);
+            VisualFeedback.SuspendInput();
+            try {
+                selected.RequireForeground();
+                previous.RefreshWindow(selected);
+                Input.Dispatch(method, args, previous, selected);
+            } finally { VisualFeedback.ResumeInput(); }
             return Json.Object("dispatched", true, "verified", false, "verification", Json.Object("status", "not_verified", "method", method), "next", "Observe again and verify the result before continuing.");
         }
     }
@@ -106,6 +112,12 @@ namespace OpenHarness.ComputerUse {
                     var request = Json.Serializer.DeserializeObject(line) as Dictionary<string, object>;
                     if (request == null) throw Arguments.Invalid();
                     Arguments.Keys(request, "id", "method", "params");
+                    if (!request.ContainsKey("id") && request.ContainsKey("method") && (string)request["method"] == "preview_control") {
+                        FeedbackPreview.Emit = delegate(object value) { Emit(Json.Object("event", "preview", "preview", value)); };
+                        var control = request["params"] as Dictionary<string, object>;
+                        if (control != null) VisualFeedback.SetEnabled(Arguments.Boolean(control, "enabled"));
+                        continue;
+                    }
                     object supplied;
                     if (request.TryGetValue("id", out supplied) && (supplied is int || supplied is long || supplied is string && ((string)supplied).Length <= 128)) id = supplied;
                     else throw Arguments.Invalid();

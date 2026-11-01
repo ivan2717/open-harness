@@ -13,7 +13,7 @@ impl AppState {
         if user && entry.snapshot.get().summary.delegation.is_some() {
             self.inner.mailboxes.stop_by_user(id)?;
         }
-        self.inner.extensions.revoke_run(id);
+        self.inner.extensions.interrupt_run(id);
         let _operation = entry.operations.lock().await;
         // Model changes preserve this lock but replace the runtime. Re-read
         // after waiting so cancellation cannot operate on a stale binding.

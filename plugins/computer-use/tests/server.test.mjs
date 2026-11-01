@@ -155,3 +155,16 @@ test('packaged MCP server negotiates and checks native permissions without promp
   assert.equal(observe.result.isError, true);
   assert.match(observe.result.content[0].text, /APP_NOT_SELECTED/);
 });
+
+
+test('preview frames bypass pending tool results and clear on session release', async t => {
+  const frames = [];
+  const { bridge } = fixture(t, { onPreview: value => frames.push(value) });
+  const response = await bridge.request('preview', {});
+  assert.equal(response.method, 'preview');
+  assert.equal(response.jpeg, undefined);
+  assert.equal(frames.length, 1);
+  assert.equal(frames[0].jpeg, '/9j/abcd');
+  bridge.stop();
+  assert.deepEqual(frames.at(-1), { active: false });
+});

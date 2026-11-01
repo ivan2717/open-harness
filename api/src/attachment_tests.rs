@@ -103,6 +103,8 @@ fn rejects_symlink_directories_and_symlink_originals() {
 
 async fn record_run(state: &AppState, id: &str, files: Vec<FileReference>, root: Option<&str>) {
     let detail = RunDetail {
+        pending_inputs: Vec::new(),
+        pending_inputs_paused: false,
         summary: RunSummary {
             reasoning_settings_version: 1,
             reasoning_effort: None,

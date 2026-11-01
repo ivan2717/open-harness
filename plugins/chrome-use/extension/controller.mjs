@@ -19,6 +19,11 @@ export class ChromeController {
   async perform(sessionId, method, args, taskKey) {
     if (!/^[\da-f-]{36}$/.test(sessionId)) throw new Error('Invalid browser session.');
     if (method === 'disconnect') { await this.releaseSession(sessionId); return { released: true }; }
+    // Private host display operation, deliberately absent from tools/list.
+    if (method === '__openharness_preview') {
+      if (typeof args.frame !== 'boolean' || Object.keys(args).some(key => key !== 'frame')) throw new Error('Invalid preview request.');
+      return this.preview(sessionId, args.frame);
+    }
     validate(method, args);
     if (method === 'chrome_status') return { connected: true, allow_new_tabs: this.allowNewTabs, shared_tabs: this.shared.size, background_tabs: true, task_tab_groups: true };
     if (method === 'chrome_tabs') {
@@ -126,6 +131,36 @@ export class ChromeController {
     return session;
   }
   command(tabId, method, params = {}) { return this.api.debugger.sendCommand({ tabId }, method, params); }
+  async preview(sessionId, capture) {
+    const selected = this.sessions.get(sessionId);
+    if (!selected) return { active: false };
+    const unavailable = { active: true, title: 'Chrome', unavailable: true };
+    try {
+      await this.selected(sessionId);
+      const tab = await this.api.tabs.get(selected.tabId);
+      const metadata = { active: true, title: `Chrome · ${tab.title || selected.origin}`.slice(0, 256) };
+      if (!capture) return metadata;
+      const before = (await this.command(selected.tabId, 'Page.getFrameTree')).frameTree.frame;
+      if (committedOrigin(before) !== selected.origin) return unavailable;
+      const metrics = await this.command(selected.tabId, 'Page.getLayoutMetrics');
+      const view = metrics.cssVisualViewport;
+      if (!view || !(view.clientWidth > 0 && view.clientHeight > 0)) return unavailable;
+      const scale = Math.min(1, 960 / Math.max(view.clientWidth, view.clientHeight));
+      const { data } = await this.command(selected.tabId, 'Page.captureScreenshot', {
+        format: 'jpeg', quality: 55, fromSurface: true, captureBeyondViewport: false,
+        clip: { x: view.pageX, y: view.pageY, width: view.clientWidth, height: view.clientHeight, scale },
+      });
+      // A navigation/revocation during capture must never display the new page
+      // under the old grant. This read does not consume the action revision.
+      await this.selected(sessionId);
+      const after = (await this.command(selected.tabId, 'Page.getFrameTree')).frameTree.frame;
+      if (this.sessions.get(sessionId) !== selected || after.loaderId !== before.loaderId || after.url !== before.url || committedOrigin(after) !== selected.origin) return unavailable;
+      if (typeof data !== 'string' || !data.startsWith('/9j/') || data.length > 800_000) return unavailable;
+      return { ...metadata, width: Math.round(view.clientWidth * scale), height: Math.round(view.clientHeight * scale), jpeg: data };
+    } catch {
+      return this.sessions.has(sessionId) ? unavailable : { active: false };
+    }
+  }
   async runPage(session, operation, args) {
     const tree = await this.command(session.tabId, 'Page.getFrameTree');
     const frame = tree.frameTree.frame;

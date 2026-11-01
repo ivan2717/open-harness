@@ -1,0 +1,80 @@
+.pending-inputs {
+  position: relative;
+  margin: 8px 12px -12px;
+  padding: 5px 10px 17px;
+  background: #f0f2eb;
+  border: 1px solid #e2e6dc;
+  border-bottom: 0;
+  border-radius: 14px 14px 0 0;
+  max-height: 230px;
+  overflow-y: auto;
+}
+.pending-input {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 38px;
+  color: #677267;
+}
+.pending-input + .pending-input {
+  border-top: 1px solid #e2e6dc;
+}
+.pending-input > svg,
+.pending-input > button,
+.pending-input > small {
+  flex-shrink: 0;
+}
+.pending-input-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #303c34;
+}
+.pending-input .icon-button {
+  width: 28px;
+  height: 28px;
+}
+.pending-steer {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+  padding: 5px 7px;
+}
+.pending-input-hint {
+  margin: 2px 0 0 25px;
+  font-size: 11px;
+  color: #7e897c;
+}
+.pending-input-editor {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 0;
+}
+.pending-input-editor textarea {
+  display: block;
+  width: 100%;
+  min-height: 65px;
+  max-height: 130px;
+  resize: vertical;
+  border: 1px solid #cdd6c6;
+  border-radius: 8px;
+  padding: 8px;
+  background: #fbfcf8;
+  font: inherit;
+  color: inherit;
+}
+.pending-input-edit-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 5px;
+}
+.message-interrupted {
+  margin-left: 10px;
+  font-size: 11px;
+  font-weight: 400;
+  color: #7e897c;
+}

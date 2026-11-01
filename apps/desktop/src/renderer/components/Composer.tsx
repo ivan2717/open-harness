@@ -1,5 +1,12 @@
-import { useLayoutEffect, useRef, useState, type ClipboardEvent, type DragEvent } from 'react'
-import { ArrowUp, LoaderCircle, Square } from 'lucide-react'
+import {
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ClipboardEvent,
+  type DragEvent,
+  type ReactNode,
+} from 'react'
+import { ArrowUp, ListEnd, LoaderCircle, Square } from 'lucide-react'
 import type { ModelInfo, FileReference } from '../../shared/contracts'
 import { fileReferenceSize } from '../../shared/file-references'
 import { useUiStore, type ProjectSelection } from '../state/ui-store'
@@ -36,6 +43,7 @@ interface ComposerProps {
   submitDisabledReason?: string
   autoFocus?: boolean
   runId?: string
+  queuedMessages?: ReactNode
 }
 
 export function Composer({
@@ -60,6 +68,7 @@ export function Composer({
   submitDisabledReason,
   autoFocus,
   runId,
+  queuedMessages,
 }: ComposerProps) {
   const draft = useUiStore((state) => state.drafts[draftKey] ?? '')
   const setDraft = useUiStore((state) => state.setDraft)
@@ -82,14 +91,14 @@ export function Composer({
   const canSubmit =
     Boolean(draft.trim() || references.files.length) &&
     !pending &&
-    !running &&
+    !stopping &&
     !disabled &&
     !submitDisabledReason &&
     !imageInputError &&
     !choosing &&
     !references.pending
   const controlsBusy = pending || choosing || references.pending
-  const filesDisabled = controlsBusy || disabled || running
+  const filesDisabled = controlsBusy || disabled || stopping
 
   useLayoutEffect(() => {
     const field = textarea.current
@@ -210,6 +219,7 @@ export function Composer({
         onChange={onProjectChange}
         disabled={controlsBusy}
       />
+      {queuedMessages}
       <div
         className={`composer ${dragging ? 'composer-dragging' : ''}`}
         onDragEnter={(event) => {
@@ -250,7 +260,7 @@ export function Composer({
           autoFocus={autoFocus}
           rows={2}
           value={draft}
-          disabled={disabled || running}
+          disabled={disabled || stopping}
           onChange={(event) => setDraft(draftKey, event.target.value)}
           onPaste={pasteFiles}
           onCompositionStart={() => setComposing(true)}
@@ -299,33 +309,40 @@ export function Composer({
                 (running ? '任务运行中，停止或等待本轮结束后可切换模型和思考强度。' : undefined)
               }
             />
-            {running ? (
+            {(!running || Boolean(draft.trim() || references.files.length)) && (
+              <button
+                className="send-button"
+                disabled={!canSubmit || stopping}
+                onClick={() => void submit()}
+                aria-label={running ? '暂存追加消息' : '开始运行'}
+                aria-description={imageInputError ?? submitDisabledReason}
+                title={
+                  imageInputError ??
+                  submitDisabledReason ??
+                  (running ? '暂存消息 · 点击引导后发送' : '发送 · Enter')
+                }
+              >
+                {pending ? (
+                  <LoaderCircle size={17} className="animate-spin" />
+                ) : running ? (
+                  <ListEnd size={19} />
+                ) : (
+                  <ArrowUp size={19} />
+                )}
+              </button>
+            )}
+            {running && (
               <button
                 className="send-button stop-button"
                 onClick={onStop}
                 disabled={stopping}
                 aria-label="停止运行"
-                title="停止运行"
+                title="停止当前任务，保留会话"
               >
                 {stopping ? (
                   <LoaderCircle size={16} className="animate-spin" />
                 ) : (
                   <Square size={13} fill="currentColor" />
-                )}
-              </button>
-            ) : (
-              <button
-                className="send-button"
-                disabled={!canSubmit}
-                onClick={() => void submit()}
-                aria-label="开始运行"
-                title={imageInputError ?? submitDisabledReason ?? '发送 · Enter'}
-                aria-description={imageInputError ?? submitDisabledReason}
-              >
-                {pending ? (
-                  <LoaderCircle size={17} className="animate-spin" />
-                ) : (
-                  <ArrowUp size={19} />
                 )}
               </button>
             )}

@@ -10,7 +10,9 @@
         "DISPLAY",
         "WAYLAND_DISPLAY",
         "XDG_RUNTIME_DIR",
-        "XAUTHORITY"
+        "XAUTHORITY",
+        "OPENHARNESS_PREVIEW_ENDPOINT",
+        "OPENHARNESS_PREVIEW_RUNTIME"
       ]
     }
   }

@@ -538,7 +538,7 @@ impl ExtensionHost {
     pub fn revoke_run(&self, run: &str) {
         // Same order as authorization: control registry -> client cache.
         let mut controls = self.controls.lock().unwrap();
-        self.revoke_run_locked(&mut controls, run);
+        self.release_run_locked(&mut controls, run, true);
     }
 
     /// Restore host policy, or invalidate outstanding operations and selected
@@ -546,17 +546,26 @@ impl ExtensionHost {
     pub fn set_approval_mode(&self, run: &str, mode: agent_local::ApprovalMode) {
         let mut controls = self.controls.lock().unwrap();
         if controls.set_approval_mode(run, mode) {
-            self.revoke_run_locked(&mut controls, run);
+            self.release_run_locked(&mut controls, run, true);
         }
     }
 
-    fn revoke_run_locked(&self, controls: &mut control::ControlRegistry, run: &str) {
+    pub fn interrupt_run(&self, run: &str) {
+        let mut controls = self.controls.lock().unwrap();
+        self.release_run_locked(&mut controls, run, false);
+    }
+
+    fn release_run_locked(&self, controls: &mut control::ControlRegistry, run: &str, revoke: bool) {
         let members = if controls.authorization_scope(run) == run {
             controls.family_members(run)
         } else {
             vec![run.into()]
         };
-        controls.revoke_run(run);
+        if revoke {
+            controls.revoke_run(run);
+        } else {
+            controls.interrupt_run(run);
+        }
         for member in &members {
             self.approvals.clear_run(member);
         }

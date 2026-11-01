@@ -59,6 +59,8 @@ impl Fixture {
         let child = id != "root";
         let now = time::now();
         let detail = RunDetail {
+            pending_inputs: Vec::new(),
+            pending_inputs_paused: false,
             summary: RunSummary {
                 delegation: child.then(|| Delegation {
                     parent_run_id: "root".into(),

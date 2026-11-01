@@ -216,3 +216,15 @@ Official API references:
 - https://developer.chrome.com/docs/extensions/reference/api/debugger
 - https://developer.chrome.com/docs/extensions/reference/api/tabs
 - https://developer.chrome.com/docs/extensions/reference/api/tabGroups
+
+### In-app browser preview
+
+The desktop passes a host-owned `OPENHARNESS_PREVIEW_RUNTIME` module and an
+authenticated `OPENHARNESS_PREVIEW_ENDPOINT`. After a successful open/select/read,
+the plugin displays the currently selected, authorized tab in the app's draggable
+preview. Private `__openharness_preview` messages capture a bounded viewport via
+CDP without activating a tab, reading other tabs, or changing model snapshot
+revisions. They are not MCP tools or model messages. Capture pauses when the view
+is collapsed or the app is hidden; metadata checks detect released/closed tabs.
+Frames remain in memory. The browser extension must be reloaded after an unpacked
+upgrade to version 0.3.0. This path is shared by macOS and Windows/Edge.

@@ -173,6 +173,18 @@ the default is 4, and accepted values are 1–8. A full pool rejects another spa
 it does not silently queue it. These settings are currently API options, without
 a desktop configuration form.
 
+While a desktop task runs, new messages remain in a durable queue above the
+composer. They remain drafts until the user explicitly chooses **引导** on a
+message. Finishing a response, resuming a task, or restarting the app never sends
+unselected drafts. Steering interrupts an unfinished model
+response, but lets an in-flight tool settle before skipping remaining old calls.
+Queued messages can be edited or removed before delivery. **停止** cancels the
+current execution and owned child work; it preserves public partial replies,
+conversation history, queued messages and existing permissions. It does not
+roll back committed effects or automatically resume queued work. Continue with
+a new message, **继续任务**, or **引导**; uncertain operations are checked before
+retrying. Explicit **停止控制** and permission revocation remain separate actions.
+
 The coordinator uses `spawn_agent` for independent work and `agent_control` to
 list, send messages, wait, read results, follow up or interrupt members. Children share
 the project and keep independent persisted histories and context budgets. A bounded

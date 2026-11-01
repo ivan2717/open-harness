@@ -81,6 +81,10 @@ pub(crate) fn router(state: AppState) -> Router {
             "/runs/{id}/messages/{message_id}/files/{index}/content",
             get(attachments::download),
         )
+        .route(
+            "/runs/{id}/pending-inputs",
+            post(pending_input).layer(DefaultBodyLimit::max(32 * 1024 * 1024)),
+        )
         .route("/runs/{id}/cancel", post(cancel))
         .route(
             "/runs/{id}/input",
@@ -393,4 +397,12 @@ async fn events(
             .interval(Duration::from_secs(15))
             .text("keep-alive"),
     ))
+}
+
+async fn pending_input(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(input): Json<crate::contracts::PendingInputAction>,
+) -> Result<Json<RunDetail>, ServiceError> {
+    state.update_pending_input(&id, input).await.map(Json)
 }

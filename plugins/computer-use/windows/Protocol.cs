@@ -20,7 +20,7 @@ namespace OpenHarness.ComputerUse {
             for (int i = 0; i < entries.Length; i += 2) value.Add((string)entries[i], entries[i + 1]);
             return value;
         }
-        internal static string Encode(object value) { return Serializer.Serialize(value); }
+        internal static string Encode(object value) { return new JavaScriptSerializer { MaxJsonLength = 6 * 1024 * 1024, RecursionLimit = 32 }.Serialize(value); }
         internal static string Hash(string value) {
             using (var sha = SHA256.Create()) return BitConverter.ToString(sha.ComputeHash(Encoding.UTF8.GetBytes(value))).Replace("-", "").ToLowerInvariant();
         }

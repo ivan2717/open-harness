@@ -114,6 +114,19 @@ impl ModelStreamAssembler {
         self.output.ok_or(ModelStreamError::MissingFinish)
     }
 
+    /// Salvage display text only. Tool arguments, reasoning and provider state
+    /// from an incomplete response must never enter a later executable request.
+    pub fn interrupted_text(&self) -> String {
+        self.blocks
+            .iter()
+            .filter(|block| block.kind == ModelBlockKind::Text)
+            .map(|block| match &block.settled {
+                Some(ContentBlock::Text { text }) => text.as_str(),
+                _ => block.text.as_str(),
+            })
+            .collect()
+    }
+
     fn open_block(&mut self, index: usize) -> Result<&mut StreamBlock, ModelStreamError> {
         let block = self
             .blocks

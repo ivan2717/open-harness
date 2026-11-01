@@ -142,7 +142,43 @@ changes. Development builds use ad-hoc signing; release distribution should use 
 stable signing certificate. This implementation never resets permissions, weakens
 a designated requirement or changes a user's existing authorized app automatically.
 
-## Tools and state
+## Local visual feedback
+
+After observing an approved window, a movable, collapsible preview appears
+**inside the Open Harness content area**. It is a React view, not an OS window:
+dragging stays within the app, and minimizing the app or collapsing the view
+pauses capture without stopping the task. Only the selected preview captures
+frames when multiple agent sessions are active. Pointer actions show a neutral
+gray/white cursor with a soft shadow and a brief click pulse. Desktop cursor
+feedback is separate; it never moves the user's mouse or activates an app.
+
+macOS uses a window-scoped ScreenCaptureKit stream (960 pixels, up to 6 fps).
+For AX-less keyboard targets, SCScreenshotManager refreshes at up to 4 fps;
+this avoids a continuous stream's system sharing decoration introducing an
+ambiguous keyboard destination. Windows uses window-only PrintWindow captures
+on one bounded background worker (up to 4 fps). GPU-only or unresponsive windows
+may not provide these frames; the view reports unavailable instead of capturing
+the desktop or changing focus. Windows input restrictions remain unchanged.
+
+The helper binds process birth identity and window ID. Closing/minimizing the
+source, locking the desktop, stopping control, or disconnecting removes the
+preview. JPEG frames travel through a dedicated local sideband, an authenticated
+loopback channel and Electron IPC; they never enter MCP tool results, model
+context, saved history or screenshot files. The broker retains only source
+metadata. This display channel grants no additional input authority.
+
+Run `node plugins/computer-use/tests/feedback-gui.mjs` on an unlocked macOS
+desktop with existing Screen Recording permission for native capture/cursor
+acceptance. For the installed component, set `OPENHARNESS_COMPUTER_APP` to its
+stable app path and run `node plugins/computer-use/tests/gui-smoke.mjs --preview-only`
+for capture pause/resume/release without sending desktop input.
+Run `node --test plugins/computer-use/tests/feedback.test.mjs` on
+Windows for its disposable-window lifecycle test (also included in Windows CI).
+After building the desktop, `node tests/e2e/computer-preview.mjs` from
+`apps/desktop` checks the actual renderer's drag bounds, collapse, source
+selection and removal without opening another Electron window.
+
+## Tool catalog
 
 - `computer_status`: permission, selection and platform capabilities, without app contents.
 - `computer_apps`: running app names, exact application identities and PIDs.

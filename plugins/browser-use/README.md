@@ -105,3 +105,12 @@ model API. They cover semantic reading, filling and one actual form submission,
 navigation, popup tabs, stale refs, coordinate protection, screenshot image
 blocks, serialized actions, uncertain failures, cancellation, fresh-session
 cookies, browser shutdown and an MCP stdio roundtrip.
+
+### In-app preview
+
+When launched by the desktop, the host-owned preview runtime streams the selected
+page into the app's draggable view. Capture is separate from model screenshots
+and does not consume snapshot revisions. Hidden/collapsed views only check target
+availability; closing, cancelling or revoking the target stops displaying frames.
+Frames stay in memory and are never added to MCP output or conversation history.
+The JavaScript path is the same on macOS and Windows.

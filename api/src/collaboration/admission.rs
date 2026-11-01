@@ -81,6 +81,8 @@ impl AppState {
         let id = new_run_id();
         let now = time::now();
         let detail = RunDetail {
+            pending_inputs: Vec::new(),
+            pending_inputs_paused: false,
             summary: RunSummary {
                 reasoning_settings_version: if input.model.is_some() {
                     1

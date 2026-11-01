@@ -17,6 +17,7 @@ import { ModelsPage } from './pages/ModelsPage'
 import { ExtensionsPage } from './pages/ExtensionsPage'
 import { errorMessage } from './lib/format'
 import './styles.css'
+import './pending-inputs.css'
 import './navigation.css'
 import './navigation-pages.css'
 

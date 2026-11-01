@@ -65,6 +65,8 @@ pub(super) fn event_type(event: &RunEvent) -> &'static str {
         RunEvent::InputRequested { .. } => "input_requested",
         RunEvent::InputReceived { .. } => "input_received",
         RunEvent::RunResumed { .. } => "run_resumed",
+        RunEvent::UserInputReceived { .. } => "user_input_received",
+        RunEvent::ModelResponseInterrupted { .. } => "model_response_interrupted",
         RunEvent::RunCompleted { .. } => "run_completed",
         RunEvent::RunPaused { .. } => "run_paused",
         RunEvent::ToolLoopWarning { .. } => "tool_loop_warning",

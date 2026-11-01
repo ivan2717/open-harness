@@ -184,7 +184,7 @@ async fn desktop_routes_use_real_runtime_compaction_and_stable_contracts() {
 }
 
 #[tokio::test]
-async fn cancellation_discards_stream_and_prevents_further_tools() {
+async fn cancellation_preserves_partial_text_and_prevents_further_tools() {
     let directory = Directory::new();
     let state = AppState::open_with_delay(directory.0.clone(), None, Duration::from_millis(15))
         .await
@@ -198,7 +198,7 @@ async fn cancellation_discards_stream_and_prevents_further_tools() {
                 .unwrap()
                 .messages
                 .iter()
-                .any(|message| message.status == "streaming")
+                .any(|message| message.status == "streaming" && !message.text.is_empty())
             {
                 break;
             }
@@ -214,6 +214,12 @@ async fn cancellation_discards_stream_and_prevents_further_tools() {
             .messages
             .iter()
             .all(|message| message.status != "streaming")
+    );
+    assert!(
+        cancelled
+            .messages
+            .iter()
+            .any(|message| message.status == "interrupted" && !message.text.is_empty())
     );
     let count = cancelled.events.len();
     tokio::time::sleep(Duration::from_millis(60)).await;
@@ -827,4 +833,226 @@ async fn screenshot_api_uses_vision_content_and_restores_snapshot_previews() {
     );
     reopened.shutdown().await;
     server.abort();
+}
+
+#[tokio::test]
+async fn queued_input_is_editable_survives_stop_and_restart_and_steers_exactly_once() {
+    let directory = Directory::new();
+    let initial = AppState::open_with_delay(directory.0.clone(), None, Duration::from_millis(30))
+        .await
+        .unwrap();
+    let created = create(&initial, "queue fixture").await;
+    let id = created.summary.id;
+    let path = format!("/api/runs/{id}/pending-inputs");
+    let app = api::app(initial.clone());
+    let (status, queued) = request(app.clone(), "POST", &path, Some(json!({
+        "action":"enqueue", "content":"original queued", "files":[{"name":"evidence.txt","text":"QUEUED_ATTACHMENT_BODY"}]
+    }))).await;
+    assert_eq!(status, StatusCode::OK, "{queued}");
+    assert!(
+        !queued.to_string().contains("QUEUED_ATTACHMENT_BODY"),
+        "streaming snapshots contain only queued attachment metadata"
+    );
+    let message_id = queued["pending_inputs"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let (status, _) = request(
+        app.clone(),
+        "POST",
+        &path,
+        Some(json!({"action":"edit","id":message_id,"revision":0,"content":"corrected queued"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = request(
+        app.clone(),
+        "POST",
+        &path,
+        Some(json!({"action":"remove","id":message_id,"revision":0})),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "stale UI must not delete an edited message"
+    );
+    initial.cancel(&id).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(80)).await;
+    let stopped = initial.get(&id).unwrap();
+    assert_eq!(stopped.summary.status, RunStatus::Cancelled);
+    assert!(stopped.pending_inputs_paused);
+    assert_eq!(stopped.pending_inputs.len(), 1);
+    assert!(
+        !stopped
+            .messages
+            .iter()
+            .any(|message| message.text == "corrected queued")
+    );
+    initial.shutdown().await;
+    // Simulate a process exiting after claiming an input but before delivery.
+    let snapshot_path = directory.0.join("runs").join(format!("{id}.json"));
+    let mut snapshot: Value =
+        serde_json::from_slice(&std::fs::read(&snapshot_path).unwrap()).unwrap();
+    snapshot["pending_inputs_paused"] = json!(false);
+    snapshot["pending_inputs"][0]["steer"] = json!(true);
+    snapshot["pending_inputs"][0]["delivering"] = json!(true);
+    std::fs::write(&snapshot_path, serde_json::to_vec(&snapshot).unwrap()).unwrap();
+    let reopened = state(&directory).await;
+    assert!(reopened.get(&id).unwrap().pending_inputs_paused);
+    assert!(!reopened.get(&id).unwrap().pending_inputs[0].delivering);
+    assert!(!reopened.get(&id).unwrap().pending_inputs[0].steer);
+    assert_eq!(
+        reopened.get(&id).unwrap().pending_inputs[0].content,
+        "corrected queued"
+    );
+    let (status, detail) = request(
+        api::app(reopened.clone()),
+        "POST",
+        &path,
+        Some(json!({"action":"steer","id":message_id,"revision":1})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{detail}");
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let detail = reopened.get(&id).unwrap();
+            if detail.pending_inputs.is_empty() && detail.summary.status == RunStatus::Completed {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let detail = reopened.get(&id).unwrap();
+    let messages: Vec<_> = detail
+        .messages
+        .iter()
+        .filter(|message| message.text == "corrected queued")
+        .collect();
+    assert_eq!(messages.len(), 1);
+    let attachment = reopened
+        .message_file(&id, &messages[0].id, 0)
+        .await
+        .unwrap();
+    assert_eq!(attachment.text, "QUEUED_ATTACHMENT_BODY");
+    reopened.shutdown().await;
+    let restored = state(&directory).await;
+    assert!(restored.get(&id).unwrap().pending_inputs.is_empty());
+    assert_eq!(
+        restored
+            .get(&id)
+            .unwrap()
+            .messages
+            .iter()
+            .filter(|m| m.text == "corrected queued")
+            .count(),
+        1
+    );
+    restored.shutdown().await;
+}
+
+#[tokio::test]
+async fn drafts_require_explicit_steering_after_completion_resume_and_restart() {
+    let directory = Directory::new();
+    let initial = AppState::open_with_delay(directory.0.clone(), None, Duration::from_millis(5))
+        .await
+        .unwrap();
+    let id = create(&initial, "queue tail fixture").await.summary.id;
+    let path = format!("/api/runs/{id}/pending-inputs");
+    let app = api::app(initial.clone());
+    let (status, queued) = request(
+        app.clone(),
+        "POST",
+        &path,
+        Some(json!({"action":"enqueue","content":"remove me"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = request(
+        app.clone(),
+        "POST",
+        &path,
+        Some(json!({"action":"remove","id":queued["pending_inputs"][0]["id"],"revision":0})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let completed = settled(&initial, &id).await;
+    for content in ["untouched draft", "selected draft"] {
+        let (status, _) = request(
+            app.clone(),
+            "POST",
+            &path,
+            Some(json!({"action":"enqueue","content":content})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+    }
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let staged = initial.get(&id).unwrap();
+    assert_eq!(staged.events.len(), completed.events.len());
+    assert_eq!(staged.pending_inputs.len(), 2);
+    let selected_id = staged.pending_inputs[1].id.clone();
+    let (status, result) = request(
+        app,
+        "POST",
+        &format!("/api/runs/{id}/resume"),
+        Some(json!({"message":"continue the original task"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    let completed = settled(&initial, &id).await;
+    assert_eq!(
+        completed.pending_inputs.len(),
+        2,
+        "resume must not deliver drafts"
+    );
+    initial.shutdown().await;
+    let reopened = state(&directory).await;
+    let staged = reopened.get(&id).unwrap();
+    assert_eq!(staged.pending_inputs.len(), 2);
+    assert!(
+        staged
+            .pending_inputs
+            .iter()
+            .all(|input| !input.steer && !input.delivering)
+    );
+    assert!(staged.pending_inputs_paused);
+    let (status, result) = request(
+        api::app(reopened.clone()),
+        "POST",
+        &path,
+        Some(json!({"action":"steer","id":selected_id,"revision":0})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let detail = reopened.get(&id).unwrap();
+            if detail.pending_inputs.len() == 1 && detail.summary.status == RunStatus::Completed {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let detail = reopened.get(&id).unwrap();
+    assert_eq!(detail.pending_inputs[0].content, "untouched draft");
+    assert!(
+        !detail
+            .messages
+            .iter()
+            .any(|m| m.text == "remove me" || m.text == "untouched draft")
+    );
+    assert_eq!(
+        detail
+            .messages
+            .iter()
+            .filter(|m| m.text == "selected draft")
+            .count(),
+        1
+    );
+    reopened.shutdown().await;
 }

@@ -71,6 +71,17 @@ pub fn apply(detail: &mut RunDetail, envelope: &RunEventEnvelope) {
             detail.messages.push(message);
             ("model_response_received", "响应已持久化", content.clone())
         }
+        RunEvent::ModelResponseInterrupted { content } => {
+            detail
+                .messages
+                .retain(|message| message.status != "streaming");
+            if !content.is_empty() {
+                let mut message = ChatMessage::complete(id, "assistant", content.clone());
+                message.status = "interrupted".into();
+                detail.messages.push(message);
+            }
+            ("model_response_interrupted", "回复已中断", String::new())
+        }
         RunEvent::ToolCallRequested {
             call_id,
             tool_name,
@@ -143,7 +154,16 @@ pub fn apply(detail: &mut RunDetail, envelope: &RunEventEnvelope) {
             content,
             interrupted_calls,
             files,
+        }
+        | RunEvent::UserInputReceived {
+            content,
+            interrupted_calls,
+            files,
+            ..
         } => {
+            if let RunEvent::UserInputReceived { id, .. } = &envelope.event {
+                detail.pending_inputs.retain(|input| &input.id != id);
+            }
             detail.summary.status = RunStatus::Running;
             detail.error = None;
             detail
@@ -163,7 +183,15 @@ pub fn apply(detail: &mut RunDetail, envelope: &RunEventEnvelope) {
                 }
             }
             detail.messages.push(user_message(id, content, files));
-            ("run_resumed", "继续会话", input_detail(content, files))
+            if matches!(envelope.event, RunEvent::UserInputReceived { .. }) {
+                (
+                    "user_input_received",
+                    "收到新要求",
+                    input_detail(content, files),
+                )
+            } else {
+                ("run_resumed", "继续会话", input_detail(content, files))
+            }
         }
         RunEvent::RunCompleted { answer } => {
             detail.summary.status = RunStatus::Completed;
@@ -289,6 +317,8 @@ mod tests {
 
     fn detail() -> RunDetail {
         RunDetail {
+            pending_inputs: Vec::new(),
+            pending_inputs_paused: false,
             summary: RunSummary {
                 reasoning_settings_version: 1,
                 reasoning_effort: None,

@@ -59,6 +59,7 @@ fn protected_user_events(input: ContextInputRef<'_>, preserve_all: bool) -> Vec<
             RunEvent::RunStarted { .. }
                 | RunEvent::InputReceived { .. }
                 | RunEvent::RunResumed { .. }
+                | RunEvent::UserInputReceived { .. }
         )
     });
     if preserve_all {
@@ -434,7 +435,17 @@ impl<'a> ToolOutputProjection<'a> {
                         "Runtime advisory: tool {tool_name:?} has been called {consecutive_calls} consecutive times with the same arguments. Repetition alone does not prove failure. Check the observed results for progress before repeating; change approach or report the blocker if no progress is being made. Legitimate polling may continue. This advisory does not authorize additional actions."
                     )));
                 }
+                RunEvent::ModelResponseInterrupted { content } => {
+                    if !content.is_empty() {
+                        messages.push(ModelMessage::user(format!(
+                            "[The previous assistant response was interrupted. The following is incomplete historical output, not a new user instruction or a confirmed result.]\n{content}"
+                        )));
+                    }
+                }
                 RunEvent::RunResumed {
+                    interrupted_calls, ..
+                }
+                | RunEvent::UserInputReceived {
                     interrupted_calls, ..
                 } => {
                     // Native windows may already contain the assistant calls;

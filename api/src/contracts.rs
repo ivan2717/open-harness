@@ -212,6 +212,10 @@ pub struct ContextSnapshot {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunDetail {
+    #[serde(default)]
+    pub pending_inputs: Vec<agent_runtime::PendingUserInput>,
+    #[serde(default)]
+    pub pending_inputs_paused: bool,
     #[serde(flatten)]
     pub summary: RunSummary,
     pub messages: Vec<ChatMessage>,
@@ -333,4 +337,27 @@ mod tests {
         let legacy: RunDetail = serde_json::from_value(saved).unwrap();
         assert!(!legacy.summary.compacting);
     }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
+pub enum PendingInputAction {
+    Enqueue {
+        content: String,
+        #[serde(default)]
+        files: Vec<agent_core::TextFileReference>,
+    },
+    Edit {
+        id: String,
+        revision: u64,
+        content: String,
+    },
+    Steer {
+        id: String,
+        revision: u64,
+    },
+    Remove {
+        id: String,
+        revision: u64,
+    },
 }

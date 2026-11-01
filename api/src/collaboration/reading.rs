@@ -167,6 +167,9 @@ async fn read_attachment(
     let (event_type, files) = match &event.event {
         agent_core::agent::RunEvent::RunStarted { files, .. } => ("run_started", files),
         agent_core::agent::RunEvent::InputReceived { files, .. } => ("input_received", files),
+        agent_core::agent::RunEvent::UserInputReceived { files, .. } => {
+            ("user_input_received", files)
+        }
         agent_core::agent::RunEvent::RunResumed { files, .. } => ("run_resumed", files),
         _ => {
             return Err(ServiceError::BadRequest("此事件不包含公开用户附件".into()));

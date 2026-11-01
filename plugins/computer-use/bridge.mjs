@@ -3,7 +3,7 @@ import { AppTransport } from './app-transport.mjs';
 
 // One helper belongs to one MCP session. No commands are replayed after failures.
 export class ComputerBridge {
-  constructor(command, args = [], { timeoutMs = 15_000, platform = process.platform } = {}) {
+  constructor(command, args = [], { timeoutMs = 15_000, platform = process.platform, onPreview = () => {} } = {}) {
     this.command = command;
     this.args = args;
     this.timeoutMs = timeoutMs;
@@ -13,6 +13,12 @@ export class ComputerBridge {
     this.sequence = 0;
     this.generation = 0;
     this.tail = Promise.resolve();
+    this.onPreview = onPreview;
+    this.previewEnabled = false;
+  }
+  setPreviewEnabled(enabled) {
+    this.previewEnabled = enabled === true;
+    this.child?.stdin.write(JSON.stringify({ method: 'preview_control', params: { enabled: this.previewEnabled } }) + '\n');
   }
   request(method, params, signal) {
     const generation = this.generation;
@@ -43,6 +49,7 @@ export class ComputerBridge {
       ? new AppTransport(this.command)
       : spawn(this.command, this.args, { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
     this.child = child;
+    this.setPreviewEnabled(this.previewEnabled);
     child.stdin.on('error', () => {
       if (this.child === child) this.stop('Computer helper input channel closed; select the app again.');
     });
@@ -59,6 +66,10 @@ export class ComputerBridge {
         const line = buffer.slice(0, end); buffer = buffer.slice(end + 1);
         let message;
         try { message = JSON.parse(line); } catch { return this.stop('Invalid computer helper response.'); }
+        if (message.event === 'preview' && !Object.hasOwn(message, 'id')) {
+          this.onPreview(message.preview);
+          continue;
+        }
         if (child !== this.child || !this.pending || message.id !== this.pending.id) return this.stop('Mismatched computer helper response.');
         const pending = this.pending; this.pending = null;
         if (message.error) {
@@ -81,6 +92,7 @@ export class ComputerBridge {
     this.generation++;
     const child = this.child;
     this.child = null;
+    this.onPreview({ active: false });
     const pending = this.pending;
     this.pending = null;
     pending?.reject(new Error(reason));

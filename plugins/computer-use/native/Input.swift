@@ -249,6 +249,7 @@ func requiresScreenshot(_ method: String, _ params: [String: Any]) -> Bool {
             // An AX timeout may still mean the application accepted the action.
             guard status == .success else { throw ComputerError("ACTION_FAILED", "Accessibility action did not report success (\(status.rawValue)). Observe before retrying.", dispatched: nil) }
             dispatched = true; transport = "accessibility_action"
+            if let box = element.box { VisualFeedback.shared.pointer(CGPoint(x: box.midX, y: box.midY), state) }
         }
         switch method {
         case "click":
@@ -283,6 +284,7 @@ func requiresScreenshot(_ method: String, _ params: [String: Any]) -> Bool {
                 let transaction = HeldPointer(poster: poster, identity: identity, state: state, local: local, releaseEvent: up, button: button, count: Int64(click), group: group, flags: flags)
                 heldPointer = transaction
                 transaction.begin(down); dispatched = true
+                VisualFeedback.shared.pointer(local, state)
                 guard transaction.release() else { throw ComputerError("INPUT_UNCERTAIN", "The target disappeared after mouse-down; release could not be delivered to the original window.", dispatched: nil) }
             }
         case "type", "key":
@@ -355,6 +357,7 @@ func requiresScreenshot(_ method: String, _ params: [String: Any]) -> Bool {
             try validateCoordinateTarget(local, previous, identity, frame: state.frame)
             poster.stamp(event, state, local: local)
             poster.post(state.binding.owner.pid, event); dispatched = true
+            VisualFeedback.shared.pointer(local, state, pressed: false)
         case "drag":
             let from = try targetPoint(params, state, xKey: "from_x", yKey: "from_y")
             let to = try targetPoint(params, state, xKey: "to_x", yKey: "to_y")
@@ -390,6 +393,7 @@ func requiresScreenshot(_ method: String, _ params: [String: Any]) -> Bool {
             }
             transaction.local = to
             guard transaction.release() else { throw ComputerError("INPUT_UNCERTAIN", "The target disappeared during drag; release could not be delivered to the original window.", dispatched: nil) }
+            VisualFeedback.shared.pointer(to, state)
         case "set_value":
             guard let target else { throw ComputerError("INVALID_REF", "A current observed control ref is required.") }
             try requireNonSecure(target, state.window)

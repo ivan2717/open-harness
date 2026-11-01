@@ -79,6 +79,7 @@ impl AppState {
             .and_then(|envelope| match &envelope.event {
                 RunEvent::RunStarted { files, .. }
                 | RunEvent::InputReceived { files, .. }
+                | RunEvent::UserInputReceived { files, .. }
                 | RunEvent::RunResumed { files, .. } => files.get(index).cloned(),
                 _ => None,
             })

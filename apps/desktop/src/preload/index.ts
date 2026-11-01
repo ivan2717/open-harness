@@ -51,6 +51,16 @@ async function importedImages(files: File[]): Promise<FileImportResult> {
 }
 
 const bridge: DesktopBridge = {
+  watchComputerPreview: (listener) => {
+    const handler = (_event: IpcRendererEvent, value: import('../shared/computer-preview').ComputerPreview) => listener(value)
+    ipcRenderer.on(channels.computerPreview, handler)
+    ipcRenderer.send(channels.computerPreviewWatch, true)
+    return () => {
+      ipcRenderer.removeListener(channels.computerPreview, handler)
+      ipcRenderer.send(channels.computerPreviewWatch, false)
+    }
+  },
+  collapseComputerPreview: (id, collapsed) => ipcRenderer.invoke(channels.computerPreviewCollapse, id, collapsed),
   runPermissions: (id) => invoke<RunPermissions>({ operation: 'runPermissions', id }),
   updateRunPermissions: (id, input) =>
     invoke<RunPermissions>({ operation: 'updateRunPermissions', id, input }),
@@ -162,6 +172,8 @@ const bridge: DesktopBridge = {
   revertFile: (id, path) => invoke<WorkspaceReview>({ operation: 'revertFile', id, path }),
   resumeRun: (id, message, files) =>
     invoke<RunDetail>({ operation: 'resumeRun', id, message, files }),
+  updatePendingInput: (id, input) =>
+    invoke<RunDetail>({ operation: 'updatePendingInput', id, input }),
   cancelRun: (id) => invoke<RunDetail>({ operation: 'cancelRun', id }),
   compactRun: (id) => invoke<RunDetail>({ operation: 'compactRun', id }),
   cancelCompaction: (id) => invoke<RunDetail>({ operation: 'cancelCompaction', id }),

@@ -306,7 +306,10 @@ fn event_match<'a>(
 ) -> Option<FieldMatch<'a>> {
     let is_user = matches!(
         event,
-        RunEvent::RunStarted { .. } | RunEvent::InputReceived { .. } | RunEvent::RunResumed { .. }
+        RunEvent::RunStarted { .. }
+            | RunEvent::InputReceived { .. }
+            | RunEvent::RunResumed { .. }
+            | RunEvent::UserInputReceived { .. }
     );
     if *source == SearchSource::User && !is_user {
         return None;
@@ -321,6 +324,7 @@ fn event_match<'a>(
             attachment_fields(&mut fields, files);
         }
         RunEvent::InputReceived { content, files }
+        | RunEvent::UserInputReceived { content, files, .. }
         | RunEvent::RunResumed { content, files, .. } => {
             fields.push(("/content".into(), content));
             attachment_fields(&mut fields, files);
@@ -334,7 +338,8 @@ fn event_match<'a>(
                 }
             }
         }
-        RunEvent::ModelResponseReceived { content, .. } => {
+        RunEvent::ModelResponseInterrupted { content }
+        | RunEvent::ModelResponseReceived { content, .. } => {
             fields.push(("/content".into(), content))
         }
         RunEvent::ToolCallRequested {

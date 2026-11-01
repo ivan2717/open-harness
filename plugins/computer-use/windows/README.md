@@ -24,7 +24,21 @@ click count, scroll position, password **length only**, PID and readiness. UIA
 names are `Task input`, `Apply`, `Password` and `Scroll area`; automation IDs can
 differ between Windows accessibility compatibility modes.
 
-## Protocol and boundaries
+## Local visual feedback
+
+The preview is a draggable React view inside the desktop app, not a separate
+native window. A message-only STA dispatcher captures the selected HWND using
+PrintWindow on one background worker, at most four times per second. A blocked
+or unsupported capture reports unavailable and never falls back to the desktop.
+Collapsing the view or hiding/minimizing Open Harness pauses capture. The small
+alpha-layered virtual cursor remains separate and is hidden during input hit
+testing. The existing foreground-input requirement remains unchanged.
+Source closure, minimization, locking, selection change, or shutdown clears the
+preview. Frames use an authenticated local sideband; they are not model input.
+`node --test plugins/computer-use/tests/feedback.test.mjs` tests disposable
+native windows on an unlocked Windows desktop.
+
+## Requests
 
 With no arguments, the helper reads bounded UTF-8 JSON lines of
 `{ "id": 1, "method": "status", "params": {} }` and writes
@@ -104,3 +118,5 @@ Implementation references:
 - [Input queue attachment](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-attachthreadinput)
 - [UIA focus and provider behavior](https://learn.microsoft.com/en-us/dotnet/api/system.windows.automation.automationelement.setfocus)
 - [DPI awareness](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setprocessdpiawarenesscontext)
+- [Window-only PrintWindow capture](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-printwindow)
+- [Alpha-layered windows](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-updatelayeredwindow)

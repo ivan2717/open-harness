@@ -69,6 +69,7 @@ namespace OpenHarness.ComputerUse {
         }
         internal static AppIdentity Select(string bundle, int pid, long? windowId) {
             Native.RequireDesktop();
+            if (pid == Process.GetCurrentProcess().Id) throw new ComputerError("APP_NOT_FOUND", "The feedback windows are not control targets.");
             AppIdentity identity = Read(pid);
             if (!String.Equals(bundle, identity.Bundle, StringComparison.Ordinal)) throw new ComputerError("APP_NOT_FOUND", "Exact application identity and PID must match a listed running application.");
             var candidates = new List<IntPtr>();
@@ -129,7 +130,7 @@ namespace OpenHarness.ComputerUse {
                 if (applications.Count >= 128) return false;
                 if (!Native.IsWindowVisible(window) || Native.GetAncestor(window, 2) != window) return true;
                 int pid = (int)Native.WindowProcess(window);
-                if (pid <= 0 || !seen.Add(pid)) return true;
+                if (pid <= 0 || pid == Process.GetCurrentProcess().Id || !seen.Add(pid)) return true;
                 try {
                     var identity = Read(pid);
                     applications.Add(Json.Object("name", identity.Name, "bundle_id", identity.Bundle, "pid", pid));

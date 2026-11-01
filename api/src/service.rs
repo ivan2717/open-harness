@@ -45,6 +45,9 @@ mod tests;
 #[path = "execution_lifecycle_tests.rs"]
 mod execution_lifecycle_tests;
 
+#[path = "pending_inputs.rs"]
+mod pending_inputs;
+
 #[path = "workspace_service.rs"]
 mod workspace;
 
@@ -161,12 +164,21 @@ impl AppState {
             };
             let run = AgentRun::restore(stored.run_id, stored.agent_id, stored.events)
                 .map_err(io::Error::other)?;
+            for input in &mut detail.pending_inputs {
+                input.delivering = false;
+                input.steer = false;
+            }
             detail.messages.clear();
             detail.events.clear();
             detail.error = None;
             detail.summary.compacting = false;
             for event in run.events() {
                 projection::apply(&mut detail, event);
+            }
+            // Restart never resumes pending work without a fresh user action.
+            // Also makes a previously claimed steering message editable again.
+            if !detail.pending_inputs.is_empty() {
+                detail.pending_inputs_paused = true;
             }
             if run.status() == CoreStatus::Running {
                 detail.summary.status = RunStatus::Interrupted;
@@ -537,7 +549,8 @@ impl AppState {
             EventStoreHistoryAccess::new().with_excluded_tools(["session_memory".to_owned()]),
             !demo,
         ))
-        .with_continue_after_response(!demo && !child);
+        .with_continue_after_response(!demo && !child)
+        .with_user_inputs(Arc::new(snapshot.clone()));
         Ok(Arc::new(RunEntry {
             background: AtomicBool::new(false),
             runtime: Arc::new(runtime),
@@ -594,6 +607,8 @@ impl AppState {
                 input.permission_mode
             };
         let detail = RunDetail {
+            pending_inputs: Vec::new(),
+            pending_inputs_paused: false,
             summary: RunSummary {
                 reasoning_settings_version: 1,
                 reasoning_effort: input.reasoning_effort,
@@ -640,8 +655,13 @@ impl AppState {
         Ok(snapshot)
     }
     pub async fn cancel(&self, id: &str) -> Result<RunDetail, ServiceError> {
-        self.get(id)?;
-        self.inner.extensions.revoke_run(id);
+        self.entry(id)?.snapshot.update(|detail| {
+            detail.pending_inputs_paused = true;
+            for input in &mut detail.pending_inputs {
+                input.steer = false;
+            }
+        })?;
+        self.inner.extensions.interrupt_run(id);
         let _gate = self.inner.model_gate.lock().await;
         // Stop the coordinator first so no new delegation can be admitted.
         let detail = self.cancel_member(id, true).await?;
@@ -973,6 +993,15 @@ async fn execute_and_settle<E: std::fmt::Display>(
                 if let Err(error) = entry.snapshot.event(event) {
                     tracing::error!(%error, run_id = id, "could not publish final execution history");
                 }
+            }
+            if execution_error.is_some() && !entry.snapshot.get().pending_inputs.is_empty() {
+                let _ = entry.snapshot.update(|detail| {
+                    detail.pending_inputs_paused = true;
+                    for input in &mut detail.pending_inputs {
+                        input.delivering = false;
+                        input.steer = false;
+                    }
+                });
             }
             execution_error
         }

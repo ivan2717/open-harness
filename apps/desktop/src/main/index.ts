@@ -19,6 +19,7 @@ import { prepareWorkspaceRuntime } from './workspace-runtime'
 import { BundledPlugins } from './bundled-plugins'
 import { ChromeConnection } from './chrome-connection'
 import { COMPUTER_APP_NAME, installComputerApp } from './computer-app'
+import { ComputerPreviewHost } from './computer-preview'
 import { execFile, spawn } from 'node:child_process'
 import { promisify } from 'node:util'
 import { createRequire } from 'node:module'
@@ -67,6 +68,13 @@ let window: BrowserWindow | undefined
 let backend: Backend | undefined
 let bundledPlugins: BundledPlugins | undefined
 let chromeConnection: ChromeConnection | undefined
+let previewWatching = false
+const computerPreview = new ComputerPreviewHost((state) => {
+  if (previewWatching && window && !window.isDestroyed()) window.webContents.send(channels.computerPreview, state)
+})
+function updatePreviewVisibility() {
+  computerPreview.setVisible(Boolean(previewWatching && window && !window.isDestroyed() && window.isVisible() && !window.isMinimized()))
+}
 let quitting = false
 let modelVault: ModelVault | undefined
 let modelsReady: Promise<void> = Promise.resolve()
@@ -104,6 +112,15 @@ function assertSender(event: IpcMainInvokeEvent | IpcMainEvent): void {
 }
 
 function installBridge(): void {
+  ipcMain.on(channels.computerPreviewWatch, (event, watching: unknown) => {
+    assertSender(event)
+    if (typeof watching !== 'boolean') return
+    previewWatching = watching; updatePreviewVisibility()
+    if (watching) for (const state of computerPreview.snapshot()) event.sender.send(channels.computerPreview, state)
+  })
+  ipcMain.handle(channels.computerPreviewCollapse, (event, id: unknown, collapsed: unknown) => {
+    assertSender(event); computerPreview.setCollapsed(id, collapsed)
+  })
   const importAttachment = (name: string, bytes: Buffer) => {
     if (!backend) throw new Error('本地服务正在启动，请稍后添加。')
     return backend.importAttachment(name, bytes)
@@ -365,12 +382,18 @@ function createWindow(): void {
   contents.on('will-navigate', (event) => event.preventDefault())
   contents.on('will-attach-webview', (event) => event.preventDefault())
   contents.on('render-process-gone', () => subscriptions.stopOwner(contents.id))
+  contents.on('render-process-gone', () => { previewWatching = false; updatePreviewVisibility() })
+  window.on('show', updatePreviewVisibility)
+  window.on('hide', updatePreviewVisibility)
+  window.on('minimize', updatePreviewVisibility)
+  window.on('restore', updatePreviewVisibility)
   contents.on('did-start-navigation', (_event, _url, isInPlace, isMainFrame) => {
     if (isMainFrame && !isInPlace) subscriptions.stopOwner(contents.id)
   })
   contents.once('destroyed', () => subscriptions.stopOwner(contents.id))
   window.on('closed', () => {
     window = undefined
+    previewWatching = false; updatePreviewVisibility()
   })
   if (devUrl) void window.loadURL(devUrl)
   else void window.loadFile(rendererPath)
@@ -430,6 +453,7 @@ if (!app.requestSingleInstanceLock()) {
       console.warn('Chrome 连接组件更新失败；可在扩展页重新配置，不影响应用启动。')
     })
     bundledPlugins = new BundledPlugins({
+      previewEndpoint: await computerPreview.start(),
       root: pluginRoot,
       runtime: app.isPackaged
         ? join(process.resourcesPath, 'browser-runtime', 'index.js')
@@ -485,6 +509,7 @@ if (!app.requestSingleInstanceLock()) {
     event.preventDefault()
     quitting = true
     bundledPlugins?.stop()
+    computerPreview.stop()
     subscriptions.stopAll()
     void (backend?.stop() ?? Promise.resolve()).finally(() => app.quit())
   })

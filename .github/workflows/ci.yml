@@ -148,6 +148,7 @@ jobs:
           src/main/run-workspace.windows.test.ts
           src/main/chrome-connection.windows.test.ts
           src/main/chrome-windows.test.ts
+          src/main/computer-preview.test.ts
       - name: Check Windows Chrome transport
         if: ${{ !cancelled() && steps.sandbox-helper.outcome == 'success' }}
         run: node --test ../../plugins/chrome-use/tests/bridge.test.mjs ../../plugins/chrome-use/tests/launch.test.mjs ../../plugins/chrome-use/tests/controller.test.mjs
@@ -156,6 +157,8 @@ jobs:
         run: node ../../plugins/computer-use/windows/build.mjs
       - name: Check Windows visual target validation
         run: node --test ../../plugins/computer-use/tests/visual-guard.test.mjs
+      - name: Check Windows live preview and cursor lifecycle
+        run: node --test ../../plugins/computer-use/tests/feedback.test.mjs
 
       - name: Install Electron for permission workflow checks
         env:
@@ -168,6 +171,9 @@ jobs:
       - name: Check Windows permission workflow in Electron
         timeout-minutes: 10
         run: pnpm test:e2e:permissions
+      - name: Check Windows in-app computer preview
+        timeout-minutes: 5
+        run: node tests/e2e/computer-preview.mjs
       - name: Upload Windows permission workflow evidence
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v7

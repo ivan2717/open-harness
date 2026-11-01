@@ -21,11 +21,14 @@ export class BundledPlugins {
       platform: NodeJS.Platform
       computerAppPath?: string
       computerSetupError?: string
+      previewEndpoint?: string
       statusTimeoutMs?: number
       chrome?: ChromeConnection
     },
   ) {
     this.environment = {
+      OPENHARNESS_PREVIEW_ENDPOINT: options.previewEndpoint ?? '',
+      OPENHARNESS_PREVIEW_RUNTIME: join(options.root, 'preview-runtime.mjs'),
       OPENHARNESS_BUNDLED_PLUGINS_DIR: options.root,
       OPENHARNESS_NODE_BINARY: options.executable,
       ELECTRON_RUN_AS_NODE: '1',

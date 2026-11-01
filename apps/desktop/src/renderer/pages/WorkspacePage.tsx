@@ -11,6 +11,7 @@ import {
   Minimize2,
   Square,
 } from 'lucide-react'
+import { PendingInputs } from '../components/PendingInputs'
 import { Composer } from '../components/Composer'
 import { RunActivity } from '../components/RunActivity'
 import { ContextInspector } from '../components/ContextInspector'
@@ -149,6 +150,15 @@ export function RunPage({ runId }: { runId: string }) {
       refreshWorkspace()
     },
   })
+  const enqueue = useMutation({
+    mutationFn: ({ message, files }: UserMessageInput) =>
+      window.harness.updatePendingInput(runId, {
+        action: 'enqueue',
+        content: message ?? '',
+        files,
+      }),
+    onSuccess: (run) => storeSnapshot(client, run),
+  })
   const approve = useMutation({
     mutationFn: ({
       id,
@@ -215,6 +225,7 @@ export function RunPage({ runId }: { runId: string }) {
   const active =
     running || compacting || input.isPending || resume.isPending || modelSettings.isPending
   const mutationError =
+    enqueue.error ??
     cancel.error ??
     input.error ??
     resume.error ??
@@ -398,16 +409,27 @@ export function RunPage({ runId }: { runId: string }) {
                 executionDirectory={run.execution_directory}
                 onRevealWorkspace={() => revealWorkspace.mutate()}
                 running={running}
+                queuedMessages={
+                  <PendingInputs run={run} disabled={cancel.isPending || compacting} />
+                }
                 onStop={() => cancel.mutate()}
                 stopping={cancel.isPending}
-                pending={input.isPending || resume.isPending || modelSettings.isPending}
+                pending={
+                  input.isPending ||
+                  resume.isPending ||
+                  modelSettings.isPending ||
+                  enqueue.isPending
+                }
                 disabled={compacting || (!running && !model?.available)}
                 onSubmit={async (prompt, files) => {
-                  if (waiting) await input.mutateAsync({ message: prompt, files })
+                  if (running) await enqueue.mutateAsync({ message: prompt, files })
+                  else if (waiting) await input.mutateAsync({ message: prompt, files })
                   else await resume.mutateAsync({ message: prompt, files })
                 }}
               />
-              <p className="composer-bottom-note">Enter 发送 · Shift + Enter 换行</p>
+              <p className="composer-bottom-note">
+                {running ? 'Enter 暂存 · 点击引导后发送' : 'Enter 发送 · Shift + Enter 换行'}
+              </p>
             </>
           )}
         </div>

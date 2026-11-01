@@ -133,7 +133,7 @@ export interface ChatMessage {
   reasoning?: string
   tool_name?: string
   is_error?: boolean
-  status: 'pending' | 'streaming' | 'complete'
+  status: 'pending' | 'streaming' | 'complete' | 'interrupted'
 }
 
 export interface TimelineEvent {
@@ -193,7 +193,22 @@ export interface ContextSnapshot {
   checkpoints: CompactionRecord[]
 }
 
+export interface PendingInput {
+  id: string
+  content: string
+  files: FileReference[]
+  steer: boolean
+  delivering: boolean
+  revision: number
+}
+export type PendingInputAction =
+  | { action: 'enqueue'; content: string; files?: FileReference[] }
+  | { action: 'edit'; id: string; revision: number; content: string }
+  | { action: 'steer' | 'remove'; id: string; revision: number }
+
 export interface RunDetail extends RunSummary {
+  pending_inputs?: PendingInput[]
+  pending_inputs_paused?: boolean
   messages: ChatMessage[]
   events: TimelineEvent[]
   context: ContextSnapshot | null
@@ -336,6 +351,8 @@ export interface RunPermissions extends UpdateRunPermissionsInput {
 }
 
 export interface DesktopBridge {
+  watchComputerPreview(listener: (preview: import('./computer-preview').ComputerPreview) => void): () => void
+  collapseComputerPreview(id: string, collapsed: boolean): Promise<void>
   runPermissions(id: string): Promise<RunPermissions>
   updateRunPermissions(id: string, input: UpdateRunPermissionsInput): Promise<RunPermissions>
   revokeRunPermissions(id: string, stop: boolean): Promise<RunPermissions>
@@ -395,6 +412,7 @@ export interface DesktopBridge {
   stopCommand(id: string, commandId: string): Promise<WorkspaceReview>
   revertFile(id: string, path: string): Promise<WorkspaceReview>
   resumeRun(id: string, message?: string, files?: FileReference[]): Promise<RunDetail>
+  updatePendingInput(id: string, input: PendingInputAction): Promise<RunDetail>
   cancelRun(id: string): Promise<RunDetail>
   compactRun(id: string): Promise<RunDetail>
   cancelCompaction(id: string): Promise<RunDetail>

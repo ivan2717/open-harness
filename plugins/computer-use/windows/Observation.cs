@@ -199,7 +199,7 @@ namespace OpenHarness.ComputerUse {
                 }
             }
         }
-        private static bool HasDetail(Bitmap bitmap) {
+        internal static bool HasDetail(Bitmap bitmap) {
             int first = bitmap.GetPixel(0, 0).ToArgb();
             for (int y = 0; y < bitmap.Height; y += Math.Max(1, bitmap.Height / 48))
                 for (int x = 0; x < bitmap.Width; x += Math.Max(1, bitmap.Width / 48))

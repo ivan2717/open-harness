@@ -8,13 +8,18 @@ import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { ComputerBridge } from '../bridge.mjs';
+import { PreviewRelay } from '../preview-relay.mjs';
 import { computerEndpoint, requireComputerEndpoint } from '../endpoint.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const temporary = mkdtempSync(path.join(tmpdir(), 'openharness-computer-gui-'));
 const helperPath = computerEndpoint();
 const artifacts = process.env.OPENHARNESS_COMPUTER_TEST_ARTIFACTS;
-const bridge = new ComputerBridge(helperPath);
+const previewPackets = [];
+let previewRelay;
+const bridge = new ComputerBridge(helperPath, [], { onPreview: packet => { previewRelay?.send(packet); previewPackets.push({ ...packet, jpeg: Boolean(packet.jpeg) }); if (previewPackets.length > 40) previewPackets.shift(); } });
+if (process.env.OPENHARNESS_PREVIEW_ENDPOINT) previewRelay = new PreviewRelay(process.env.OPENHARNESS_PREVIEW_ENDPOINT, enabled => bridge.setPreviewEnabled(enabled));
+else bridge.setPreviewEnabled(true);
 const fixtures = [];
 const checks = [];
 let backgroundActivationCount;
@@ -46,7 +51,13 @@ async function act(method, state, params) {
   return result;
 }
 function assertForegroundB() {
-  assert.equal(load('B').active, true, 'foreground fixture B stays active');
+  if (process.argv.includes('--preview-only')) {
+    // Display-only acceptance must allow the person to use another app. It
+    // still verifies that preview never activates its captured source.
+    assert.equal(load('A').activation_count, backgroundActivationCount, 'preview never activates A');
+    return;
+  }
+  assert.equal(load('B').active, true, `foreground fixture B stays active (actual: ${load('B').foreground_bundle})`);
   assert.equal(load('A').active, false, 'background fixture A stays inactive');
   assert.equal(load('B').foreground_bundle, 'dev.openharness.computer-fixture-b');
   assert.equal(load('A').activation_count, backgroundActivationCount, 'A never briefly activates between assertions');
@@ -183,293 +194,333 @@ try {
       let state = await request('observe');
       assert.equal(state.window.id, initialA.window_id);
       checks.push('window inventory and stable AX observation');
-
-      // The tree and pixels change continuously. Validation must concern the
-      // action's target, not an unrelated animation elsewhere in the window.
-      const animationAtObserve = load('A').animation_frame;
-      const button = node(state, 'fixture-increment');
-      await until(() => load('A').animation_frame > animationAtObserve + 2, 'background animation advanced');
-      await act('click', state, { ref: button.ref });
-      await until(() => load('A').clicks === 1, 'background AX press');
+      const preview = await until(async () => {
+        const feedback = (await request('status')).visual_feedback;
+        return feedback?.in_app && feedback.active && feedback.streaming && feedback.frames_received > 2 ? feedback : false;
+      }, 'live preview delivers local frames');
+      assert.equal(preview.window_id, initialA.window_id);
+      assert.equal(preview.local_only, true);
+      assert.ok(previewPackets.some(packet => packet.jpeg), 'frames use only the local sideband');
+      assert.equal(state.image, undefined, 'preview frames are not added to text-only observations');
       assertForegroundB();
-      checks.push('AX press tolerates unrelated animation');
+      checks.push('live local window preview updates without activating target or adding model images');
+      if (process.env.OPENHARNESS_PREVIEW_ACCEPTANCE_HOLD === '1') await wait(15000);
 
-      state = await request('observe');
-      await act('type', state, { text: 'Hello Open Harness 中文🙂' });
-      await until(() => load('A').text === 'Hello Open Harness 中文🙂', 'background Unicode input');
-      await rejectedWithoutInput('key', state, { key: 'enter' }, /STALE_SNAPSHOT/);
-      checks.push('background Unicode input and consumed snapshot rejection');
-
-
-
-      state = await request('observe');
-      await act('set_value', state, { ref: node(state, 'fixture-input').ref, value: 'AX assigned value' });
-      await until(() => load('A').text === 'AX assigned value', 'AX set value outcome');
-      state = await request('observe');
-      await rejectedWithoutInput('set_value', state, { ref: node(state, 'fixture-secret').ref, value: 'must not write' }, /SECURE|PASSWORD|SECRET|UNSUPPORTED/i);
-      assert.equal(load('A').secret_length, 0);
-      await command('A', 'focus_secret');
-      state = await request('observe');
-      await rejectedWithoutInput('type', state, { text: 'must not write' }, /SECURE|PASSWORD|SECRET|FOCUS_UNAVAILABLE/i);
-      state = await request('observe');
-      await rejectedWithoutInput('key', state, { key: 'meta+a' }, /SECURE|PASSWORD|SECRET|FOCUS_UNAVAILABLE/i);
-      assert.equal(load('A').secret_length, 0);
-      await command('A', 'focus_input');
-      checks.push('AX value assignment and password field refusal for value, text and keys');
-
-      state = await request('observe');
-      const actionButton = node(state, 'fixture-increment');
-      assert.ok(actionButton.actions.includes('AXPress'), 'AXPress is advertised');
-      await act('action', state, { ref: actionButton.ref, action: 'AXPress' });
-      await until(() => load('A').clicks === 2, 'advertised AX action outcome');
-      state = await request('observe');
-      await rejectedWithoutInput('action', state, { ref: node(state, 'fixture-increment').ref, action: 'AXUnadvertisedFixtureAction' }, /ACTION|UNSUPPORTED/i);
-      checks.push('advertised AX action only');
-
-      state = await request('observe', { screenshot: true });
-      const beforeButtonMove = center(node(state, 'fixture-increment'));
-      await command('A', 'move_button');
-      await rejectedWithoutInput('click', state, beforeButtonMove, /STATE_CHANGED|AX_UNAVAILABLE|TARGET_UNAVAILABLE|VISUAL_TARGET_CHANGED/);
-      await command('A', 'restore_button');
-      state = await request('observe', { screenshot: true });
-      const beforeButtonReplacement = center(node(state, 'fixture-increment'));
-      await command('A', 'replace_button');
-      await rejectedWithoutInput('click', state, beforeButtonReplacement, /STATE_CHANGED|AX_UNAVAILABLE|TARGET_UNAVAILABLE/);
-      checks.push('coordinate targets reject moved and replaced controls without dispatch');
-
-      state = await request('observe', { screenshot: true });
-      assert.equal(state.image.mimeType, 'image/png');
-      assert.equal(Buffer.from(state.image.data, 'base64').subarray(0, 8).toString('hex'), '89504e470d0a1a0a');
-      if (artifacts) writeFileSync(path.join(artifacts, 'native-computer-fixture.png'), Buffer.from(state.image.data, 'base64'));
-      const screenshotPoint = center(node(state, 'fixture-increment'));
-      assert.equal(state.snapshot_policy, 'single_action_until_replaced');
-      assert.equal(state.expires_in_seconds, undefined);
-      assert.equal(state.coordinate_expires_in_seconds, undefined);
-      // Opt-in real latency regression, e.g. 65,000ms, exceeds BOTH former TTLs.
-      // This is a test delay, never a production validity rule.
-      const snapshotDelay = Number(process.env.OPENHARNESS_SNAPSHOT_TEST_DELAY_MS ?? 0);
-      assert.ok(Number.isFinite(snapshotDelay) && snapshotDelay >= 0 && snapshotDelay <= 120_000);
-      if (snapshotDelay) {
+      if (process.argv.includes('--preview-only')) {
+        // Model observations capture fresh pixels independently of the PiP
+        // stream. The fixture changes its visible frame counter continuously.
+        const firstShot = await request('observe', { screenshot: true });
+        const firstTick = load('A').animation_frame;
+        await until(() => load('A').animation_frame > firstTick + 3, 'fixture pixels advance');
+        const secondShot = await request('observe', { screenshot: true });
+        assert.equal(firstShot.image?.mimeType, 'image/png');
+        assert.equal(secondShot.image?.mimeType, 'image/png');
+        assert.ok(firstShot.image.data !== secondShot.image.data, 'successive observations capture new pixels');
+        checks.push('model screenshots refresh independently of the preview stream');
+        bridge.setPreviewEnabled(false);
+        await until(async () => !(await request('status')).visual_feedback.streaming, 'hidden view pauses capture');
+        const paused = (await request('status')).visual_feedback.frames_received;
+        await wait(350);
+        assert.equal((await request('status')).visual_feedback.frames_received, paused);
+        bridge.setPreviewEnabled(true);
+        await until(async () => (await request('status')).visual_feedback.frames_received > paused + 1, 'expanded view resumes capture');
+        bridge.stop();
+        assert.equal((await request('status')).visual_feedback.active, false);
+        checks.push('in-app capture pause, resume and control release clear the source');
+      } else {
+        // The tree and pixels change continuously. Validation must concern the
+        // action's target, not an unrelated animation elsewhere in the window.
+        const animationAtObserve = load('A').animation_frame;
+        const button = node(state, 'fixture-increment');
+        await until(() => load('A').animation_frame > animationAtObserve + 2, 'background animation advanced');
+        await act('click', state, { ref: button.ref });
+        await until(() => load('A').clicks === 1, 'background AX press');
         assertForegroundB();
-        console.log(JSON.stringify({ status: 'waiting', check: 'unchanged screenshot survives model latency', delay_ms: snapshotDelay }));
-        await wait(snapshotDelay);
-        assertForegroundB();
-      }
-      const animated = load('A').animation_frame;
-      await until(() => load('A').animation_frame > animated + 2, 'pixels changed after screenshot');
-      await act('click', state, screenshotPoint);
-      await until(() => load('A').clicks === 3, 'fully covered background coordinate click');
-      assertForegroundB();
-      checks.push('covered-window PNG and coordinate click tolerate animation');
-      if (snapshotDelay) checks.push(`unchanged screenshot still accepts a click after ${snapshotDelay}ms`);
+        checks.push('AX press tolerates unrelated animation');
 
-      state = await request('observe', { screenshot: true });
-      const movedPoint = center(node(state, 'fixture-increment'));
-      await command('A', 'move');
-      await act('click', state, movedPoint);
-      await until(() => load('A').clicks === 4, 'window-local click after translation');
-      checks.push('translation preserves window-local coordinates');
+        state = await request('observe');
+        await act('type', state, { text: 'Hello Open Harness 中文🙂' });
+        await until(() => load('A').text === 'Hello Open Harness 中文🙂', 'background Unicode input');
+        await rejectedWithoutInput('key', state, { key: 'enter' }, /STALE_SNAPSHOT/);
+        checks.push('background Unicode input and consumed snapshot rejection');
 
-      for (const [buttonName, key] of [['right', 'right_clicks'], ['middle', 'middle_clicks']]) {
+
+
+        state = await request('observe');
+        await act('set_value', state, { ref: node(state, 'fixture-input').ref, value: 'AX assigned value' });
+        await until(() => load('A').text === 'AX assigned value', 'AX set value outcome');
+        state = await request('observe');
+        await rejectedWithoutInput('set_value', state, { ref: node(state, 'fixture-secret').ref, value: 'must not write' }, /SECURE|PASSWORD|SECRET|UNSUPPORTED/i);
+        assert.equal(load('A').secret_length, 0);
+        await command('A', 'focus_secret');
+        state = await request('observe');
+        await rejectedWithoutInput('type', state, { text: 'must not write' }, /SECURE|PASSWORD|SECRET|FOCUS_UNAVAILABLE/i);
+        state = await request('observe');
+        await rejectedWithoutInput('key', state, { key: 'meta+a' }, /SECURE|PASSWORD|SECRET|FOCUS_UNAVAILABLE/i);
+        assert.equal(load('A').secret_length, 0);
+        await command('A', 'focus_input');
+        checks.push('AX value assignment and password field refusal for value, text and keys');
+
+        state = await request('observe');
+        const actionButton = node(state, 'fixture-increment');
+        assert.ok(actionButton.actions.includes('AXPress'), 'AXPress is advertised');
+        await act('action', state, { ref: actionButton.ref, action: 'AXPress' });
+        await until(() => load('A').clicks === 2, 'advertised AX action outcome');
+        state = await request('observe');
+        await rejectedWithoutInput('action', state, { ref: node(state, 'fixture-increment').ref, action: 'AXUnadvertisedFixtureAction' }, /ACTION|UNSUPPORTED/i);
+        checks.push('advertised AX action only');
+
         state = await request('observe', { screenshot: true });
-        const prior = load('A')[key];
-        await act('click', state, { ...center(node(state, 'fixture-pad')), button: buttonName });
-        await until(() => load('A')[key] > prior, `${buttonName} click reached A`);
-      }
-      state = await request('observe', { screenshot: true });
-      await act('click', state, { ...center(node(state, 'fixture-pad')), click_count: 3, modifiers: ['shift'] });
-      await until(() => load('A').last_click_count === 3, 'triple click count reached fixture');
-      assert.ok(load('A').last_modifiers & (1 << 17), 'shift modifier delivered');
-      checks.push('right/middle click, click count and modifier delivery');
+        const beforeButtonMove = center(node(state, 'fixture-increment'));
+        await command('A', 'move_button');
+        await rejectedWithoutInput('click', state, beforeButtonMove, /STATE_CHANGED|AX_UNAVAILABLE|TARGET_UNAVAILABLE|VISUAL_TARGET_CHANGED/);
+        await command('A', 'restore_button');
+        state = await request('observe', { screenshot: true });
+        const beforeButtonReplacement = center(node(state, 'fixture-increment'));
+        await command('A', 'replace_button');
+        await rejectedWithoutInput('click', state, beforeButtonReplacement, /STATE_CHANGED|AX_UNAVAILABLE|TARGET_UNAVAILABLE/);
+        checks.push('coordinate targets reject moved and replaced controls without dispatch');
 
-      state = await request('observe', { screenshot: true });
-      const pad = center(node(state, 'fixture-pad'));
-      await act('drag', state, { from_x: pad.x - 80, from_y: pad.y, to_x: pad.x + 80, to_y: pad.y });
-      await until(() => {
-        const value = load('A');
-        return value.drags > 0 && value.drag_start && value.drag_end && Math.abs(value.drag_end.x - value.drag_start.x - 160) < 2;
-      }, 'drag delivered the requested 160-point displacement');
-      assert.ok(Math.abs(load('A').drag_end.y - load('A').drag_start.y) < 2, 'horizontal drag preserves y');
-      state = await request('observe', { screenshot: true });
-      const priorScroll = load('A').scroll_y;
-      await act('scroll', state, { x: 100, y: state.window.bounds.height - 100, delta_y: -240 });
-      await until(() => load('A').scroll_y !== priorScroll, 'background scroll changed content offset');
-      assert.equal(load('B').pointer_events.length, 0, 'all pointer events remained in A');
-      assertForegroundB();
-      checks.push('background drag and scroll outcomes');
-
-      state = await request('observe', { screenshot: true });
-      const cancellationPad = center(node(state, 'fixture-pad'));
-      const priorEvents = load('A').pointer_events.length;
-      const cancellation = new AbortController();
-      const cancelledDrag = bridge.request('drag', { snapshot_id: state.snapshot_id, from_x: cancellationPad.x - 80, from_y: cancellationPad.y, to_x: cancellationPad.x + 80, to_y: cancellationPad.y }, cancellation.signal).then(result => ({ result }), error => ({ error }));
-      let cancelledWhileHeld = false;
-      for (let attempt = 0; attempt < 500; attempt++) {
-        const events = load('A').pointer_events.slice(priorEvents);
-        if (events.some(event => event.type === 1) && !events.some(event => event.type === 2)) {
-          cancellation.abort(); cancelledWhileHeld = true; break;
+        state = await request('observe', { screenshot: true });
+        assert.equal(state.image.mimeType, 'image/png');
+        assert.equal(Buffer.from(state.image.data, 'base64').subarray(0, 8).toString('hex'), '89504e470d0a1a0a');
+        if (artifacts) writeFileSync(path.join(artifacts, 'native-computer-fixture.png'), Buffer.from(state.image.data, 'base64'));
+        const screenshotPoint = center(node(state, 'fixture-increment'));
+        assert.equal(state.snapshot_policy, 'single_action_until_replaced');
+        assert.equal(state.expires_in_seconds, undefined);
+        assert.equal(state.coordinate_expires_in_seconds, undefined);
+        // Opt-in real latency regression, e.g. 65,000ms, exceeds BOTH former TTLs.
+        // This is a test delay, never a production validity rule.
+        const snapshotDelay = Number(process.env.OPENHARNESS_SNAPSHOT_TEST_DELAY_MS ?? 0);
+        assert.ok(Number.isFinite(snapshotDelay) && snapshotDelay >= 0 && snapshotDelay <= 120_000);
+        if (snapshotDelay) {
+          assertForegroundB();
+          console.log(JSON.stringify({ status: 'waiting', check: 'unchanged screenshot survives model latency', delay_ms: snapshotDelay }));
+          await wait(snapshotDelay);
+          assertForegroundB();
         }
-        await wait(1);
+        const animated = load('A').animation_frame;
+        await until(() => load('A').animation_frame > animated + 2, 'pixels changed after screenshot');
+        await act('click', state, screenshotPoint);
+        await until(() => load('A').clicks === 3, 'fully covered background coordinate click');
+        assertForegroundB();
+        checks.push('covered-window PNG and coordinate click tolerate animation');
+        if (snapshotDelay) checks.push(`unchanged screenshot still accepts a click after ${snapshotDelay}ms`);
+
+        state = await request('observe', { screenshot: true });
+        const movedPoint = center(node(state, 'fixture-increment'));
+        await command('A', 'move');
+        await act('click', state, movedPoint);
+        await until(() => load('A').clicks === 4, 'window-local click after translation');
+        checks.push('translation preserves window-local coordinates');
+
+        for (const [buttonName, key] of [['right', 'right_clicks'], ['middle', 'middle_clicks']]) {
+          state = await request('observe', { screenshot: true });
+          const prior = load('A')[key];
+          await act('click', state, { ...center(node(state, 'fixture-pad')), button: buttonName });
+          await until(() => load('A')[key] > prior, `${buttonName} click reached A`);
+        }
+        state = await request('observe', { screenshot: true });
+        await act('click', state, { ...center(node(state, 'fixture-pad')), click_count: 3, modifiers: ['shift'] });
+        await until(() => load('A').last_click_count === 3, 'triple click count reached fixture');
+        assert.ok(load('A').last_modifiers & (1 << 17), 'shift modifier delivered');
+        checks.push('right/middle click, click count and modifier delivery');
+
+        state = await request('observe', { screenshot: true });
+        const pad = center(node(state, 'fixture-pad'));
+        await act('drag', state, { from_x: pad.x - 80, from_y: pad.y, to_x: pad.x + 80, to_y: pad.y });
+        await until(() => {
+          const value = load('A');
+          return value.drags > 0 && value.drag_start && value.drag_end && Math.abs(value.drag_end.x - value.drag_start.x - 160) < 2;
+        }, 'drag delivered the requested 160-point displacement');
+        assert.ok(Math.abs(load('A').drag_end.y - load('A').drag_start.y) < 2, 'horizontal drag preserves y');
+        state = await request('observe', { screenshot: true });
+        const priorScroll = load('A').scroll_y;
+        await act('scroll', state, { x: 100, y: state.window.bounds.height - 100, delta_y: -240 });
+        await until(() => load('A').scroll_y !== priorScroll, 'background scroll changed content offset');
+        assert.equal(load('B').pointer_events.length, 0, 'all pointer events remained in A');
+        assertForegroundB();
+        checks.push('background drag and scroll outcomes');
+
+        state = await request('observe', { screenshot: true });
+        const cancellationPad = center(node(state, 'fixture-pad'));
+        const priorEvents = load('A').pointer_events.length;
+        const cancellation = new AbortController();
+        const cancelledDrag = bridge.request('drag', { snapshot_id: state.snapshot_id, from_x: cancellationPad.x - 80, from_y: cancellationPad.y, to_x: cancellationPad.x + 80, to_y: cancellationPad.y }, cancellation.signal).then(result => ({ result }), error => ({ error }));
+        let cancelledWhileHeld = false;
+        for (let attempt = 0; attempt < 500; attempt++) {
+          const events = load('A').pointer_events.slice(priorEvents);
+          if (events.some(event => event.type === 1) && !events.some(event => event.type === 2)) {
+            cancellation.abort(); cancelledWhileHeld = true; break;
+          }
+          await wait(1);
+        }
+        assert.equal(cancelledWhileHeld, true, 'cancellation caught a held target mouse button');
+        assert.match(String((await cancelledDrag).error), /cancelled/i);
+        await until(() => load('A').pointer_events.slice(priorEvents).some(event => event.type === 2), 'cancelled drag released its target button');
+        assertPointerButtonsReleased();
+        assertForegroundB();
+        await request('select_app', selection);
+        checks.push('cancelling a held background drag releases its button and ends the session');
+
+
+        await command('A', 'focus_input');
+        state = await request('observe');
+        await act('key', state, { key: 'meta+a' });
+        state = await request('observe');
+        await act('type', state, { text: 'replaced by combo' });
+        await until(() => load('A').text === 'replaced by combo', 'background Command+A replaced selection');
+        assert.equal(load('B').text, '');
+        assertForegroundB();
+        checks.push('background combination key targets A only');
+
+        state = await request('observe');
+        await act('set_value', state, { ref: node(state, 'fixture-input').ref, value: '' });
+        await command('A', 'focus_pad');
+        state = await request('observe', { screenshot: true });
+        await act('click', state, center(node(state, 'fixture-input')));
+        state = await until(async () => {
+          const observed = await request('observe');
+          return node(observed, 'fixture-input').AXFocused ? observed : null;
+        }, 'background field acquired focus after queued click');
+        await act('type', state, { text: 'Coordinate-focused text' });
+        await until(() => load('A').text === 'Coordinate-focused text', 'coordinate click focused the standard background text field');
+        assert.equal(load('B').text, '');
+        assertForegroundB();
+        checks.push('coordinate click on standard background text field focuses subsequent typing');
+
+        // B types into its own responder while A is controlled. This does not
+        // invoke a global event tap or send anything to a user application.
+        await command('A', 'focus_input');
+        await command('B', 'foreground_input');
+        state = await request('observe');
+        await act('key', state, { key: 'meta+a' });
+        state = await request('observe');
+        await act('type', state, { text: 'A remains isolated' });
+        await until(() => load('B').foreground_input_remaining === 0, 'foreground responder input completed');
+        assert.equal(load('A').text, 'A remains isolated');
+        assert.equal(load('B').text, 'u'.repeat(60));
+        assert.equal(load('B').foreground_input_count, 60);
+        assert.equal(load('B').foreground_input_interrupted, false);
+        assertForegroundB();
+        checks.push('concurrent foreground responder typing remains isolated');
+
+        await command('A', 'ax_windows_empty');
+        await request('select_app', selection);
+        state = await request('observe');
+        assert.equal(state.window.id, initialA.window_id);
+        node(state, 'fixture-input');
+        checks.push('AXWindows empty still discovers and enriches the exact system window');
+
+        const canvasPoint = center(node(state, 'fixture-pad'));
+        await command('A', 'focus_pad');
+        await command('A', 'ax_unavailable');
+        await request('select_app', selection);
+        const visualWindows = await request('windows');
+        if (artifacts) writeFileSync(path.join(artifacts, 'native-computer-visual-windows.json'), JSON.stringify(visualWindows, null, 2));
+        assert.equal(visualWindows.windows.find(item => item.id === initialA.window_id).accessibility, false);
+        state = await request('observe');
+        assert.equal(state.accessibility, 'unavailable');
+        assert.deepEqual(state.elements, []);
+        assert.ok(state.image, 'missing AX automatically returns a window screenshot');
+        assert.equal(state.snapshot_policy, 'single_action_until_replaced');
+        assert.equal(state.keyboard_requires_screenshot, true);
+        let beforeCanvas = load('A').right_clicks;
+        await act('click', state, { ...canvasPoint, button: 'right' });
+        await until(() => load('A').right_clicks === beforeCanvas + 1, 'AX-less background canvas receives coordinate click');
+        // After losing AX focus metadata, preview switches away from SCStream.
+        // Its system sharing decoration must leave the source's window set;
+        // keyboard fallback still requires an unambiguous real destination.
+        await until(async () => (await request('windows')).windows.filter(item => item.on_screen).length === 1,
+          'AX-less preview preserves one keyboard destination');
+        state = await request('observe');
+        const canvasText = load('A').canvas_text;
+        await act('type', state, { text: 'Canvas中文' });
+        await until(() => load('A').canvas_text === canvasText + 'Canvas中文', 'AX-less canvas receives literal keyboard input');
+        assertForegroundB();
+        checks.push('no AX window or focused control: screenshot, background click and canvas typing succeed');
+
+        state = await request('observe');
+        await command('A', 'change_canvas');
+        await rejectedWithoutInput('click', state, { ...canvasPoint, button: 'right' }, /VISUAL_TARGET_CHANGED/);
+        await rejectedWithoutInput('click', state, { ...canvasPoint, button: 'right' }, /STALE_SNAPSHOT/);
+        const replacedState = await request('observe');
+        state = await request('observe');
+        await rejectedWithoutInput('click', replacedState, { ...canvasPoint, button: 'right' }, /STALE_SNAPSHOT/);
+        beforeCanvas = load('A').right_clicks;
+        await act('click', state, { ...canvasPoint, button: 'right' });
+        await until(() => load('A').right_clicks === beforeCanvas + 1, 'fresh observation accepts changed canvas');
+        checks.push('changed canvas blocks stale visual input; consumed/replaced snapshots refuse replay; fresh observation recovers');
+
+        await command('A', 'ax_geometry');
+        await request('select_app', selection);
+        state = await request('observe');
+        assert.equal(state.accessibility, 'unavailable', 'mismatched AX geometry cannot supply actionable refs');
+        assert.ok(state.image, 'system window screenshot remains available');
+        beforeCanvas = load('A').right_clicks;
+        await act('click', state, { ...canvasPoint, button: 'right' });
+        await until(() => load('A').right_clicks === beforeCanvas + 1, 'coordinate input uses authoritative system geometry');
+        checks.push('inconsistent AX geometry disables refs while visual control remains usable');
+
+        await command('A', 'ax_restore');
+        await command('A', 'focus_input');
+        state = await request('observe');
+        node(state, 'fixture-input');
+        assert.equal(state.accessibility, 'available');
+        checks.push('AX capabilities recover on the existing window binding');
+
+        state = await request('observe');
+        await rejectedWithoutInput('click', state, { x: 100, y: 100 }, /SCREENSHOT_REQUIRED/);
+        state = await request('observe', { screenshot: true });
+        await rejectedWithoutInput('drag', state, { from_x: 50, from_y: 50, to_x: state.window.bounds.width + 1, to_y: 50 }, /INVALID_COORDINATES/);
+        checks.push('screenshot and coordinate boundaries reject without dispatch');
+
+        state = await request('observe');
+        await command('A', 'resize');
+        await rejectedWithoutInput('key', state, { key: 'tab' }, /STATE_CHANGED|WINDOW_CHANGED/);
+        checks.push('resized window invalidates snapshot without input');
+
+        await command('A', 'second_window');
+        const twoWindows = await until(async () => {
+          const listing = await request('windows');
+          return listing.windows.some(item => item.id === load('A').second_window_id) ? listing : null;
+        }, 'secondary window registered with AX and WindowServer');
+        assert.ok(twoWindows.windows.some(item => item.id === load('A').second_window_id));
+        const stillPrimary = await request('observe');
+        assert.equal(stillPrimary.window.id, initialA.window_id, 'observe remains bound despite app focus switching');
+        await act('click', stillPrimary, { ref: node(stillPrimary, 'fixture-increment').ref });
+        await until(() => load('A').clicks === 5, 'bound primary receives AX press');
+        assert.equal(load('A').second_clicks, 0);
+        assertForegroundB();
+        checks.push('same-app focused-window change preserves bound window identity');
+
+        state = await request('observe', { screenshot: true });
+        await rejectedWithoutInput('key', state, { key: 'space' }, /FOCUS_CHANGED/);
+        await command('A', 'ax_unavailable');
+        await request('select_app', selection);
+        state = await request('observe');
+        await rejectedWithoutInput('type', state, { text: 'must not reach another window' }, /FOCUS_CHANGED/);
+        await command('A', 'ax_restore');
+        checks.push('keyboard fallback refuses ambiguous or changed same-app key windows');
+
+        state = await request('observe', { screenshot: true });
+        await command('A', 'close_primary');
+        await until(async () => !(await request('status')).visual_feedback.active, 'closed window removes preview');
+        await rejectedWithoutInput('click', state, { x: 100, y: 100 }, /WINDOW|STATE_CHANGED/);
+        await assert.rejects(request('observe'), /WINDOW|STATE_CHANGED/);
+        await until(async () => {
+          const listing = await request('windows');
+          return listing.windows.some(item => item.id === load('A').second_window_id) && !listing.windows.some(item => item.id === initialA.window_id);
+        }, 'closed primary disappeared while secondary remains available');
+        await request('select_app', { ...selection, window_id: load('A').second_window_id });
+        state = await request('observe');
+        await act('click', state, { ref: node(state, 'fixture-secondary-increment').ref });
+        await until(() => load('A').second_clicks === 1, 'explicitly selected secondary receives action');
+        assertForegroundB();
+        checks.push('destroyed window refuses input and explicit secondary selection succeeds');
+        assertPointerButtonsReleased(true);
+        checks.push('left/right/middle presses balance releases and drag finishes released');
       }
-      assert.equal(cancelledWhileHeld, true, 'cancellation caught a held target mouse button');
-      assert.match(String((await cancelledDrag).error), /cancelled/i);
-      await until(() => load('A').pointer_events.slice(priorEvents).some(event => event.type === 2), 'cancelled drag released its target button');
-      assertPointerButtonsReleased();
-      assertForegroundB();
-      await request('select_app', selection);
-      checks.push('cancelling a held background drag releases its button and ends the session');
-
-
-      await command('A', 'focus_input');
-      state = await request('observe');
-      await act('key', state, { key: 'meta+a' });
-      state = await request('observe');
-      await act('type', state, { text: 'replaced by combo' });
-      await until(() => load('A').text === 'replaced by combo', 'background Command+A replaced selection');
-      assert.equal(load('B').text, '');
-      assertForegroundB();
-      checks.push('background combination key targets A only');
-
-      state = await request('observe');
-      await act('set_value', state, { ref: node(state, 'fixture-input').ref, value: '' });
-      await command('A', 'focus_pad');
-      state = await request('observe', { screenshot: true });
-      await act('click', state, center(node(state, 'fixture-input')));
-      state = await until(async () => {
-        const observed = await request('observe');
-        return node(observed, 'fixture-input').AXFocused ? observed : null;
-      }, 'background field acquired focus after queued click');
-      await act('type', state, { text: 'Coordinate-focused text' });
-      await until(() => load('A').text === 'Coordinate-focused text', 'coordinate click focused the standard background text field');
-      assert.equal(load('B').text, '');
-      assertForegroundB();
-      checks.push('coordinate click on standard background text field focuses subsequent typing');
-
-      // B types into its own responder while A is controlled. This does not
-      // invoke a global event tap or send anything to a user application.
-      await command('A', 'focus_input');
-      await command('B', 'foreground_input');
-      state = await request('observe');
-      await act('key', state, { key: 'meta+a' });
-      state = await request('observe');
-      await act('type', state, { text: 'A remains isolated' });
-      await until(() => load('B').foreground_input_remaining === 0, 'foreground responder input completed');
-      assert.equal(load('A').text, 'A remains isolated');
-      assert.equal(load('B').text, 'u'.repeat(60));
-      assert.equal(load('B').foreground_input_count, 60);
-      assert.equal(load('B').foreground_input_interrupted, false);
-      assertForegroundB();
-      checks.push('concurrent foreground responder typing remains isolated');
-
-      await command('A', 'ax_windows_empty');
-      await request('select_app', selection);
-      state = await request('observe');
-      assert.equal(state.window.id, initialA.window_id);
-      node(state, 'fixture-input');
-      checks.push('AXWindows empty still discovers and enriches the exact system window');
-
-      const canvasPoint = center(node(state, 'fixture-pad'));
-      await command('A', 'focus_pad');
-      await command('A', 'ax_unavailable');
-      await request('select_app', selection);
-      const visualWindows = await request('windows');
-      if (artifacts) writeFileSync(path.join(artifacts, 'native-computer-visual-windows.json'), JSON.stringify(visualWindows, null, 2));
-      assert.equal(visualWindows.windows.find(item => item.id === initialA.window_id).accessibility, false);
-      state = await request('observe');
-      assert.equal(state.accessibility, 'unavailable');
-      assert.deepEqual(state.elements, []);
-      assert.ok(state.image, 'missing AX automatically returns a window screenshot');
-      assert.equal(state.snapshot_policy, 'single_action_until_replaced');
-      assert.equal(state.keyboard_requires_screenshot, true);
-      let beforeCanvas = load('A').right_clicks;
-      await act('click', state, { ...canvasPoint, button: 'right' });
-      await until(() => load('A').right_clicks === beforeCanvas + 1, 'AX-less background canvas receives coordinate click');
-      state = await request('observe');
-      const canvasText = load('A').canvas_text;
-      await act('type', state, { text: 'Canvas中文' });
-      await until(() => load('A').canvas_text === canvasText + 'Canvas中文', 'AX-less canvas receives literal keyboard input');
-      assertForegroundB();
-      checks.push('no AX window or focused control: screenshot, background click and canvas typing succeed');
-
-      state = await request('observe');
-      await command('A', 'change_canvas');
-      await rejectedWithoutInput('click', state, { ...canvasPoint, button: 'right' }, /VISUAL_TARGET_CHANGED/);
-      await rejectedWithoutInput('click', state, { ...canvasPoint, button: 'right' }, /STALE_SNAPSHOT/);
-      const replacedState = await request('observe');
-      state = await request('observe');
-      await rejectedWithoutInput('click', replacedState, { ...canvasPoint, button: 'right' }, /STALE_SNAPSHOT/);
-      beforeCanvas = load('A').right_clicks;
-      await act('click', state, { ...canvasPoint, button: 'right' });
-      await until(() => load('A').right_clicks === beforeCanvas + 1, 'fresh observation accepts changed canvas');
-      checks.push('changed canvas blocks stale visual input; consumed/replaced snapshots refuse replay; fresh observation recovers');
-
-      await command('A', 'ax_geometry');
-      await request('select_app', selection);
-      state = await request('observe');
-      assert.equal(state.accessibility, 'unavailable', 'mismatched AX geometry cannot supply actionable refs');
-      assert.ok(state.image, 'system window screenshot remains available');
-      beforeCanvas = load('A').right_clicks;
-      await act('click', state, { ...canvasPoint, button: 'right' });
-      await until(() => load('A').right_clicks === beforeCanvas + 1, 'coordinate input uses authoritative system geometry');
-      checks.push('inconsistent AX geometry disables refs while visual control remains usable');
-
-      await command('A', 'ax_restore');
-      await command('A', 'focus_input');
-      state = await request('observe');
-      node(state, 'fixture-input');
-      assert.equal(state.accessibility, 'available');
-      checks.push('AX capabilities recover on the existing window binding');
-
-      state = await request('observe');
-      await rejectedWithoutInput('click', state, { x: 100, y: 100 }, /SCREENSHOT_REQUIRED/);
-      state = await request('observe', { screenshot: true });
-      await rejectedWithoutInput('drag', state, { from_x: 50, from_y: 50, to_x: state.window.bounds.width + 1, to_y: 50 }, /INVALID_COORDINATES/);
-      checks.push('screenshot and coordinate boundaries reject without dispatch');
-
-      state = await request('observe');
-      await command('A', 'resize');
-      await rejectedWithoutInput('key', state, { key: 'tab' }, /STATE_CHANGED|WINDOW_CHANGED/);
-      checks.push('resized window invalidates snapshot without input');
-
-      await command('A', 'second_window');
-      const twoWindows = await until(async () => {
-        const listing = await request('windows');
-        return listing.windows.some(item => item.id === load('A').second_window_id) ? listing : null;
-      }, 'secondary window registered with AX and WindowServer');
-      assert.ok(twoWindows.windows.some(item => item.id === load('A').second_window_id));
-      const stillPrimary = await request('observe');
-      assert.equal(stillPrimary.window.id, initialA.window_id, 'observe remains bound despite app focus switching');
-      await act('click', stillPrimary, { ref: node(stillPrimary, 'fixture-increment').ref });
-      await until(() => load('A').clicks === 5, 'bound primary receives AX press');
-      assert.equal(load('A').second_clicks, 0);
-      assertForegroundB();
-      checks.push('same-app focused-window change preserves bound window identity');
-
-      state = await request('observe', { screenshot: true });
-      await rejectedWithoutInput('key', state, { key: 'space' }, /FOCUS_CHANGED/);
-      await command('A', 'ax_unavailable');
-      await request('select_app', selection);
-      state = await request('observe');
-      await rejectedWithoutInput('type', state, { text: 'must not reach another window' }, /FOCUS_CHANGED/);
-      await command('A', 'ax_restore');
-      checks.push('keyboard fallback refuses ambiguous or changed same-app key windows');
-
-      state = await request('observe', { screenshot: true });
-      await command('A', 'close_primary');
-      await rejectedWithoutInput('click', state, { x: 100, y: 100 }, /WINDOW|STATE_CHANGED/);
-      await assert.rejects(request('observe'), /WINDOW|STATE_CHANGED/);
-      await until(async () => {
-        const listing = await request('windows');
-        return listing.windows.some(item => item.id === load('A').second_window_id) && !listing.windows.some(item => item.id === initialA.window_id);
-      }, 'closed primary disappeared while secondary remains available');
-      await request('select_app', { ...selection, window_id: load('A').second_window_id });
-      state = await request('observe');
-      await act('click', state, { ref: node(state, 'fixture-secondary-increment').ref });
-      await until(() => load('A').second_clicks === 1, 'explicitly selected secondary receives action');
-      assertForegroundB();
-      checks.push('destroyed window refuses input and explicit secondary selection succeeds');
-      assertPointerButtonsReleased(true);
-      checks.push('left/right/middle presses balance releases and drag finishes released');
       if (artifacts) {
         for (const name of ['A', 'B']) writeFileSync(path.join(artifacts, `native-computer-fixture-${name}.json`), JSON.stringify(load(name), null, 2));
       }
@@ -484,6 +535,7 @@ try {
       try { writeFileSync(path.join(artifacts, `native-computer-fixture-${name}.json`), JSON.stringify(load(name), null, 2)); } catch {}
     }
     try {
+      writeFileSync(path.join(artifacts, 'native-computer-status.json'), JSON.stringify(await request('status'), null, 2));
       const { image, ...state } = await request('observe', { screenshot: true });
       writeFileSync(path.join(artifacts, 'native-computer-failure.json'), JSON.stringify(state, null, 2));
       if (image) writeFileSync(path.join(artifacts, 'native-computer-failure.png'), Buffer.from(image.data, 'base64'));
@@ -492,6 +544,7 @@ try {
   process.exitCode = locked ? 2 : 1;
 } finally {
   bridge.stop();
+  previewRelay?.stop();
   for (const { pid, child } of fixtures.reverse()) {
     if (pid) { try { process.kill(pid, 'SIGTERM'); } catch {} }
     child.kill('SIGTERM');

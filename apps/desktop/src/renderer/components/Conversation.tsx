@@ -75,6 +75,7 @@ function Message({ message, runId }: { message: ChatMessage; runId: string }) {
       <div className="message-body">
         <div className="message-author">
           {message.role === 'user' ? '你' : 'Open Harness'}
+          {message.status === 'interrupted' && <span className="message-interrupted">已中断</span>}
           {message.status === 'streaming' && (
             <span className="message-live">
               <span />
@@ -102,7 +103,7 @@ function Message({ message, runId }: { message: ChatMessage; runId: string }) {
                 text={message.text}
                 runId={runId}
                 messageId={message.id}
-                settled={message.status === 'complete'}
+                settled={message.status !== 'streaming'}
               />
             ) : (
               message.text

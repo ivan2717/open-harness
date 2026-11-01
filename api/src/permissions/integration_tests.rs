@@ -35,6 +35,8 @@ impl Fixture {
         model: Option<&str>,
     ) -> Arc<RunEntry> {
         let detail = RunDetail {
+            pending_inputs: Vec::new(),
+            pending_inputs_paused: false,
             summary: RunSummary {
                 delegation: parent.map(|write_paths| Delegation {
                     parent_run_id: "parent".into(),

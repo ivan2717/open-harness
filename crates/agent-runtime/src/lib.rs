@@ -59,3 +59,6 @@ pub use model_capabilities::{
 pub use model_stream::{
     ModelBlockKind, ModelStreamAssembler, ModelStreamError, ModelStreamEvent, ModelStreamSink,
 };
+
+mod user_input;
+pub use user_input::{PendingUserInput, UserInputQueue};

@@ -23,6 +23,7 @@
     "test:e2e": "pnpm run build && node scripts/backend.mjs debug && node tests/e2e/desktop.mjs",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
+    "test:e2e:steering": "pnpm run build && node scripts/backend.mjs debug && node tests/e2e/steering.mjs",
     "test:e2e:models": "pnpm run build && node scripts/backend.mjs debug && node tests/e2e/models.mjs",
     "test:e2e:model-edit": "pnpm run build && node scripts/backend.mjs debug && node tests/e2e/model-editing.mjs",
     "test:e2e:workspace": "pnpm run build && node scripts/backend.mjs debug && node tests/e2e/workspace.mjs",

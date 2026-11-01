@@ -671,3 +671,25 @@ test("password and file fills are refused without dispatch, ordinary inputs stil
   await session.call("browser_action", { action: "fill", ref: element.ref, revision: snapshot.revision, text: "ordinary text" });
   assert.equal(await session.page.locator("#text").inputValue(), "ordinary text");
 });
+
+test('preview is independent of model snapshots and stops on close or unauthorized navigation', async (t) => {
+  const { session, url } = await fixture(t);
+  assert.deepEqual(await session.preview(true), { active: false });
+  await session.call('browser_open', { url });
+  const snapshot = data(await session.call('browser_snapshot'));
+  const observed = structuredClone(session.observedState);
+  const screenshotRevision = session.screenshotRevision;
+  const frame = await session.preview(true);
+  assert.match(frame.jpeg, /^\/9j\//);
+  assert.deepEqual(session.observedState, observed);
+  assert.equal(session.screenshotRevision, screenshotRevision);
+  assert.equal((await session.preview(false)).jpeg, undefined);
+  const email = snapshot.elements.find(e => e.name === 'Email');
+  await session.call('browser_action', { action: 'fill', revision: snapshot.revision, ref: email.ref, text: 'preview@example.test' });
+  session.requireHostPermission = true;
+  assert.equal((await session.preview(true)).unavailable, true);
+  session.authorizedOrigins.add(url);
+  assert.match((await session.preview(true)).jpeg, /^\/9j\//);
+  await session.close();
+  assert.deepEqual(await session.preview(true), { active: false });
+});
