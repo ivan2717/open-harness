@@ -28,7 +28,10 @@ impl Directory {
             .await
             .unwrap();
         if old {
-            File::open(self.path(&reference))
+            // Windows requires a writable handle to update file timestamps.
+            fs::OpenOptions::new()
+                .write(true)
+                .open(self.path(&reference))
                 .unwrap()
                 .set_times(
                     fs::FileTimes::new()
@@ -236,7 +239,9 @@ async fn a_snapshot_with_a_missing_or_empty_log_blocks_all_cleanup() {
     let orphan = directory
         .original("orphan.txt", b"old abandoned upload", true)
         .await;
-    File::open(directory.path(&saved))
+    fs::OpenOptions::new()
+        .write(true)
+        .open(directory.path(&saved))
         .unwrap()
         .set_times(
             fs::FileTimes::new()

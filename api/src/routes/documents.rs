@@ -1,5 +1,6 @@
 //! Convert explicitly supplied document bytes to a bounded message snapshot.
 //! No path is accepted or opened, and extraction never grants workspace access.
+use super::request_error::RequestError;
 use crate::{input, service::ServiceError};
 use agent_core::TextFileReference;
 use agent_local::documents::{extract_document, supported};
@@ -8,7 +9,6 @@ use axum::{
     body::Bytes,
     extract::{Query, rejection::BytesRejection},
     http::StatusCode,
-    response::{IntoResponse, Response},
 };
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -30,7 +30,7 @@ pub(super) struct DocumentText {
 pub(super) async fn extract(
     Query(query): Query<DocumentQuery>,
     body: Result<Bytes, BytesRejection>,
-) -> Result<Json<DocumentText>, Response> {
+) -> Result<Json<DocumentText>, RequestError> {
     let reference = TextFileReference {
         attachment: None,
         image: None,
@@ -38,12 +38,12 @@ pub(super) async fn extract(
         path: None,
         text: String::new(),
     };
-    input::validate("", std::slice::from_ref(&reference)).map_err(IntoResponse::into_response)?;
+    input::validate("", std::slice::from_ref(&reference))?;
     if !supported(Path::new(&reference.name)) {
         return Err(ServiceError::BadRequest(
             "仅支持 PDF、DOCX、XLSX、PPTX 文档，请选择受支持的文件格式".into(),
         )
-        .into_response());
+        .into());
     }
     let bytes = body.map_err(|error| {
         let message = if error.status() == StatusCode::PAYLOAD_TOO_LARGE {
@@ -51,11 +51,12 @@ pub(super) async fn extract(
         } else {
             "无法读取文档内容，请重新添加文件"
         };
-        (error.status(), Json(serde_json::json!({"error": message}))).into_response()
+        RequestError::Body(error.status(), message)
     })?;
-    let permit = EXTRACTION_SLOTS.acquire().await.map_err(|_| {
-        ServiceError::Conflict("文档提取暂不可用，请稍后重试".into()).into_response()
-    })?;
+    let permit = EXTRACTION_SLOTS
+        .acquire()
+        .await
+        .map_err(|_| ServiceError::Conflict("文档提取暂不可用，请稍后重试".into()))?;
     tokio::task::spawn_blocking(move || {
         // Keep the slot occupied until parsing ends, even if the HTTP request
         // is cancelled while this blocking task is still running.
@@ -63,11 +64,9 @@ pub(super) async fn extract(
         snapshot(reference, &bytes)
     })
     .await
-    .map_err(|_| {
-        ServiceError::BadRequest("文档解析失败，请重新导出后再添加".into()).into_response()
-    })?
+    .map_err(|_| ServiceError::BadRequest("文档解析失败，请重新导出后再添加".into()))?
     .map(Json)
-    .map_err(IntoResponse::into_response)
+    .map_err(Into::into)
 }
 
 fn snapshot(mut reference: TextFileReference, bytes: &[u8]) -> Result<DocumentText, ServiceError> {
