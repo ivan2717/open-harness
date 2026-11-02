@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Outlet, useLocation, useMatch, useNavigate } from '@tanstack/react-router'
-import { PanelLeftClose, PanelLeftOpen } from 'lucide-react'
+import { AlertCircle, PanelLeftClose, PanelLeftOpen } from 'lucide-react'
 import { configOptions } from '../lib/queries'
 import { ChatSidebar } from './ChatSidebar'
 import { NavigationRail } from './NavigationRail'
@@ -56,6 +56,15 @@ export function AppShell() {
           </button>
         )}
         <span className="titlebar-name">Open Harness</span>
+        {Boolean(config.data?.recovery_issues?.length) && (
+          <button
+            className="titlebar-local no-drag recovery-notice"
+            onClick={() => void navigate({ to: '/settings' })}
+          >
+            <AlertCircle size={13} />
+            部分会话未恢复
+          </button>
+        )}
         {config.isError && (
           <span className="titlebar-local" role="status">
             <span className="connection-dot is-offline" />

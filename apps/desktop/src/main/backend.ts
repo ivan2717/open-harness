@@ -29,6 +29,7 @@ export class Backend {
   private failure: Error | undefined
   private stopping = false
   private token = randomBytes(32).toString('hex')
+  private restarting: Promise<void> | undefined
 
   constructor(
     private binary: string,
@@ -65,6 +66,7 @@ export class Backend {
         child.kill()
       }, 30_000)
       const fail = (error: Error): void => {
+        if (this.child !== child) return
         // Terminating a timed-out startup can produce exit(0). Keep its cause,
         // rather than replacing it with a misleading clean-exit message.
         this.failure ??= error
@@ -144,10 +146,29 @@ export class Backend {
   }
 
   private async origin(): Promise<string> {
+    if (this.restarting) await this.restarting
     if (this.failure) throw this.failure
     const origin = await this.start()
     if (this.failure) throw this.failure
     return origin
+  }
+
+  /** Explicit recovery only. Never replay the request that failed or resume runs. */
+  restartAfterFailure(): Promise<void> {
+    if (this.restarting) return this.restarting
+    if (!this.failure) return Promise.reject(new Error('本地服务仍在运行，无需重启。'))
+    this.restarting = (async () => {
+      await this.stop()
+      this.child = undefined
+      this.ready = undefined
+      this.failure = undefined
+      this.stopping = false
+      this.token = randomBytes(32).toString('hex')
+      await this.start()
+    })().finally(() => {
+      this.restarting = undefined
+    })
+    return this.restarting
   }
 
   async request(request: ApiRequest): Promise<unknown> {
@@ -300,7 +321,7 @@ export class Backend {
       try {
         const origin = await this.origin()
         if (signal.aborted) return
-        const response = await fetch(`${origin}/api/runs/${id}/events`, {
+        const response = await fetch(`${origin}/api/runs/${id}/events?recent=true`, {
           headers: { Authorization: `Bearer ${this.token}`, Accept: 'text/event-stream' },
           signal,
           redirect: 'error',

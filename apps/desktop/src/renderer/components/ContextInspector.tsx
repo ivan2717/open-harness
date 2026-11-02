@@ -15,6 +15,7 @@ import type { ContextSnapshot, RunDetail } from '../../shared/contracts'
 import { compactNumber, dateTime, number, time } from '../lib/format'
 import { useUiStore } from '../state/ui-store'
 import { MemoryInspector } from './MemoryInspector'
+import { useTimelineHistory } from '../lib/timeline-history'
 
 function Metric({ label, value, note }: { label: string; value: string; note?: string }) {
   return (
@@ -179,6 +180,7 @@ export function ContextInspector({
   const setTab = useUiStore((state) => state.setInspectorTab)
   const close = useUiStore((state) => state.setInspectorOpen)
   const [sourceSequence, setSourceSequence] = useState<number | null>(null)
+  const timeline = useTimelineHistory(run)
   useEffect(() => {
     if (tab !== 'timeline' || sourceSequence === null) return
     const item = document.getElementById(`timeline-event-${sourceSequence}`)
@@ -188,8 +190,8 @@ export function ContextInspector({
       item.scrollIntoView({ block: 'center' })
       item.focus({ preventScroll: true })
     }
-    setSourceSequence(null)
-  }, [tab, sourceSequence])
+    if (item || timeline.error) setSourceSequence(null)
+  }, [tab, sourceSequence, timeline.events, timeline.error])
   return (
     <aside className="inspector" aria-label="运行检查器">
       <div className="inspector-header">
@@ -219,7 +221,10 @@ export function ContextInspector({
           onClick={() => setTab('timeline')}
         >
           <Clock3 size={13} />
-          时间线{Boolean(run?.events.length) && <span>{run?.events.length}</span>}
+          时间线
+          {Boolean(run?.history?.total_events ?? run?.events.length) && (
+            <span>{run?.history?.total_events ?? run?.events.length}</span>
+          )}
         </button>
         <button
           id="memory-tab"
@@ -277,32 +282,55 @@ export function ContextInspector({
             onSource={(sequence) => {
               setSourceSequence(sequence)
               setTab('timeline')
+              if (!timeline.events.some((event) => event.sequence === sequence))
+                void timeline.load(sequence)
             }}
           />
-        ) : run?.events.length ? (
-          <ol className="timeline">
-            {run.events.map((event) => (
-              <li key={event.sequence} id={`timeline-event-${event.sequence}`} tabIndex={-1}>
-                <span className="timeline-dot" />
-                <div className="timeline-heading">
-                  <strong>{event.label}</strong>
-                  <time>{time(event.timestamp)}</time>
-                </div>
-                <span className="timeline-step">
-                  STEP {String(event.step).padStart(2, '0')} · #{event.sequence}
-                </span>
-                {event.detail && (
-                  <details className="timeline-detail">
-                    <summary>
-                      查看事件详情
-                      <ChevronRight size={11} />
-                    </summary>
-                    <p>{event.detail}</p>
-                  </details>
-                )}
-              </li>
-            ))}
-          </ol>
+        ) : timeline.events.length ? (
+          <>
+            {timeline.source && (
+              <button className="history-load-button" onClick={timeline.latest}>
+                返回最新事件
+              </button>
+            )}
+            {timeline.before != null && (
+              <button
+                className="history-load-button"
+                disabled={timeline.loading}
+                onClick={() => void timeline.load()}
+              >
+                {timeline.loading ? '正在加载…' : '查看更早的事件'}
+              </button>
+            )}
+            {timeline.error && (
+              <p role="alert" className="history-load-error">
+                {timeline.error}
+              </p>
+            )}
+            <ol className="timeline">
+              {timeline.events.map((event) => (
+                <li key={event.sequence} id={`timeline-event-${event.sequence}`} tabIndex={-1}>
+                  <span className="timeline-dot" />
+                  <div className="timeline-heading">
+                    <strong>{event.label}</strong>
+                    <time>{time(event.timestamp)}</time>
+                  </div>
+                  <span className="timeline-step">
+                    STEP {String(event.step).padStart(2, '0')} · #{event.sequence}
+                  </span>
+                  {event.detail && (
+                    <details className="timeline-detail">
+                      <summary>
+                        查看事件详情
+                        <ChevronRight size={11} />
+                      </summary>
+                      <p>{event.detail}</p>
+                    </details>
+                  )}
+                </li>
+              ))}
+            </ol>
+          </>
         ) : (
           <div className="inspector-empty timeline-empty">
             <Clock3 size={25} strokeWidth={1.3} />

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { ArrowDown, ChevronRight, LoaderCircle } from 'lucide-react'
 import type { ChatMessage, RunDetail } from '../../shared/contracts'
 import { resolveToolOutcomes, type ToolOutcome } from '../lib/tool-outcomes'
@@ -12,6 +12,7 @@ import { FileReferences } from './FileReferences'
 import { MessageMarkdown } from './MessageMarkdown'
 import { ToolActivityGroup } from './ToolActivity'
 import '../conversation-activity.css'
+import { useConversationHistory } from '../lib/conversation-history'
 
 function Message({ message, runId }: { message: ChatMessage; runId: string }) {
   if (
@@ -144,7 +145,7 @@ function AssistantTurn({
             )}
             <ChevronRight size={13} className="details-chevron" />
           </summary>
-          <div className="turn-work-content">{content}</div>
+          {open && <div className="turn-work-content">{content}</div>}
         </details>
       ) : (
         content
@@ -158,13 +159,23 @@ function AssistantTurn({
   )
 }
 
-export function Conversation({ run }: { run: RunDetail }) {
+export function Conversation({ run: liveRun }: { run: RunDetail }) {
+  const history = useConversationHistory(liveRun)
+  const run = history.run
   const turns = conversationTurns(run)
   const outcomes = resolveToolOutcomes(run.messages)
   const scroll = useRef<HTMLDivElement>(null)
   const keepAtBottom = useRef(true)
   const [showScroll, setShowScroll] = useState(false)
   const previousRun = useRef(run.id)
+  const historyAnchor = useRef<{ element: Element; top: number } | null>(null)
+  useLayoutEffect(() => {
+    const anchor = historyAnchor.current
+    if (!history.loading && anchor && scroll.current && anchor.element.isConnected) {
+      scroll.current.scrollTop += anchor.element.getBoundingClientRect().top - anchor.top
+      historyAnchor.current = null
+    }
+  }, [history.loading, run.messages.length])
   useEffect(() => {
     if (previousRun.current !== run.id) {
       keepAtBottom.current = true
@@ -206,6 +217,26 @@ export function Conversation({ run }: { run: RunDetail }) {
             })}
             <span />
           </div>
+          {history.before && (
+            <button
+              className="history-load-button"
+              disabled={history.loading}
+              onClick={() => {
+                const element = scroll.current?.querySelector('.conversation-turn')
+                if (element)
+                  historyAnchor.current = { element, top: element.getBoundingClientRect().top }
+                keepAtBottom.current = false
+                void history.load()
+              }}
+            >
+              {history.loading ? '正在加载…' : '查看更早的消息'}
+            </button>
+          )}
+          {history.error && (
+            <p role="alert" className="history-load-error">
+              {history.error}
+            </p>
+          )}
           {turns.map((turn) => (
             <div className="conversation-turn" key={`${run.id}:${turn.id}`}>
               {turn.user && <Message message={turn.user} runId={run.id} />}

@@ -6,7 +6,7 @@ import { SubscriptionRegistry } from './subscriptions'
 describe('desktop bridge request boundary', () => {
   it('maps only fixed operations to local routes', () => {
     expect(apiRequest({ operation: 'getRun', id: 'run_42' })).toEqual({
-      path: '/api/runs/run_42',
+      path: '/api/runs/run_42/view',
       method: 'GET',
     })
     expect(apiRequest({ operation: 'submitInput', id: 'abc', message: 'Continue' })).toEqual({
@@ -17,6 +17,18 @@ describe('desktop bridge request boundary', () => {
     expect(() => apiRequest({ operation: 'fetch', url: 'https://example.com' })).toThrow()
     expect(() => apiRequest({ operation: 'getRun', id: '../config' })).toThrow()
     expect(() => apiRequest({ operation: 'getRun', id: 'abc?admin=true' })).toThrow()
+  })
+  it('bounds history cursors to fixed local routes', () => {
+    expect(apiRequest({ operation: 'getRunPage', id: 'run_42', before: 'event-100' }).path).toBe(
+      '/api/runs/run_42/view?before=event-100',
+    )
+    expect(apiRequest({ operation: 'getRunEventsPage', id: 'run_42', before: 100 }).path).toBe(
+      '/api/runs/run_42/history/events?before=100',
+    )
+    for (const before of ['../config', 'x?admin=true', '', null])
+      expect(() => apiRequest({ operation: 'getRunPage', id: 'run_42', before })).toThrow()
+    for (const before of [-1, 1.5, '100', Number.MAX_SAFE_INTEGER + 1])
+      expect(() => apiRequest({ operation: 'getRunEventsPage', id: 'run_42', before })).toThrow()
   })
   it('rejects empty and oversized input without coercion', () => {
     for (const prompt of ['', '  ', 42, 'a'.repeat(64_001)]) {

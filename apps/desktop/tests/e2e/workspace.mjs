@@ -123,7 +123,7 @@ async function launch() {
   page.on('pageerror', (error) => errors.push(error.message))
   await expect(page.getByRole('heading', { name: '开始一个新任务' })).toBeVisible()
   await application.evaluate(({ safeStorage }) => {
-    safeStorage.isEncryptionAvailable = () => false
+    safeStorage.isAsyncEncryptionAvailable = async () => false
   })
   return page
 }

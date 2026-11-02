@@ -412,7 +412,7 @@ try {
       // the packaged app's real encryption key. Production behavior is unchanged.
       await within('session-only fixture credentials', () =>
         application.evaluate(({ safeStorage }) => {
-          safeStorage.isEncryptionAvailable = () => false
+          safeStorage.isAsyncEncryptionAvailable = async () => false
         }),
       )
       await page.evaluate(() => window.harness.setPluginEnabled('builtin.llm-wiki', false))

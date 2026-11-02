@@ -2177,3 +2177,18 @@ details[open] > summary .details-chevron {
     max-width: 250px;
   }
 }
+
+.recovery-notice {
+  color: #986b2d;
+  cursor: pointer;
+}
+.recovery-issues details {
+  margin-top: 12px;
+}
+.recovery-issues summary {
+  cursor: pointer;
+}
+.recovery-issues dd {
+  margin: 4px 0 12px;
+  overflow-wrap: anywhere;
+}

@@ -206,7 +206,7 @@ async function launch() {
   await expect(page.getByRole('heading', { name: '开始一个新任务' })).toBeVisible()
   // Keep this synthetic fixture credential in memory to avoid system keychain UI.
   await app.evaluate(({ safeStorage }) => {
-    safeStorage.isEncryptionAvailable = () => false
+    safeStorage.isAsyncEncryptionAvailable = async () => false
   })
   await page.evaluate(() => window.harness.setPluginEnabled('builtin.llm-wiki', false))
   const configured = await page.evaluate(

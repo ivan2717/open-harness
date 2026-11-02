@@ -4,6 +4,7 @@ import type {
   ConfigureModelResult,
   DesktopBridge,
   RunDetail,
+  RunEventPage,
   RunSummary,
   WorkspaceReview,
   RunPermissions,
@@ -52,7 +53,10 @@ async function importedImages(files: File[]): Promise<FileImportResult> {
 
 const bridge: DesktopBridge = {
   watchComputerPreview: (listener) => {
-    const handler = (_event: IpcRendererEvent, value: import('../shared/computer-preview').ComputerPreview) => listener(value)
+    const handler = (
+      _event: IpcRendererEvent,
+      value: import('../shared/computer-preview').ComputerPreview,
+    ) => listener(value)
     ipcRenderer.on(channels.computerPreview, handler)
     ipcRenderer.send(channels.computerPreviewWatch, true)
     return () => {
@@ -60,7 +64,8 @@ const bridge: DesktopBridge = {
       ipcRenderer.send(channels.computerPreviewWatch, false)
     }
   },
-  collapseComputerPreview: (id, collapsed) => ipcRenderer.invoke(channels.computerPreviewCollapse, id, collapsed),
+  collapseComputerPreview: (id, collapsed) =>
+    ipcRenderer.invoke(channels.computerPreviewCollapse, id, collapsed),
   runPermissions: (id) => invoke<RunPermissions>({ operation: 'runPermissions', id }),
   updateRunPermissions: (id, input) =>
     invoke<RunPermissions>({ operation: 'updateRunPermissions', id, input }),
@@ -111,8 +116,13 @@ const bridge: DesktopBridge = {
   openExternal: (url) => ipcRenderer.invoke(channels.openExternal, url) as Promise<void>,
   copyText: (text) => ipcRenderer.invoke(channels.copyText, text) as Promise<void>,
   config: () => invoke<AppConfig>({ operation: 'config' }),
+  retryModelRestore: () => ipcRenderer.invoke(channels.retryModelRestore) as Promise<void>,
+  restartRuntime: () => ipcRenderer.invoke(channels.restartRuntime) as Promise<void>,
   listRuns: () => invoke<RunSummary[]>({ operation: 'listRuns' }),
   getRun: (id) => invoke<RunDetail>({ operation: 'getRun', id }),
+  getRunPage: (id, before) => invoke<RunDetail>({ operation: 'getRunPage', id, before }),
+  getRunEventsPage: (id, before) =>
+    invoke<RunEventPage>({ operation: 'getRunEventsPage', id, before }),
   createRun: (input) => invoke<RunDetail>({ operation: 'createRun', input }),
   updateRunModel: (id, input) => invoke<RunDetail>({ operation: 'updateRunModel', id, input }),
   chooseWorkspace: () => ipcRenderer.invoke(channels.chooseWorkspace) as Promise<string | null>,

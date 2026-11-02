@@ -41,6 +41,37 @@ export function SettingsPage() {
             </div>
           </section>
           <PermissionSettings />
+          {Boolean(config.data.recovery_issues?.length) && (
+            <section className="settings-section recovery-issues">
+              <h2>部分会话未恢复</h2>
+              <p>
+                原始记录已保留，其他会话可以正常使用。请保留这些文件，修复后重新启动应用可再次恢复。
+              </p>
+              {config.data.recovery_issues?.map((issue, index) => (
+                <details key={`${issue.source_path}-${index}`}>
+                  <summary>{issue.message}</summary>
+                  <dl>
+                    {issue.run_id && (
+                      <>
+                        <dt>会话</dt>
+                        <dd>{issue.run_id}</dd>
+                      </>
+                    )}
+                    <dt>记录位置</dt>
+                    <dd>
+                      <code>{issue.source_path}</code>
+                    </dd>
+                    {issue.related_run_id && (
+                      <>
+                        <dt>关联任务</dt>
+                        <dd>{issue.related_run_id}</dd>
+                      </>
+                    )}
+                  </dl>
+                </details>
+              ))}
+            </section>
+          )}
           <section className="settings-section">
             <h2>本地数据</h2>
             <div className="storage-card">

@@ -6,3 +6,5 @@ test-results
 pnpm-lock.yaml
 .pnpm-store
 *.tsbuildinfo
+
+release-next/

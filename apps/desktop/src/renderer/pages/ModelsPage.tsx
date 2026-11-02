@@ -43,13 +43,32 @@ export function ModelsPage() {
               }}
             />
           )}
-          {config.data.model_config_error && <p role="alert">{config.data.model_config_error}</p>}
+          {config.data.model_restore_status === 'loading' && (
+            <p role="status" className="settings-footnote">
+              正在解锁已保存的模型。如有系统确认窗口，请在其中完成确认；本地历史仍可查看。
+            </p>
+          )}
+          {config.data.model_config_error && (
+            <InlineError
+              message={config.data.model_config_error}
+              retry={() => {
+                void window.harness
+                  .retryModelRestore()
+                  .then(() => config.refetch())
+                  .catch((error) => setSavedNotice(errorMessage(error)))
+              }}
+            />
+          )}
           {savedNotice && (
             <p role="status" className="settings-footnote">
               {savedNotice}
             </p>
           )}
-          <div ref={editor} className="model-editor">
+          <div
+            ref={editor}
+            className="model-editor"
+            inert={config.data.model_restore_status === 'loading'}
+          >
             {editingId ? (
               <SavedModelEditor
                 key={editingId}

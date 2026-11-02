@@ -226,3 +226,14 @@
     display: none;
   }
 }
+.history-load-button {
+  display: block;
+  margin: 0 auto 24px;
+  padding: 6px 12px;
+  color: var(--text-secondary, #687068);
+  font-size: 13px;
+}
+.history-load-error {
+  font-size: 13px;
+  color: var(--text-secondary, #687068);
+}

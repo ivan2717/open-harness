@@ -32,6 +32,26 @@ afterEach(async () => {
 })
 
 describe('model credential storage', () => {
+  it('retries asynchronous OS unlock after cancellation without losing transient profiles', async () => {
+    const file = await location()
+    await new ModelVault(file, cipher).save('saved', input)
+    let available = false
+    const vault = new ModelVault(file, {
+      isEncryptionAvailable: async () => available,
+      decryptString: async (value) => cipher.decryptString(value),
+      encryptString: async (value) => cipher.encryptString(value),
+    })
+    await expect(vault.load()).rejects.toThrow('无法解密')
+    const before = await readFile(file)
+    const temporary = { ...input, model: 'temporary', api_key: 'temporary-secret' }
+    expect(await vault.save('temporary', temporary)).toBe(false)
+    expect(await readFile(file)).toEqual(before)
+    available = true
+    expect(await vault.load()).toEqual([input, temporary])
+    expect(await vault.save('temporary', temporary)).toBe(true)
+    expect(await new ModelVault(file, cipher).load()).toEqual([input, temporary])
+  })
+
   it('preserves independent capability mapping and default across restart', async () => {
     const file = await location()
     const configured: ResolvedModelConfiguration = {
@@ -129,7 +149,7 @@ describe('model credential storage', () => {
     const unresolved = { ...input, context_window: undefined }
     await writeFile(
       file,
-      cipher.encryptString(JSON.stringify([{ id: 'model', input: unresolved }])),
+      await cipher.encryptString(JSON.stringify([{ id: 'model', input: unresolved }])),
     )
     await expect(new ModelVault(file, cipher).load()).rejects.toThrow('无法解密')
   })

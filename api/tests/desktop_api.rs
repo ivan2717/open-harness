@@ -184,6 +184,111 @@ async fn desktop_routes_use_real_runtime_compaction_and_stable_contracts() {
 }
 
 #[tokio::test]
+async fn history_routes_and_recent_stream_keep_the_legacy_detail_contract() {
+    let directory = Directory::new();
+    let state = state(&directory).await;
+    let created = create(&state, "验证历史分页与实时视图").await;
+    let id = &created.summary.id;
+    let completed = settled(&state, id).await;
+    let app = api::app(state);
+    let (status, legacy) = request(app.clone(), "GET", &format!("/api/runs/{id}"), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(!legacy.as_object().unwrap().contains_key("history"));
+
+    let (status, recent) = request(app.clone(), "GET", &format!("/api/runs/{id}/view"), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        recent["history"]["total_messages"],
+        completed.messages.len()
+    );
+    assert_eq!(recent["history"]["total_events"], completed.events.len());
+    assert_eq!(recent["history"]["before"], Value::Null);
+    assert_eq!(recent["history"]["events_before"], Value::Null);
+    assert_eq!(recent["messages"], legacy["messages"]);
+    assert_eq!(recent["events"], legacy["events"]);
+
+    let message_index = completed.messages.len() / 2;
+    assert!(message_index > 0);
+    let cursor = &completed.messages[message_index].id;
+    let (status, page) = request(
+        app.clone(),
+        "GET",
+        &format!("/api/runs/{id}/view?before={cursor}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        page["messages"],
+        json!(&completed.messages[..message_index])
+    );
+    assert_eq!(page["history"]["total_messages"], completed.messages.len());
+    assert_eq!(
+        request(
+            app.clone(),
+            "GET",
+            &format!("/api/runs/{id}/view?before=unknown-message"),
+            None
+        )
+        .await
+        .0,
+        StatusCode::NOT_FOUND,
+    );
+
+    let event_index = completed.events.len() / 2;
+    let cursor = completed.events[event_index].sequence;
+    let (status, page) = request(
+        app.clone(),
+        "GET",
+        &format!("/api/runs/{id}/history/events?before={cursor}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(page["events"], json!(&completed.events[..event_index]));
+    assert_eq!(page["before"], Value::Null);
+
+    // The desktop opts into bounded SSE payloads. Older subscribers continue to
+    // receive the original RunDetail shape without the history metadata.
+    for recent_stream in [false, true] {
+        let suffix = if recent_stream { "?recent=true" } else { "" };
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/runs/{id}/events{suffix}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let mut stream = response.into_body().into_data_stream();
+        let bytes = tokio::time::timeout(Duration::from_secs(1), stream.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let text = String::from_utf8(bytes.to_vec()).unwrap();
+        assert!(text.contains("event: snapshot"));
+        let data = text
+            .lines()
+            .find_map(|line| line.strip_prefix("data: "))
+            .unwrap();
+        let streamed: Value = serde_json::from_str(data).unwrap();
+        assert_eq!(streamed["messages"], recent["messages"]);
+        assert_eq!(streamed["events"], recent["events"]);
+        assert_eq!(
+            streamed.as_object().unwrap().contains_key("history"),
+            recent_stream
+        );
+        if recent_stream {
+            assert_eq!(streamed["history"], recent["history"]);
+        }
+    }
+}
+
+#[tokio::test]
 async fn cancellation_preserves_partial_text_and_prevents_further_tools() {
     let directory = Directory::new();
     let state = AppState::open_with_delay(directory.0.clone(), None, Duration::from_millis(15))

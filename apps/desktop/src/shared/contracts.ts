@@ -51,12 +51,27 @@ export interface ModelInfo {
   }
 }
 
+export interface ModelRestoreState {
+  status: 'loading' | 'ready' | 'error'
+  message?: string
+}
+
+export interface RecoveryIssue {
+  run_id: string | null
+  source_path: string
+  stage: string
+  message: string
+  related_run_id: string | null
+}
+
 export interface AppConfig {
   version: string
   models: ModelInfo[]
   default_model: string
   storage_path: string
+  recovery_issues?: RecoveryIssue[]
   model_config_error?: string
+  model_restore_status?: ModelRestoreState['status']
 }
 
 export interface ConfigureModelInput {
@@ -150,6 +165,11 @@ export interface TimelineEvent {
   timestamp: string
 }
 
+export interface RunEventPage {
+  events: TimelineEvent[]
+  before: number | null
+}
+
 export interface CompactionRecord {
   id: string
   before_tokens: number
@@ -212,6 +232,13 @@ export type PendingInputAction =
   | { action: 'steer' | 'remove'; id: string; revision: number }
 
 export interface RunDetail extends RunSummary {
+  /** UI paging metadata only; the runtime always retains the complete history. */
+  history?: {
+    before: string | null
+    total_messages: number
+    total_events: number
+    events_before: number | null
+  }
   pending_inputs?: PendingInput[]
   pending_inputs_paused?: boolean
   messages: ChatMessage[]
@@ -398,8 +425,12 @@ export interface DesktopBridge {
   openExternal(url: string): Promise<void>
   copyText(text: string): Promise<void>
   config(): Promise<AppConfig>
+  retryModelRestore(): Promise<void>
+  restartRuntime(): Promise<void>
   listRuns(): Promise<RunSummary[]>
   getRun(id: string): Promise<RunDetail>
+  getRunPage(id: string, before: string): Promise<RunDetail>
+  getRunEventsPage(id: string, before: number): Promise<RunEventPage>
   createRun(input: CreateRunInput): Promise<RunDetail>
   updateRunModel(id: string, input: UpdateRunModelInput): Promise<RunDetail>
   chooseFiles(): Promise<FileImportResult>

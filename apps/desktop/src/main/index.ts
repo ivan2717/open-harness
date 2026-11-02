@@ -14,7 +14,7 @@ import { isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { mkdir } from 'node:fs/promises'
 import { Backend } from './backend'
-import { initializeRuntime, watchInitializedRuntime } from './runtime-startup'
+import { ModelRestoration } from './runtime-startup'
 import { prepareWorkspaceRuntime } from './workspace-runtime'
 import { BundledPlugins } from './bundled-plugins'
 import { ChromeConnection } from './chrome-connection'
@@ -86,8 +86,7 @@ function updatePreviewVisibility() {
 }
 let quitting = false
 let modelVault: ModelVault | undefined
-let modelsReady: Promise<void> = Promise.resolve()
-let modelConfigError: string | undefined
+let modelRestoration: ModelRestoration | undefined
 const workspaces = new WorkspaceSelection(
   join(app.getPath('userData'), 'workspaces.json'),
   async () => {
@@ -121,6 +120,18 @@ function assertSender(event: IpcMainInvokeEvent | IpcMainEvent): void {
 }
 
 function installBridge(): void {
+  ipcMain.handle(channels.retryModelRestore, (event) => {
+    assertSender(event)
+    if (!modelRestoration) throw new Error('模型配置尚未就绪')
+    // Return immediately so a system unlock dialog cannot hold up the renderer.
+    void modelRestoration.restore()
+  })
+  ipcMain.handle(channels.restartRuntime, async (event) => {
+    assertSender(event)
+    if (!backend) throw new Error('本地服务正在启动')
+    await backend.restartAfterFailure()
+    void modelRestoration?.restore()
+  })
   ipcMain.on(channels.computerPreviewWatch, (event, watching: unknown) => {
     assertSender(event)
     if (typeof watching !== 'boolean') return
@@ -293,7 +304,8 @@ function installBridge(): void {
     ) {
       await workspaces.verify(mapped.body.workspace_path)
     }
-    await modelsReady
+    if (mapped.path.startsWith('/api/models') && modelRestoration?.snapshot().status === 'loading')
+      throw new Error('模型配置正在解锁，请先完成系统确认；本地历史仍可查看。')
     const modelConfigurationRoute = /^\/api\/models\/([a-zA-Z0-9_-]+)\/configuration$/.exec(
       mapped.path,
     )
@@ -332,8 +344,14 @@ function installBridge(): void {
       return { model, persisted, limits, capacity }
     }
     const result = await backend.request(mapped)
-    if (mapped.path === '/api/config')
-      return { ...(result as AppConfig), model_config_error: modelConfigError }
+    if (mapped.path === '/api/config') {
+      const restoration = modelRestoration?.snapshot()
+      return {
+        ...(result as AppConfig),
+        model_restore_status: restoration?.status,
+        model_config_error: restoration?.message,
+      }
+    }
     return result
   })
   ipcMain.on(channels.watchStart, (event, request: unknown) => {
@@ -351,14 +369,14 @@ function installBridge(): void {
         return
       }
       const runtime = backend
-      void watchInitializedRuntime(modelsReady, controller.signal, () =>
-        runtime.watch(
+      void runtime
+        .watch(
           id,
           controller.signal,
           (snapshot) => send({ snapshot }),
           (error) => send({ error }),
-        ),
-      ).catch(() => send({ error: '本地服务初始化失败。请重新启动 Open Harness。' }))
+        )
+        .catch(() => send({ error: '本地服务初始化失败。请重新启动 Open Harness。' }))
     } catch {
       /* Invalid or unauthorized subscriptions have no side effects. */
     }
@@ -500,21 +518,19 @@ if (!app.requestSingleInstanceLock()) {
       assertSender,
     })
     modelVault = new ModelVault(join(app.getPath('userData'), 'models.encrypted'), {
-      isEncryptionAvailable: () =>
-        safeStorage.isEncryptionAvailable() &&
+      isEncryptionAvailable: async () =>
+        (await safeStorage.isAsyncEncryptionAvailable()) &&
         (process.platform !== 'linux' || safeStorage.getSelectedStorageBackend() !== 'basic_text'),
-      encryptString: (value) => safeStorage.encryptString(value),
-      decryptString: (value) => safeStorage.decryptString(value),
+      encryptString: (value) => safeStorage.encryptStringAsync(value),
+      decryptString: async (value) => (await safeStorage.decryptStringAsync(value)).result,
     })
-    modelsReady = initializeRuntime(
-      backend,
-      () => modelVault!.load(),
-      (message) => {
-        modelConfigError = message
-      },
-    ).catch(() => undefined) // Bridge calls surface the original startup failure.
+    modelRestoration = new ModelRestoration(backend, () => modelVault!.load())
     installBridge()
     createWindow()
+    // Start history and subscriptions without waiting for OS credential access.
+    // Electron's async safeStorage API preserves this app's existing OS identity.
+    void backend.start().catch(() => undefined) // Bridge calls surface startup failure.
+    void modelRestoration.restore()
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow()
     })

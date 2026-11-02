@@ -5,9 +5,9 @@ import type { ResolvedModelConfiguration } from '../shared/contracts'
 import { identifier, resolvedModelConfiguration } from './protocol'
 
 export interface CredentialCipher {
-  isEncryptionAvailable(): boolean
-  encryptString(value: string): Buffer
-  decryptString(value: Buffer): string
+  isEncryptionAvailable(): boolean | Promise<boolean>
+  encryptString(value: string): Buffer | Promise<Buffer>
+  decryptString(value: Buffer): string | Promise<string>
 }
 
 /** Credentials never cross back to the renderer or enter run snapshots. */
@@ -16,6 +16,7 @@ export class ModelVault {
   private persistedEntries = new Map<string, ResolvedModelConfiguration>()
   private writable = true
   private writes: Promise<unknown> = Promise.resolve()
+  private loaded = false
 
   constructor(
     private file: string,
@@ -58,26 +59,42 @@ export class ModelVault {
     return result
   }
 
-  async load(): Promise<ResolvedModelConfiguration[]> {
+  load(): Promise<ResolvedModelConfiguration[]> {
+    const result = this.writes.then(
+      () => this.restore(),
+      () => this.restore(),
+    )
+    this.writes = result.catch(() => undefined)
+    return result
+  }
+
+  private async restore(): Promise<ResolvedModelConfiguration[]> {
+    if (this.loaded) return [...this.entries.values()].map((input) => structuredClone(input))
     try {
       let encrypted: Buffer
       try {
         encrypted = await readFile(this.file)
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+          this.loaded = true
+          return []
+        }
         throw error
       }
-      if (!this.cipher.isEncryptionAvailable()) throw new Error('Encryption unavailable')
-      const saved: unknown = JSON.parse(this.cipher.decryptString(encrypted))
+      if (!(await this.cipher.isEncryptionAvailable())) throw new Error('Encryption unavailable')
+      const saved: unknown = JSON.parse(await this.cipher.decryptString(encrypted))
       if (!Array.isArray(saved)) throw new Error('Invalid model configuration')
       const entries = new Map<string, ResolvedModelConfiguration>()
       for (const item of saved) {
         if (!item || typeof item !== 'object') throw new Error('Invalid saved model')
         entries.set(identifier(item.id), resolvedModelConfiguration(item.input))
       }
-      this.entries = entries
       this.persistedEntries = new Map(entries)
-      return [...entries.values()]
+      // Keep profiles entered after a failed unlock; retry must not lose them.
+      this.entries = new Map([...entries, ...this.entries])
+      this.writable = true
+      this.loaded = true
+      return [...this.entries.values()].map((input) => structuredClone(input))
     } catch {
       // Preserve an unreadable vault instead of replacing existing credentials.
       this.writable = false
@@ -105,9 +122,10 @@ export class ModelVault {
   }
 
   private async persist(entries: Map<string, ResolvedModelConfiguration>): Promise<boolean> {
-    if (!this.writable || !this.cipher.isEncryptionAvailable()) return false
+    if (!this.writable) return false
     try {
-      const encrypted = this.cipher.encryptString(
+      if (!(await this.cipher.isEncryptionAvailable())) return false
+      const encrypted = await this.cipher.encryptString(
         JSON.stringify([...entries].map(([id, input]) => ({ id, input }))),
       )
       await mkdir(dirname(this.file), { recursive: true })

@@ -75,6 +75,10 @@ mod models;
 #[path = "run_model.rs"]
 mod run_model;
 
+#[path = "startup_recovery.rs"]
+mod startup_recovery;
+pub use startup_recovery::{RecoveryIssue, RecoveryStage};
+
 #[path = "collaboration/mod.rs"]
 pub(crate) mod collaboration;
 
@@ -91,6 +95,7 @@ struct Service {
     directory: PathBuf,
     token: Option<String>,
     runs: RwLock<HashMap<String, Arc<RunEntry>>>,
+    recovery_issues: RwLock<Vec<RecoveryIssue>>,
     delay: Duration,
     models: RwLock<HashMap<String, ConfiguredModel>>,
     model_gate: Mutex<()>,
@@ -129,87 +134,19 @@ impl AppState {
                 directory,
                 token: token.filter(|token| !token.is_empty()),
                 runs: RwLock::new(HashMap::new()),
+                recovery_issues: RwLock::new(Vec::new()),
                 delay,
                 models: RwLock::new(HashMap::new()),
                 model_gate: Mutex::new(()),
                 shutting_down: AtomicBool::new(false),
             }),
         };
-        let mut saved = Vec::new();
-        for entry in fs::read_dir(state.inner.directory.join("runs"))? {
-            let path = entry?.path();
-            if path.extension().is_none_or(|extension| extension != "json") {
-                continue;
-            }
-            let detail: RunDetail =
-                serde_json::from_slice(&fs::read(&path)?).map_err(io::Error::other)?;
-            if !valid_id(&detail.summary.id) {
-                return Err(io::Error::other("invalid persisted run identifier"));
-            }
-            saved.push(detail);
-        }
-        // The root snapshot owns the family's permission policy. Restore it
-        // before delegates, whose snapshots may be stale after an interrupted
-        // policy update. Directory enumeration order must not affect authority.
-        saved.sort_by_key(|detail| detail.summary.delegation.is_some());
-        for mut detail in saved {
-            let store = JsonlEventStore::new(state.inner.directory.join("events"));
-            use agent_runtime::EventStore;
-            let Some(stored) = store
-                .load_for_runtime(&detail.summary.id)
-                .await
-                .map_err(io::Error::other)?
-            else {
-                continue;
-            };
-            let run = AgentRun::restore(stored.run_id, stored.agent_id, stored.events)
-                .map_err(io::Error::other)?;
-            for input in &mut detail.pending_inputs {
-                input.delivering = false;
-                input.steer = false;
-            }
-            detail.messages.clear();
-            detail.events.clear();
-            detail.error = None;
-            detail.summary.compacting = false;
-            for event in run.events() {
-                projection::apply(&mut detail, event);
-            }
-            // Restart never resumes pending work without a fresh user action.
-            // Also makes a previously claimed steering message editable again.
-            if !detail.pending_inputs.is_empty() {
-                detail.pending_inputs_paused = true;
-            }
-            if run.status() == CoreStatus::Running {
-                detail.summary.status = RunStatus::Interrupted;
-                detail.error = Some(
-                    "运行已中断，历史已保存。继续时会先核实未完成操作，不会自动重放命令。".into(),
-                );
-            }
-            detail.summary.revision = detail.summary.revision.saturating_add(1);
-            let entry = state.make_entry(detail, run.current_step())?;
-            state
-                .inner
-                .runs
-                .write()
-                .expect("runs lock poisoned")
-                .insert(run.id().into(), entry);
-        }
-        let restored: Vec<_> = state
-            .inner
-            .runs
-            .read()
-            .expect("runs lock poisoned")
-            .values()
-            .cloned()
-            .collect();
-        for entry in restored {
-            state.settle_child(&entry).await?;
-        }
+        state.recover_runs().await?;
         // No uploads or UI drafts are active before the host is returned. A
         // failed reachability inventory must never delete files or block launch.
-        if let Err(error) =
-            attachment_cleanup::collect(state.inner.directory.clone(), SystemTime::now()).await
+        if state.recovery_issues().is_empty()
+            && let Err(error) =
+                attachment_cleanup::collect(state.inner.directory.clone(), SystemTime::now()).await
         {
             tracing::warn!(%error, "skipped abandoned attachment cleanup");
         }
@@ -231,15 +168,20 @@ impl AppState {
         configured.sort_by(|a, b| a.id.cmp(&b.id));
         models.extend(configured);
         for entry in self.inner.runs.read().expect("runs lock poisoned").values() {
-            let detail = entry.snapshot.get();
-            if !models.iter().any(|m| m.id == detail.summary.model_id) {
+            let (model_id, context_window) = entry.snapshot.read(|detail| {
+                (
+                    detail.summary.model_id.clone(),
+                    detail.context.as_ref().map_or(0, |c| c.window_tokens),
+                )
+            });
+            if !models.iter().any(|m| m.id == model_id) {
                 models.push(ModelInfo {
-                    id: detail.summary.model_id.clone(),
-                    name: format!("未配置模型 · {}", detail.summary.model_id),
+                    id: model_id.clone(),
+                    name: format!("未配置模型 · {model_id}"),
                     description: "重新添加相同模型配置后可继续此会话。".into(),
                     available: false,
                     supports_images: false,
-                    context_window: detail.context.map_or(0, |c| c.window_tokens),
+                    context_window,
                     reasoning: None,
                 });
             }
@@ -249,6 +191,7 @@ impl AppState {
             models,
             default_model: MODEL_ID.into(),
             storage_path: self.inner.directory.display().to_string(),
+            recovery_issues: self.recovery_issues(),
         }
     }
     pub async fn configure_model(&self, input: ConfigureModel) -> Result<ModelInfo, ServiceError> {
@@ -343,7 +286,7 @@ impl AppState {
             .read()
             .expect("runs lock poisoned")
             .values()
-            .map(|entry| entry.snapshot.get().summary)
+            .map(|entry| entry.snapshot.summary())
             .collect::<Vec<_>>();
         runs.sort_by(|left, right| {
             right
@@ -355,6 +298,32 @@ impl AppState {
     }
     pub fn get(&self, id: &str) -> Result<RunDetail, ServiceError> {
         Ok(self.entry(id)?.snapshot.get())
+    }
+    pub fn view(
+        &self,
+        id: &str,
+        before: Option<&str>,
+    ) -> Result<crate::run_view::RunView, ServiceError> {
+        self.entry(id)?
+            .snapshot
+            .read(|detail| crate::run_view::RunView::new(detail, before))
+            .ok_or(ServiceError::NotFound)
+    }
+    pub fn event_page(
+        &self,
+        id: &str,
+        before: u64,
+    ) -> Result<crate::run_view::EventPage, ServiceError> {
+        Ok(self
+            .entry(id)?
+            .snapshot
+            .read(|detail| crate::run_view::EventPage::new(detail, before)))
+    }
+    pub fn subscribe_revision(
+        &self,
+        id: &str,
+    ) -> Result<tokio::sync::watch::Receiver<u64>, ServiceError> {
+        Ok(self.entry(id)?.snapshot.subscribe_revision())
     }
     pub fn subscribe(
         &self,

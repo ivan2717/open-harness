@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { electronFixtureArgs } from './fixture-environment.mjs'
 import { mkdtemp, mkdir, rm } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
@@ -45,7 +46,7 @@ try {
   await mkdir(artifacts, { recursive: true })
   application = await _electron.launch({
     executablePath: process.env.OPENHARNESS_E2E_EXECUTABLE ?? require('electron'),
-    args: process.env.OPENHARNESS_E2E_EXECUTABLE ? [] : [resolve('.')],
+    args: process.env.OPENHARNESS_E2E_EXECUTABLE ? [] : electronFixtureArgs(),
     env,
     timeout: 30_000,
   })

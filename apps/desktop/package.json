@@ -21,6 +21,7 @@
     "test:e2e:packaged": "node tests/e2e/packaged.mjs",
     "test:packaging": "vitest run scripts/packaging.test.mjs",
     "test:e2e": "pnpm run build && node scripts/backend.mjs debug && node tests/e2e/desktop.mjs",
+    "test:e2e:regression": "node tests/e2e/regression.mjs",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test:e2e:steering": "pnpm run build && node scripts/backend.mjs debug && node tests/e2e/steering.mjs",

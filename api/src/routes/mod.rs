@@ -68,6 +68,8 @@ pub(crate) fn router(state: AppState) -> Router {
                 .layer(DefaultBodyLimit::max(32 * 1024 * 1024)),
         )
         .route("/runs/{id}", get(detail))
+        .route("/runs/{id}/view", get(view))
+        .route("/runs/{id}/history/events", get(event_page))
         .route("/runs/{id}/model", patch(update_run_model))
         .route(
             "/runs/{id}/messages/{message_id}/images/{index}",
@@ -298,6 +300,30 @@ async fn detail(
 ) -> Result<Json<RunDetail>, ServiceError> {
     state.get(&id).map(Json)
 }
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ViewQuery {
+    before: Option<String>,
+}
+async fn view(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(query): Query<ViewQuery>,
+) -> Result<Json<crate::run_view::RunView>, ServiceError> {
+    state.view(&id, query.before.as_deref()).map(Json)
+}
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EventPageQuery {
+    before: u64,
+}
+async fn event_page(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(query): Query<EventPageQuery>,
+) -> Result<Json<crate::run_view::EventPage>, ServiceError> {
+    state.event_page(&id, query.before).map(Json)
+}
 async fn message_file(
     State(state): State<AppState>,
     Path((id, message_id, index)): Path<(String, String, usize)>,
@@ -377,26 +403,41 @@ async fn revert(
 async fn events(
     State(state): State<AppState>,
     Path(id): Path<String>,
+    Query(query): Query<EventStreamQuery>,
 ) -> Result<impl IntoResponse, ServiceError> {
-    let receiver = state.subscribe(&id)?;
-    let stream =
-        futures_util::stream::unfold((receiver, true), |(mut receiver, first)| async move {
+    let receiver = state.subscribe_revision(&id)?;
+    let stream = futures_util::stream::unfold(
+        (receiver, true, state, id),
+        move |(mut receiver, first, state, id)| async move {
             if !first && receiver.changed().await.is_err() {
                 return None;
             }
-            let detail = receiver.borrow_and_update().clone();
+            receiver.borrow_and_update();
+            let detail = if query.recent {
+                serde_json::to_value(state.view(&id, None).ok()?).ok()?
+            } else {
+                serde_json::to_value(state.get(&id).ok()?).ok()?
+            };
             let event = Event::default()
                 .event("snapshot")
-                .id(detail.summary.revision.to_string())
+                .id(detail["revision"].to_string())
                 .json_data(detail)
                 .expect("serializable snapshot");
-            Some((Ok::<_, Infallible>(event), (receiver, false)))
-        });
+            Some((Ok::<_, Infallible>(event), (receiver, false, state, id)))
+        },
+    );
     Ok(Sse::new(stream).keep_alive(
         KeepAlive::new()
             .interval(Duration::from_secs(15))
             .text("keep-alive"),
     ))
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EventStreamQuery {
+    #[serde(default)]
+    recent: bool,
 }
 
 async fn pending_input(

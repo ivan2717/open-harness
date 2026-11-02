@@ -6,6 +6,8 @@ pub struct AppConfig {
     pub models: Vec<ModelInfo>,
     pub default_model: String,
     pub storage_path: String,
+    #[serde(default)]
+    pub recovery_issues: Vec<crate::RecoveryIssue>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

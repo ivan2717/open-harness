@@ -29,6 +29,8 @@ import {
 import { imageSnapshotBytes } from './image-validation'
 
 export const channels = {
+  retryModelRestore: 'openharness:models:retry-restore',
+  restartRuntime: 'openharness:runtime:restart',
   openSkillsDirectory: 'openharness:skills:open-directory',
   installPlugin: 'openharness:plugins:install',
   bundledPlugins: 'openharness:plugins:bundled',
@@ -79,6 +81,8 @@ export type BridgeRequest =
   | { operation: 'revokeControl'; id: string }
   | { operation: 'revokeControlPermission'; serverId: string }
   | { operation: 'config' | 'listRuns' }
+  | { operation: 'getRunPage'; id: string; before: string }
+  | { operation: 'getRunEventsPage'; id: string; before: number }
   | {
       operation: 'getRun' | 'getWorkspace' | 'cancelRun' | 'compactRun' | 'cancelCompaction'
       id: string
@@ -450,7 +454,19 @@ export function apiRequest(value: unknown): ApiRequest {
     case 'listRuns':
       return { path: '/api/runs', method: 'GET' }
     case 'getRun':
-      return { path: `/api/runs/${identifier(request.id)}`, method: 'GET' }
+      return { path: `/api/runs/${identifier(request.id)}/view`, method: 'GET' }
+    case 'getRunPage':
+      return {
+        path: `/api/runs/${identifier(request.id)}/view?before=${identifier(request.before)}`,
+        method: 'GET',
+      }
+    case 'getRunEventsPage':
+      if (!Number.isSafeInteger(request.before) || Number(request.before) < 0)
+        throw new Error('Invalid event cursor')
+      return {
+        path: `/api/runs/${identifier(request.id)}/history/events?before=${request.before}`,
+        method: 'GET',
+      }
     case 'getWorkspace':
       return { path: `/api/runs/${identifier(request.id)}/workspace`, method: 'GET' }
     case 'stopCommand':

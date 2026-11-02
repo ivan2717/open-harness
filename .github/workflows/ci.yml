@@ -63,6 +63,53 @@ jobs:
       - run: pnpm test
       - run: pnpm run build
 
+  desktop-e2e:
+    name: Desktop workflow regressions
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: apps/desktop
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6
+        with:
+          package_json_file: apps/desktop/package.json
+          run_install: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - name: Set up Rust
+        run: rustup toolchain install stable --profile minimal
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+            apps/desktop/.pnpm-store
+          key: ubuntu-desktop-e2e-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/desktop/pnpm-lock.yaml') }}
+          restore-keys: ubuntu-desktop-e2e-
+      - run: pnpm install --frozen-lockfile
+      - name: Install Electron display dependencies
+        run: pnpm exec playwright install --with-deps chromium
+      - name: Build local runtime
+        run: node scripts/backend.mjs debug
+      - name: Build Electron application
+        run: pnpm run build
+      - name: Check regression process cleanup
+        run: node --test tests/e2e/process-cleanup-check.mjs
+      - name: Check desktop workflows with local fixture models
+        run: xvfb-run -a pnpm run test:e2e:regression
+      - name: Upload desktop regression evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: desktop-workflow-regressions
+          path: apps/desktop/test-results/
+          if-no-files-found: ignore
+          retention-days: 7
+
   plugins:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -185,7 +232,7 @@ jobs:
 
   windows:
     name: Windows x64 installer
-    needs: [check, desktop, plugins, windows-checks]
+    needs: [check, desktop, desktop-e2e, plugins, windows-checks]
     if: needs.desktop.outputs.package_windows == 'true'
     runs-on: windows-2022
     timeout-minutes: 45

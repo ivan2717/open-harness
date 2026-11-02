@@ -192,7 +192,10 @@ async function withPluginSources(test) {
 test('Windows packages all control plugins with native MCP launchers and only the production desktop helper', async () => {
   await withPluginSources(async (options) => {
     await stagePluginResources({ ...options, platform: 'win32' })
-    assert.equal(await readFile(join(options.destination, 'preview-runtime.mjs'), 'utf8'), 'preview runtime fixture')
+    assert.equal(
+      await readFile(join(options.destination, 'preview-runtime.mjs'), 'utf8'),
+      'preview runtime fixture',
+    )
     for (const [name, manifest] of Object.entries(options.manifests)) {
       const target = join(options.destination, name)
       assert.equal(await readFile(join(target, 'launch.exe'), 'utf8'), 'native launcher fixture')

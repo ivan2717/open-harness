@@ -241,16 +241,18 @@ export function ToolActivityGroup({
         {failed > 0 && <span className="activity-status activity-failed">{failed} 项失败</span>}
         <ChevronRight size={12} className="details-chevron" />
       </summary>
-      <div className="activity-group-items">
-        {messages.map((message) => (
-          <ToolActivity
-            key={message.id}
-            message={message}
-            runId={runId}
-            outcome={resolved.get(message.id)}
-          />
-        ))}
-      </div>
+      {open && (
+        <div className="activity-group-items">
+          {messages.map((message) => (
+            <ToolActivity
+              key={message.id}
+              message={message}
+              runId={runId}
+              outcome={resolved.get(message.id)}
+            />
+          ))}
+        </div>
+      )}
     </details>
   )
 }

@@ -48,6 +48,34 @@ renderer, and launches a private backend on a random loopback port. Closing the
 application stops its backend. A normal desktop launch requires no separately
 started server or API key.
 
+The window, local API and saved history start independently of model credential
+restoration. The main process uses Electron's asynchronous `safeStorage` API with
+the existing application identity; it reads previous encrypted vaults without
+creating another permission helper. A pending OS unlock does not block history
+requests or the Electron event loop. The model page shows restoration progress
+and offers an explicit retry after a cancelled or failed unlock. The original
+encrypted vault remains untouched on failure; newly entered profiles stay in
+memory until a subsequent successful unlock/save. Credentials are never returned
+to the renderer. This does not remove OS authentication requirements or promise
+that a changed application signature will never prompt again.
+
+If the local runtime exits or fails startup, the error view offers **重启本地服务**.
+Recovery is explicit, only available for a failed runtime, rotates its local API
+token and restores model registrations. It does not replay the failed request or
+resume a task automatically.
+
+`pnpm run test:e2e:regression` runs the desktop workflow checks sequentially after
+the debug backend and Electron bundle have been built. It covers task steering,
+activity presentation, child-agent views, model editing, file/image input and
+long-history paging. Each check uses its own temporary application data and local
+fixture models; inherited provider credentials are removed. A test-only Node
+preload supplies an authenticated synthetic credential cipher before app startup,
+so local/CI runs do not access the user's system keychain. Persistence and restart
+are exercised, but real OS credential authorization is not claimed by this suite.
+Temporary data is removed and diagnostics remain in `test-results/`. Main-branch
+CI runs it under Xvfb; installers still require a desktop version change and now
+also depend on these workflow checks passing.
+
 Without an available real model, the new-task composer shows **添加模型**. Task
 drafts remain editable and project selection remains available, but sending is
 disabled until a model is configured. New tasks and the default-model settings

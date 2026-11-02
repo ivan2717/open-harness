@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { electronFixtureArgs, waitForRestoredModels } from './fixture-environment.mjs'
 import { createServer } from 'node:http'
 import { mkdtemp, mkdir, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -72,14 +73,14 @@ let clipboardBackedUp = false
 async function launch() {
   application = await _electron.launch({
     executablePath: require('electron'),
-    args: [resolve('.')],
+    args: electronFixtureArgs(),
     env,
     timeout: 30_000,
   })
   const page = await application.firstWindow()
   page.on('pageerror', (error) => errors.push(error.message))
   await expect(page.getByRole('heading', { name: '开始一个新任务' })).toBeVisible()
-  await page.evaluate(() => window.harness.config())
+  await waitForRestoredModels(page)
   return page
 }
 

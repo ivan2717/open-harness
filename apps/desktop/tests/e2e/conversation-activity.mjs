@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { electronFixtureArgs } from './fixture-environment.mjs'
 import { createServer } from 'node:http'
 import { mkdtemp, mkdir, rm } from 'node:fs/promises'
 import { createRequire } from 'node:module'
@@ -43,7 +44,7 @@ try {
   await mkdir(artifacts, { recursive: true })
   application = await _electron.launch({
     executablePath: process.env.OPENHARNESS_E2E_EXECUTABLE ?? require('electron'),
-    args: process.env.OPENHARNESS_E2E_EXECUTABLE ? [] : [resolve('.')],
+    args: process.env.OPENHARNESS_E2E_EXECUTABLE ? [] : electronFixtureArgs(),
     env,
     timeout: 30_000,
   })
@@ -191,6 +192,8 @@ try {
   const work = first.locator('.turn-work')
   await expect(work).toHaveJSProperty('open', false)
   await expect(second.locator('.turn-work')).toHaveJSProperty('open', false)
+  await expect(first.locator('.tool-activity')).toHaveCount(0)
+  await expect(second.locator('.tool-activity')).toHaveCount(0)
   await expect(first.locator('.turn-answer')).toContainText('第一轮已完成')
   await expect(second.locator('.turn-answer')).toContainText('复核已完成')
   await expect(first.locator('.turn-answer')).toBeVisible()
@@ -341,10 +344,16 @@ try {
       },
     ],
   })
-  await expect(third.locator('.tool-activity')).toHaveCount(1)
-  await expect(third.locator('.tool-activity .animate-spin')).toHaveCount(0)
+  // Settling a turn collapses and unmounts its work. Reopening must reconstruct
+  // the settled row, without retaining the streaming invocation's spinner.
+  await expect(third.locator('.turn-work')).toHaveJSProperty('open', false)
+  await expect(third.locator('.tool-activity')).toHaveCount(0)
   await expect(third.locator('.turn-answer')).toContainText('重试完成')
   await expect(third.locator('.turn-answer')).toBeVisible()
+  await third.locator('.turn-work > summary').click()
+  await expect(third.locator('.tool-activity')).toHaveCount(1)
+  await expect(third.locator('.tool-activity > summary')).toContainText('已打开网页')
+  await expect(third.locator('.tool-activity .animate-spin')).toHaveCount(0)
   await page.screenshot({ path: resolve(artifacts, 'conversation-activity-settled.png') })
 
   // A pending invocation from an interrupted older turn cannot keep spinning.
@@ -422,6 +431,8 @@ try {
   const asynchronous = turns.nth(1)
   await expect(interrupted.locator('.turn-answer')).toHaveCount(0)
   await expect(interrupted.locator('.turn-work')).toHaveJSProperty('open', false)
+  await expect(interrupted.locator('.tool-activity')).toHaveCount(0)
+  await expect(interrupted.locator('.turn-work > summary')).toContainText('1 项失败')
   await interrupted.locator('.turn-work > summary').click()
   const interruptedRow = interrupted.locator('.tool-activity')
   await expect(interruptedRow.locator(':scope > summary')).toContainText('已中断')
@@ -542,8 +553,10 @@ try {
   await expect(commandTurn.locator('.turn-answer')).toBeVisible()
   await expect(commandTurn.locator('.turn-answer')).toContainText('已启动后台检查并查询状态')
   await expect(commandTurn.locator('.turn-work')).toHaveJSProperty('open', false)
+  await expect(commandCalls).toHaveCount(0)
   await commandTurn.locator('.turn-work > summary').click()
   await expect(commandTurn.locator('.tool-activity-group')).toHaveJSProperty('open', false)
+  await expect(commandCalls).toHaveCount(0)
   await commandTurn.locator('.tool-activity-group > summary').click()
   await expect(commandTurn.locator('.tool-activity-group > summary .animate-spin')).toHaveCount(0)
   await expect(commandCalls.nth(0).locator(':scope > summary .activity-label')).toHaveText(

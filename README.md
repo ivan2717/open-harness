@@ -598,6 +598,19 @@ cargo run -p api --locked
   views consume typed run snapshots. TanStack Query owns server state, Zustand
   owns local UI state, and TanStack Router owns navigation.
 
+Desktop history starts independently of credential unlock. Damaged conversation
+snapshots or event logs are isolated with a diagnostic in Settings; original
+files are retained and dependent child tasks are not admitted for execution.
+Global storage access failures still stop startup. When recovery is incomplete,
+attachment cleanup is skipped to preserve evidence.
+
+Streaming text is appended in memory and revision notifications are coalesced
+at 50 ms; durable events and pending user inputs are still persisted immediately.
+Desktop subscriptions use bounded views (100 messages / 300 events), with older
+messages and timeline events loaded on demand. This is a presentation limit,
+not a reduction of model context or stored history. The backend still restores
+healthy runs into memory at startup; this is not a fully lazy storage engine.
+
 Public runtime types are re-exported from the crate root. Split modules around
 responsibilities and keep implementation helpers private to their module.
 Keep protocol encoding and decoding together so cursors, schemas, and output

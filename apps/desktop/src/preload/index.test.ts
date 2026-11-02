@@ -17,6 +17,15 @@ beforeEach(() => {
   vi.mocked(webUtils.getPathForFile).mockReset()
 })
 
+describe('explicit runtime recovery bridge', () => {
+  it('exposes only fixed recovery actions without credentials or replay payloads', async () => {
+    await bridge.retryModelRestore()
+    await bridge.restartRuntime()
+    expect(ipcRenderer.invoke).toHaveBeenNthCalledWith(1, channels.retryModelRestore)
+    expect(ipcRenderer.invoke).toHaveBeenNthCalledWith(2, channels.restartRuntime)
+  })
+})
+
 describe('file paste bridge', () => {
   it('sends screenshot bytes without asking Electron for a nonexistent file path', async () => {
     const png = new File([new Uint8Array([1, 2, 3])], 'screenshot.png', { type: 'image/png' })
