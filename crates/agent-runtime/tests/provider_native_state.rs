@@ -469,6 +469,55 @@ async fn canonical_continuation_overrides_an_older_cached_window() {
 }
 
 #[tokio::test]
+async fn truncated_native_response_keeps_prior_window_and_projects_only_partial_text() {
+    let mut run = journal_tool_history(false);
+    let prior_window = latest_window(&run);
+    run.begin_step().unwrap();
+    let response = ModelResponse {
+        content: vec![
+            ContentBlock::Text {
+                text: "Partial result".into(),
+            },
+            ContentBlock::ToolCall {
+                id: "truncated-call".into(),
+                name: "read".into(),
+                arguments: r#"{"truncated_secret_payload":"#.into(),
+            },
+        ],
+        finish_reason: ModelFinishReason::Length,
+    };
+    run.record(RunEvent::ModelResponseReceived {
+        content: response.text(),
+        response: Some(response),
+        token_usage: None,
+        provider_state: None,
+        provider_continuation: Some(Box::new(ProviderContinuation {
+            window: window(200, "incomplete-window-do-not-replay"),
+            compacted: false,
+        })),
+    })
+    .unwrap();
+    let run = AgentRun::restore(run.id(), run.agent_id(), run.events().to_vec()).unwrap();
+    let manager = manager(InMemoryNativeContextCheckpointStore::default(), 10000, 9000);
+    let request = manager.prepare(input(&run).as_ref()).await.unwrap().request;
+    assert_eq!(request.provider_context, Some(prior_window));
+    let context = serde_json::to_string(&request.messages).unwrap();
+    assert!(context.contains("Partial result"));
+    assert!(context.contains("None of its tool calls ran"));
+    assert!(!context.contains("truncated_secret_payload"));
+    assert!(!context.contains("incomplete-window-do-not-replay"));
+    assert!(
+        !request
+            .messages
+            .iter()
+            .flat_map(|message| &message.content)
+            .any(
+                |block| matches!(block, ContentBlock::ToolCall { id, .. } if id == "truncated-call")
+            )
+    );
+}
+
+#[tokio::test]
 async fn invalid_local_state_cannot_be_sent_to_compactor_or_hidden_by_fallback() {
     let mut run = AgentRun::new("invalid", "agent", "Inspect");
     run.begin_step().unwrap();

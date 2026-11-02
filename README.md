@@ -762,13 +762,33 @@ and tool schemas, retaining complete steps. Configure another ratio with
 | No metadata: 1,000,000 fallback window        |     950,000 | 900,000 |      675,000 |                           152,000 |
 | Model default window 1,000,000, effective 95% |     950,000 | 900,000 |      675,000 |                           152,000 |
 
-Both rows use the default 8,192 output reservation and 2,048 safety margin.
+Both rows describe the runtime library's fallback 8,192 output reservation and
+2,048 safety margin, not the desktop's automatic model request settings.
 Actual tail budgets subtract the current instructions and schemas first.
 Unknown adapters use the 1,000,000-token fallback. This is a default assumption;
 explicit configuration and advertised model limits still take precedence.
 The model-backed compactor uses the same fallback, while Wiki compilation keeps
 its separate 32,000-token input batch cap. `policy.resolve(model.context_metadata())`
 exposes the effective configuration for inspection.
+
+The desktop stores an `output_limit_mode` alongside the resolved numeric
+`max_output_tokens`. In automatic mode, Chat Completions and Responses omit the
+generation-cap field on ordinary requests and use the service default. Messages
+requires `max_tokens`, so it sends the advertised model output capacity, or a
+32,768-token fallback when no capacity is known (reduced for small windows).
+Known capacities are no longer capped at 8,192. Input planning still reserves
+output space; omitting a request cap does not mean unlimited output or unlimited
+context. Summary, Wiki and approval requests retain their own explicit budgets.
+Custom mode sends the user's cap. Older saved profiles have no provenance and
+keep their numeric cap; editing the model and restoring automatic output opts
+them into the new behavior without guessing whether 8,192 was intentional.
+
+Length-limited model output is preserved in the journal, but incomplete tool
+calls are never executed or replayed as valid protocol calls. The runtime can
+automatically continue twice after consecutive truncations, asking for smaller
+complete calls or continuation of visible partial text. Repeated truncation
+then stops with a recoverable error instead of retrying indefinitely. Existing
+step limits, cancellation and user steering still apply.
 
 ```rust
 // Store this metadata in the model adapter and return a reference from

@@ -57,6 +57,31 @@ afterEach(async () => {
 })
 
 describe('edit a saved model connection', () => {
+  it('restores automatic output and preserves its mode after reopening the saved profile', async () => {
+    const { path, vault, input } = await setup()
+    const request = vi.fn(async (request: ApiRequest) =>
+      request.path === '/api/runs' ? [] : model,
+    )
+    const result = await updateModelConfiguration(
+      'old-model',
+      { ...input, max_output_tokens: undefined, output_limit_mode: 'auto' },
+      { request },
+      vault,
+      async () => ({ capacity: { max_output_tokens: 64000 } }),
+    )
+    expect(result.limits).toMatchObject({ max_output_tokens: 64000, output_limit_mode: 'auto' })
+    const reopened = new ModelVault(path, cipher)
+    await reopened.load()
+    expect(getModelConfiguration(model.id, reopened)).toMatchObject({
+      max_output_tokens: 64000,
+      output_limit_mode: 'auto',
+      has_api_key: true,
+    })
+    expect(
+      request.mock.calls.find(([call]) => call.path === '/api/models')?.[0].body,
+    ).toMatchObject({ max_output_tokens: 64000, output_limit_mode: 'auto' })
+  })
+
   it('returns editable fields but never the credential or a mutable vault reference', async () => {
     const { vault, input } = await setup()
     const result = getModelConfiguration('old-model', vault)
@@ -82,6 +107,7 @@ describe('edit a saved model connection', () => {
             ...saved,
             context_window: 256000,
             supports_images: true,
+            output_limit_mode: 'custom',
             edit_source_id: 'old-model',
           })
           return model
@@ -105,7 +131,7 @@ describe('edit a saved model connection', () => {
       expect(JSON.stringify(result)).not.toContain(saved.api_key)
       expect(result.persisted).toBe(true)
       expect(await new ModelVault(path, cipher).load()).toEqual([
-        { ...saved, context_window: 256000, supports_images: true },
+        { ...saved, context_window: 256000, supports_images: true, output_limit_mode: 'custom' },
       ])
     },
   )
@@ -174,7 +200,10 @@ describe('edit a saved model connection', () => {
       ),
     ).rejects.toThrow('migration failure')
     const reopened = new ModelVault(path, cipher)
-    expect(await reopened.load()).toEqual([saved, { ...saved, context_window: 256000 }])
+    expect(await reopened.load()).toEqual([
+      saved,
+      { ...saved, context_window: 256000, output_limit_mode: 'custom' },
+    ])
     const save = vi.spyOn(reopened, 'save')
     const retry = vi.fn(async (request: ApiRequest) => {
       if (request.path === '/api/runs') return []
@@ -198,7 +227,7 @@ describe('edit a saved model connection', () => {
     ])
     expect(save).not.toHaveBeenCalled()
     expect(await new ModelVault(path, cipher).load()).toEqual([
-      { ...saved, context_window: 256000 },
+      { ...saved, context_window: 256000, output_limit_mode: 'custom' },
     ])
   })
 

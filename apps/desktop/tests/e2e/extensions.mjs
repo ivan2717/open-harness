@@ -430,9 +430,17 @@ try {
   await page.getByRole('button', { name: '开始运行', exact: true }).click()
   await expect.poll(() => requestsFor(documentsPrompt).length).toBeGreaterThan(0)
   const documents = await settled(page, run.id)
-  await expect(
-    page.locator('.tool-card summary').filter({ hasText: /已加载技能.*review/ }),
-  ).toBeVisible()
+  const skillActivity = page
+    .locator('.tool-activity > summary')
+    .filter({ hasText: /已读取技能.*review/ })
+    .first()
+  await expect(skillActivity).toHaveCount(1)
+  // Settled work and consecutive tool operations are independently collapsible.
+  for (const section of await skillActivity.locator('xpath=../ancestor::details').all()) {
+    if ((await section.getAttribute('open')) === null)
+      await section.locator(':scope > summary').click()
+  }
+  await expect(skillActivity).toBeVisible()
   assert(
     documents.messages
       .filter((message) => message.role === 'tool')

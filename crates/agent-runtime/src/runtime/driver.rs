@@ -69,6 +69,18 @@ where
                 return self.finish_cancellation(run).await;
             }
             self.receive_user_inputs(run).await?;
+            if consecutive_truncations(run) > 2 {
+                // Also enforce the limit after a process restart between the
+                // response commit and its failure record.
+                self.record_persisted(
+                    run,
+                    RunEvent::RunFailed {
+                        message: AgentRuntimeError::<M::Error>::OutputTruncated.to_string(),
+                    },
+                )
+                .await?;
+                return Err(AgentRuntimeError::OutputTruncated);
+            }
             let turn_start_step = run
                 .events()
                 .iter()
@@ -451,10 +463,17 @@ where
                     self.record_persisted(run, event).await?;
                 }
                 ModelFinishReason::Length => {
+                    if consecutive_truncations(run) <= 2 {
+                        // Project the settled response as incomplete historical
+                        // text on the next iteration. No truncated call is
+                        // declared or executed, and normal step/cancel limits
+                        // still apply to the recovery request.
+                        continue;
+                    }
                     self.record_persisted(
                         run,
                         RunEvent::RunFailed {
-                            message: "model output was truncated before completion".into(),
+                            message: AgentRuntimeError::<M::Error>::OutputTruncated.to_string(),
                         },
                     )
                     .await?;
@@ -753,6 +772,31 @@ where
             last_sequence: last.sequence,
         })
     }
+}
+
+/// Count from durable history so restoring the runtime cannot silently reset
+/// the automatic retry budget. A new user turn or complete response resets it.
+fn consecutive_truncations(run: &AgentRun) -> usize {
+    let mut count = 0;
+    for event in run.events().iter().rev() {
+        match &event.event {
+            RunEvent::ModelResponseReceived { response, .. } => {
+                if response
+                    .as_ref()
+                    .is_some_and(|response| response.finish_reason == ModelFinishReason::Length)
+                {
+                    count += 1;
+                } else {
+                    break;
+                }
+            }
+            RunEvent::RunResumed { .. }
+            | RunEvent::UserInputReceived { .. }
+            | RunEvent::InputReceived { .. } => break,
+            _ => {}
+        }
+    }
+    count
 }
 
 struct DiscardStream;

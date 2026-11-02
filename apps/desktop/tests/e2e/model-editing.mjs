@@ -375,6 +375,80 @@ try {
   assertVisionCall(second.calls[1], replacementKey, renamedName)
   assert.equal(second.calls[1].body.reasoning_effort, 'high')
   assert.equal(second.calls[1].body.max_completion_tokens, 4096)
+
+  // Restore automatic output through the actual form. Its numeric planning
+  // reserve must not become a Chat Completions generation limit on the wire.
+  await openEditor(page, editedModel.name)
+  const automaticAdvanced = page.locator('.model-advanced')
+  if (!(await automaticAdvanced.evaluate((details) => details.open)))
+    await automaticAdvanced.locator('summary').click()
+  await expect(page.getByLabel('单次输出上限（tokens）', { exact: true })).toHaveValue('4096')
+  await page.getByRole('button', { name: '恢复容量自动设置', exact: true }).click()
+  await expect(page.getByLabel('单次输出上限（tokens）', { exact: true })).toHaveValue('')
+  await expect(page.getByLabel('单次输出上限（tokens）', { exact: true })).toHaveAttribute(
+    'placeholder',
+    '自动（服务默认）',
+  )
+  await page.getByRole('button', { name: '保存修改', exact: true }).click()
+  await expect(page.getByRole('status')).toContainText('模型配置已更新')
+  editedModel = await expectOnlyProfile(page, renamedName, modelCount)
+  saved = await configurationFor(page, editedModel.id)
+  assert.equal(saved.output_limit_mode, 'auto')
+  assert(saved.max_output_tokens > 8192, 'automatic planning must no longer use the old 8192 cap')
+  assert.equal(second.calls.length, 2, 'restoring automatic settings must not generate a response')
+  await openEditor(page, editedModel.name)
+  await page.locator('.model-advanced > summary').click()
+  await expect(page.getByLabel('单次输出上限（tokens）', { exact: true })).toHaveValue('')
+  await page.getByRole('button', { name: '取消编辑', exact: true }).click()
+  run = await page.evaluate((id) => window.harness.getRun(id), created.id)
+  assert.equal(run.model_id, editedModel.id)
+  assert.equal(run.context.reserved_output_tokens, saved.max_output_tokens)
+  assert(run.context.reserved_output_tokens > 0, 'automatic output must retain context headroom')
+  await visitRun(page, created.id)
+  await page
+    .getByRole('textbox', { name: '任务描述', exact: true })
+    .fill('Continue MODEL-EDIT-CONTEXT with automatic output.')
+  await page.getByRole('button', { name: '开始运行', exact: true }).click()
+  await expect.poll(() => second.calls.length).toBe(3)
+  await settled(page, created.id)
+  assertVisionCall(second.calls[2], replacementKey, renamedName)
+  assert.equal(second.calls[2].body.reasoning_effort, 'high')
+  assert(!Object.hasOwn(second.calls[2].body, 'max_completion_tokens'))
+  assert(!Object.hasOwn(second.calls[2].body, 'max_tokens'))
+  assert(!Object.hasOwn(second.calls[2].body, 'max_output_tokens'))
+  await closeApplication()
+
+  // Reopening the vault must keep auto intent separate from its saved reserve.
+  page = await launch()
+  const automaticAfterRestart = await configurationFor(page, editedModel.id)
+  assert.equal(automaticAfterRestart.output_limit_mode, 'auto')
+  assert.equal(automaticAfterRestart.max_output_tokens, saved.max_output_tokens)
+  if (!automaticAfterRestart.has_api_key) {
+    await page.evaluate(({ id, input }) => window.harness.updateModelConfiguration(id, input), {
+      id: editedModel.id,
+      input: updateInput(automaticAfterRestart, { api_key: replacementKey }),
+    })
+  }
+  await expectOnlyProfile(page, renamedName, modelCount)
+  run = await page.evaluate((id) => window.harness.getRun(id), created.id)
+  assert.equal(run.model_id, editedModel.id)
+  assert.equal(run.context.reserved_output_tokens, saved.max_output_tokens)
+  assert(run.context.reserved_output_tokens > 0)
+  await openEditor(page, editedModel.name)
+  await page.locator('.model-advanced > summary').click()
+  await expect(page.getByLabel('单次输出上限（tokens）', { exact: true })).toHaveValue('')
+  await page.getByRole('button', { name: '取消编辑', exact: true }).click()
+  await visitRun(page, created.id)
+  await page
+    .getByRole('textbox', { name: '任务描述', exact: true })
+    .fill('Confirm automatic output after restart with MODEL-EDIT-CONTEXT.')
+  await page.getByRole('button', { name: '开始运行', exact: true }).click()
+  await expect.poll(() => second.calls.length).toBe(4)
+  await settled(page, created.id)
+  assertVisionCall(second.calls[3], replacementKey, renamedName)
+  assert(!Object.hasOwn(second.calls[3].body, 'max_completion_tokens'))
+  assert(!Object.hasOwn(second.calls[3].body, 'max_tokens'))
+  assert(!Object.hasOwn(second.calls[3].body, 'max_output_tokens'))
   assert.deepEqual(errors, [])
   assert.deepEqual(fixtureErrors, [])
   console.log(

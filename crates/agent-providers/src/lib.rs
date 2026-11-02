@@ -179,6 +179,15 @@ impl fmt::Debug for HttpModel {
     }
 }
 impl HttpModel {
+    /// Leave the normal generation limit to protocols that support omission.
+    /// Explicit request budgets (summaries, review, etc.) still take precedence.
+    /// Messages always requires a concrete `max_tokens` value.
+    pub fn with_provider_output_limit(mut self, enabled: bool) -> Self {
+        self.metadata.use_provider_output_limit =
+            enabled && self.protocol != ProviderProtocol::AnthropicMessages;
+        self
+    }
+
     pub fn new(config: ProviderConfig) -> Result<Self, ProviderError> {
         let invalid = ProviderError::InvalidConfig;
         let mut base = Url::parse(&config.base_url).map_err(|_| invalid("invalid API base URL"))?;

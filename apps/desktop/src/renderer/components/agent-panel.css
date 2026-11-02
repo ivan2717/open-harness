@@ -1,0 +1,107 @@
+.agent-panel {
+  width: clamp(340px, 46%, 680px);
+  min-width: 0;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid #e5ebdd;
+  background: #fcfdf9;
+}
+.agent-panel-header,
+.agent-panel-heading,
+.agent-panel-meta {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  flex-shrink: 0;
+}
+.agent-panel-header {
+  min-height: 48px;
+  padding: 8px 18px;
+  border-bottom: 1px solid #edf0e7;
+  color: #677267;
+  font-size: 12px;
+}
+.agent-panel-header > span {
+  flex: 1;
+}
+.agent-panel-heading {
+  padding: 14px 17px 5px;
+}
+.agent-panel-heading h2 {
+  margin: 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14px;
+  font-weight: 550;
+}
+.agent-panel-meta {
+  padding: 4px 24px 13px;
+  color: #778174;
+  font-size: 11px;
+  border-bottom: 1px solid #edf0e7;
+}
+.agent-panel-model {
+  margin-left: auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-panel .conversation-content {
+  padding: 0 24px 28px;
+}
+.agent-panel .conversation-start {
+  margin: 20px 0 24px;
+}
+.agent-panel .inline-error {
+  margin: 10px 16px;
+}
+.agent-panel-footer {
+  display: flex;
+  justify-content: flex-end;
+  padding: 12px 20px;
+  border-top: 1px solid #edf0e7;
+}
+.agent-panel-list {
+  padding: 12px;
+  overflow-y: auto;
+  font-size: 12px;
+  color: #677267;
+}
+.agent-panel-list > button {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  gap: 10px;
+  padding: 12px;
+  text-align: left;
+  border-radius: 6px;
+}
+.agent-panel-list > button:hover {
+  background: #eef2e8;
+}
+.agent-panel-list-name {
+  min-width: 0;
+  flex: 1;
+  overflow-wrap: anywhere;
+  color: #39463c;
+}
+.agent-panel-list-name small {
+  display: block;
+  color: #87917f;
+  margin-top: 5px;
+}
+@media (max-width: 1100px) {
+  .agent-panel {
+    position: absolute;
+    right: 0;
+    top: 0;
+    bottom: 0;
+    width: min(520px, 100%);
+    z-index: 15;
+    box-shadow: -12px 0 35px #425c2412;
+  }
+}

@@ -132,6 +132,7 @@ async fn large_original_is_read_on_demand_through_the_actual_model_loop_and_surv
             model: "attachment-fixture".into(),
             context_window: 1_000_000,
             max_output_tokens: 4096,
+            output_limit_mode: Default::default(),
             reasoning_mode: "off".into(),
             reasoning_effort: "medium".into(),
             reasoning_capability: None,

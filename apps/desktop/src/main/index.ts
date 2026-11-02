@@ -70,10 +70,19 @@ let bundledPlugins: BundledPlugins | undefined
 let chromeConnection: ChromeConnection | undefined
 let previewWatching = false
 const computerPreview = new ComputerPreviewHost((state) => {
-  if (previewWatching && window && !window.isDestroyed()) window.webContents.send(channels.computerPreview, state)
+  if (previewWatching && window && !window.isDestroyed())
+    window.webContents.send(channels.computerPreview, state)
 })
 function updatePreviewVisibility() {
-  computerPreview.setVisible(Boolean(previewWatching && window && !window.isDestroyed() && window.isVisible() && !window.isMinimized()))
+  computerPreview.setVisible(
+    Boolean(
+      previewWatching &&
+      window &&
+      !window.isDestroyed() &&
+      window.isVisible() &&
+      !window.isMinimized(),
+    ),
+  )
 }
 let quitting = false
 let modelVault: ModelVault | undefined
@@ -115,11 +124,15 @@ function installBridge(): void {
   ipcMain.on(channels.computerPreviewWatch, (event, watching: unknown) => {
     assertSender(event)
     if (typeof watching !== 'boolean') return
-    previewWatching = watching; updatePreviewVisibility()
-    if (watching) for (const state of computerPreview.snapshot()) event.sender.send(channels.computerPreview, state)
+    previewWatching = watching
+    updatePreviewVisibility()
+    if (watching)
+      for (const state of computerPreview.snapshot())
+        event.sender.send(channels.computerPreview, state)
   })
   ipcMain.handle(channels.computerPreviewCollapse, (event, id: unknown, collapsed: unknown) => {
-    assertSender(event); computerPreview.setCollapsed(id, collapsed)
+    assertSender(event)
+    computerPreview.setCollapsed(id, collapsed)
   })
   const importAttachment = (name: string, bytes: Buffer) => {
     if (!backend) throw new Error('本地服务正在启动，请稍后添加。')
@@ -309,6 +322,7 @@ function installBridge(): void {
         ...input,
         context_window: limits.context_window,
         max_output_tokens: limits.max_output_tokens,
+        output_limit_mode: limits.output_limit_mode,
         ...(input.reasoning_mode === 'off'
           ? { reasoning_capability: resolveReasoningCapability(input, metadata?.reasoning) }
           : {}),
@@ -382,7 +396,10 @@ function createWindow(): void {
   contents.on('will-navigate', (event) => event.preventDefault())
   contents.on('will-attach-webview', (event) => event.preventDefault())
   contents.on('render-process-gone', () => subscriptions.stopOwner(contents.id))
-  contents.on('render-process-gone', () => { previewWatching = false; updatePreviewVisibility() })
+  contents.on('render-process-gone', () => {
+    previewWatching = false
+    updatePreviewVisibility()
+  })
   window.on('show', updatePreviewVisibility)
   window.on('hide', updatePreviewVisibility)
   window.on('minimize', updatePreviewVisibility)
@@ -393,7 +410,8 @@ function createWindow(): void {
   contents.once('destroyed', () => subscriptions.stopOwner(contents.id))
   window.on('closed', () => {
     window = undefined
-    previewWatching = false; updatePreviewVisibility()
+    previewWatching = false
+    updatePreviewVisibility()
   })
   if (devUrl) void window.loadURL(devUrl)
   else void window.loadFile(rendererPath)

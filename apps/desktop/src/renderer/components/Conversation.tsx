@@ -1,24 +1,19 @@
 import { useEffect, useRef, useState } from 'react'
-import {
-  Activity,
-  ArrowDown,
-  BookOpen,
-  Check,
-  ChevronRight,
-  CircleAlert,
-  LoaderCircle,
-  Terminal,
-  UserRound,
-} from 'lucide-react'
+import { ArrowDown, ChevronRight, LoaderCircle } from 'lucide-react'
 import type { ChatMessage, RunDetail } from '../../shared/contracts'
-import { toolOutcome } from '../lib/format'
-import { skillActivityLabel } from '../lib/skill-activity'
+import { resolveToolOutcomes, type ToolOutcome } from '../lib/tool-outcomes'
+import {
+  activityBlocks,
+  conversationTurns,
+  elapsedLabel,
+  type ConversationTurn,
+} from '../lib/conversation-turns'
 import { FileReferences } from './FileReferences'
 import { MessageMarkdown } from './MessageMarkdown'
-import { LocalMessageResource } from './MessageResource'
+import { ToolActivityGroup } from './ToolActivity'
+import '../conversation-activity.css'
 
 function Message({ message, runId }: { message: ChatMessage; runId: string }) {
-  const [toolExpanded, setToolExpanded] = useState(false)
   if (
     message.role === 'assistant' &&
     message.status === 'complete' &&
@@ -26,63 +21,17 @@ function Message({ message, runId }: { message: ChatMessage; runId: string }) {
     !message.reasoning
   )
     return null
-  const toolRunning = message.status === 'streaming' || message.status === 'pending'
-  const outcome = toolOutcome(message)
-  const skillActivity = skillActivityLabel(message)
-  if (message.role === 'tool')
-    return (
-      <div className="tool-row">
-        <details
-          className={`tool-card ${outcome.failed ? 'tool-error' : ''}`}
-          onToggle={(event) => setToolExpanded(event.currentTarget.open)}
-        >
-          <summary>
-            <span className="tool-card-icon">
-              {skillActivity ? <BookOpen size={14} /> : <Terminal size={14} />}
-            </span>
-            <span className="min-w-0 flex-1 truncate">
-              {skillActivity ?? message.tool_name ?? '工具执行'}
-            </span>
-            <span className="tool-status">
-              {toolRunning ? (
-                <LoaderCircle className="animate-spin" size={12} />
-              ) : outcome.failed ? (
-                <CircleAlert size={12} />
-              ) : (
-                <Check size={12} />
-              )}
-              {outcome.label}
-            </span>
-            <ChevronRight className="details-chevron" size={13} />
-          </summary>
-          <pre>{message.text || '暂无输出'}</pre>
-          {toolExpanded &&
-            message.images?.map((_, index) => (
-              <LocalMessageResource
-                key={index}
-                reference={{ runId, messageId: message.id, imageIndex: index }}
-                label={`操作截图 ${index + 1}`}
-              />
-            ))}
-        </details>
-      </div>
-    )
   return (
-    <article className={`message message-${message.role}`}>
-      <div className={`message-avatar ${message.role === 'assistant' ? 'assistant-avatar' : ''}`}>
-        {message.role === 'user' ? <UserRound size={15} /> : <Activity size={16} />}
-      </div>
+    <article
+      className={`message message-${message.role}`}
+      aria-label={message.role === 'user' ? '你的消息' : undefined}
+    >
       <div className="message-body">
-        <div className="message-author">
-          {message.role === 'user' ? '你' : 'Open Harness'}
-          {message.status === 'interrupted' && <span className="message-interrupted">已中断</span>}
-          {message.status === 'streaming' && (
-            <span className="message-live">
-              <span />
-              正在生成
-            </span>
-          )}
-        </div>
+        {message.status === 'interrupted' && (
+          <div className="message-author">
+            <span className="message-interrupted">已中断</span>
+          </div>
+        )}
         {message.files && (
           <FileReferences files={message.files} runId={runId} messageId={message.id} />
         )}
@@ -124,7 +73,94 @@ function Message({ message, runId }: { message: ChatMessage; runId: string }) {
   )
 }
 
+function AssistantTurn({
+  turn,
+  runId,
+  resolved,
+}: {
+  turn: ConversationTurn
+  runId: string
+  resolved: Map<string, ToolOutcome>
+}) {
+  const [choice, setChoice] = useState<boolean | null>(null)
+  const [now, setNow] = useState(() => new Date().toISOString())
+  useEffect(() => {
+    if (!turn.active) return
+    setNow(new Date().toISOString())
+    const timer = window.setInterval(() => setNow(new Date().toISOString()), 1_000)
+    return () => window.clearInterval(timer)
+  }, [turn.active])
+  const visible = turn.messages.filter(
+    (message) =>
+      message.role === 'tool' ||
+      message.text ||
+      message.reasoning ||
+      message.status === 'streaming',
+  )
+  const tail = visible.at(-1)
+  // The runtime supports different model protocols, not all of which provide a
+  // final/commentary phase. Only a settled trailing answer is placed outside work.
+  const answer = !turn.active && tail?.role === 'assistant' ? tail : undefined
+  const work = answer ? visible.slice(0, -1) : visible
+  const outcomes = new Map(resolved)
+  if (!turn.active)
+    for (const message of turn.messages) {
+      if (
+        message.role === 'tool' &&
+        (message.status === 'pending' || message.status === 'streaming')
+      )
+        outcomes.set(message.id, { label: '已中断', failed: true })
+    }
+  const hasOperations = work.some((message) => message.role === 'tool')
+  const failures = work.filter(
+    (message) => message.role === 'tool' && outcomes.get(message.id)?.failed,
+  ).length
+  const duration = elapsedLabel(turn.startedAt, turn.completedAt ?? (turn.active ? now : undefined))
+  const open = choice ?? turn.active
+  const content = activityBlocks(work).map((block) =>
+    Array.isArray(block) ? (
+      <ToolActivityGroup key={block[0].id} messages={block} runId={runId} resolved={outcomes} />
+    ) : (
+      <Message key={block.id} message={block} runId={runId} />
+    ),
+  )
+  return (
+    <section className="assistant-turn" aria-label="助手回复">
+      {hasOperations ? (
+        <details className="turn-work" open={open}>
+          <summary
+            onClick={(event) => {
+              event.preventDefault()
+              setChoice(!open)
+            }}
+          >
+            {turn.active && <LoaderCircle size={13} className="animate-spin" />}
+            <span>
+              {turn.active ? '正在处理' : '处理过程'}
+              {duration ? ` · 用时 ${duration}` : ''}
+            </span>
+            {failures > 0 && (
+              <span className="activity-status activity-failed">{failures} 项失败</span>
+            )}
+            <ChevronRight size={13} className="details-chevron" />
+          </summary>
+          <div className="turn-work-content">{content}</div>
+        </details>
+      ) : (
+        content
+      )}
+      {answer && (
+        <div className="turn-answer">
+          <Message message={answer} runId={runId} />
+        </div>
+      )}
+    </section>
+  )
+}
+
 export function Conversation({ run }: { run: RunDetail }) {
+  const turns = conversationTurns(run)
+  const outcomes = resolveToolOutcomes(run.messages)
   const scroll = useRef<HTMLDivElement>(null)
   const keepAtBottom = useRef(true)
   const [showScroll, setShowScroll] = useState(false)
@@ -170,8 +206,11 @@ export function Conversation({ run }: { run: RunDetail }) {
             })}
             <span />
           </div>
-          {run.messages.map((message) => (
-            <Message key={message.id} message={message} runId={run.id} />
+          {turns.map((turn) => (
+            <div className="conversation-turn" key={`${run.id}:${turn.id}`}>
+              {turn.user && <Message message={turn.user} runId={run.id} />}
+              <AssistantTurn turn={turn} runId={run.id} resolved={outcomes} />
+            </div>
           ))}
           {run.status === 'running' &&
             !run.messages.some((message) => message.status === 'streaming') && (

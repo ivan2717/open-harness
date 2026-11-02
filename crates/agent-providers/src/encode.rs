@@ -30,6 +30,8 @@ impl HttpModel {
         if max == 0 {
             return Err(ProviderError::InvalidRequest);
         }
+        let send_output_limit =
+            request.max_output_tokens.is_some() || !self.metadata.use_provider_output_limit;
         let mut body = match self.protocol {
             ProviderProtocol::ChatCompletions => {
                 let mut messages = vec![];
@@ -74,7 +76,9 @@ impl HttpModel {
                 } else {
                     "max_tokens"
                 };
-                body[field] = json!(max);
+                if send_output_limit {
+                    body[field] = json!(max);
+                }
                 body
             }
             ProviderProtocol::Responses => {
@@ -82,8 +86,12 @@ impl HttpModel {
                 for message in &request.messages {
                     input.extend(responses(message)?);
                 }
-                json!({"model":self.model,"instructions":request.instructions,"input":input,"stream":true,
-                    "store":false,"include":["reasoning.encrypted_content"],"max_output_tokens":max})
+                let mut body = json!({"model":self.model,"instructions":request.instructions,"input":input,"stream":true,
+                    "store":false,"include":["reasoning.encrypted_content"]});
+                if send_output_limit {
+                    body["max_output_tokens"] = json!(max);
+                }
+                body
             }
             ProviderProtocol::AnthropicMessages => {
                 let mut messages = vec![];

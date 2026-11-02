@@ -17,7 +17,8 @@
   transition:
     top 160ms ease,
     left 160ms ease,
-    width 160ms ease;
+    width 160ms ease,
+    height 160ms ease;
 }
 .computer-preview-front {
   left: 0;
@@ -63,6 +64,7 @@
   font-size: 11px;
   font-variant-numeric: tabular-nums;
   opacity: 0;
+  pointer-events: none;
   transition:
     opacity 140ms ease,
     background 140ms ease;
@@ -78,8 +80,10 @@
   right: 6px;
 }
 .computer-preview:hover .computer-preview-control,
-.computer-preview:focus-within .computer-preview-control {
+.computer-preview-front:focus-visible .computer-preview-control,
+.computer-preview-control:focus-visible {
   opacity: 1;
+  pointer-events: auto;
 }
 .computer-preview-control:hover {
   background: #fff;
@@ -104,8 +108,9 @@
   outline-offset: -3px;
 }
 @media (hover: none) {
-  .computer-preview-control {
+  .computer-preview:focus-within .computer-preview-control {
     opacity: 1;
+    pointer-events: auto;
   }
 }
 @media (prefers-reduced-motion: reduce) {

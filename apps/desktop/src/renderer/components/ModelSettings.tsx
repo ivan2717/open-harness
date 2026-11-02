@@ -58,10 +58,14 @@ export function ModelSettings({
     initial ? String(initial.context_window) : '',
   )
   const [outputOverride, setOutputOverride] = useState(
-    initial ? String(initial.max_output_tokens) : '',
+    initial && initial.output_limit_mode !== 'auto' ? String(initial.max_output_tokens) : '',
   )
   const [supportsImages, setSupportsImages] = useState(initial?.supports_images ?? false)
-  const [capacity, setCapacity] = useState<ModelCapacity>()
+  const [capacity, setCapacity] = useState<ModelCapacity | undefined>(
+    initial?.output_limit_mode === 'auto'
+      ? { max_output_tokens: initial.max_output_tokens }
+      : undefined,
+  )
   const save = useMutation({
     mutationFn: (input: ConfigureModelInput) =>
       initial
@@ -166,6 +170,7 @@ export function ModelSettings({
       api_key: key,
       ...(contextOverride !== '' ? { context_window: Number(contextOverride) } : {}),
       ...(outputOverride !== '' ? { max_output_tokens: Number(outputOverride) } : {}),
+      output_limit_mode: outputOverride === '' ? 'auto' : 'custom',
       // Keep the legacy fields readable by older vaults. New settings use a
       // capability and an independent default, including a null service default.
       reasoning_mode: 'off',
@@ -341,7 +346,11 @@ export function ModelSettings({
                   min={64}
                   max={8_000_000}
                   step={1}
-                  placeholder={`自动（${limits.max_output_tokens}）`}
+                  placeholder={
+                    protocol === 'anthropic_messages'
+                      ? `自动（${limits.max_output_tokens}）`
+                      : '自动（服务默认）'
+                  }
                   value={outputOverride}
                   onChange={(event) => {
                     setOutputOverride(event.target.value)
@@ -352,7 +361,14 @@ export function ModelSettings({
               </label>
             </div>
             <div className="model-limit-footer">
-              <p className="model-limit-note">单次输出包含思考和回复；系统会为输入保留空间。</p>
+              <p className="model-limit-note">
+                {outputOverride !== ''
+                  ? '使用你填写的上限，包含思考和回复。'
+                  : protocol === 'anthropic_messages'
+                    ? `自动设置，当前输出预算为 ${limits.max_output_tokens.toLocaleString()} tokens。`
+                    : '由模型服务决定单次输出上限，仍受模型实际限制。'}
+                系统会另外预留输出空间，管理上下文。
+              </p>
               <button type="button" disabled={!customized} onClick={resetLimits}>
                 恢复容量自动设置
               </button>

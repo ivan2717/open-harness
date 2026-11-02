@@ -567,7 +567,7 @@ where
                 write!(formatter, "invalid model capabilities: {error}")
             }
             Self::OutputTruncated => {
-                formatter.write_str("model output was truncated before completion")
+                formatter.write_str("model output was truncated after 2 automatic recovery attempts; increase the model's output limit or request smaller parts, then continue the task")
             }
             Self::Context(error) => write!(formatter, "context management failed: {error}"),
             Self::ContextRecovery { overflow, recovery } => write!(

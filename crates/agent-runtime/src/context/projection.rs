@@ -4,7 +4,7 @@ use super::{
 };
 use crate::{ContentBlock, ModelMessage, ModelRequest, ModelRole, ToolOutputProjector};
 use agent_core::agent::{RunEvent, RunEventEnvelope};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 pub(super) fn build_compacted_request(
     input: ContextInputRef<'_>,
@@ -287,6 +287,7 @@ pub(super) struct ToolOutputProjection<'a> {
     replacements: HashMap<u64, PrunedToolOutput>,
     tool_calls: HashMap<&'a str, &'a str>,
     tool_call_sequences: HashMap<&'a str, u64>,
+    truncated_calls: HashSet<(u32, &'a str)>,
     portable_history_through: Option<u64>,
     projector: Option<&'a dyn ToolOutputProjector>,
 }
@@ -341,6 +342,28 @@ impl<'a> ToolOutputProjection<'a> {
                         })
                         .collect(),
                     _ => Vec::new(),
+                })
+                .collect(),
+            truncated_calls: input
+                .events
+                .iter()
+                .filter_map(|envelope| match &envelope.event {
+                    RunEvent::ModelResponseReceived {
+                        response: Some(response),
+                        ..
+                    } if response.finish_reason == crate::ModelFinishReason::Length => {
+                        Some((envelope.step, response))
+                    }
+                    _ => None,
+                })
+                .flat_map(|(step, response)| {
+                    response
+                        .content
+                        .iter()
+                        .filter_map(move |block| match block {
+                            ContentBlock::ToolCall { id, .. } => Some((step, id.as_str())),
+                            _ => None,
+                        })
                 })
                 .collect(),
             portable_history_through: None,
@@ -406,6 +429,11 @@ impl<'a> ToolOutputProjection<'a> {
         let mut messages: Vec<ModelMessage> = Vec::new();
         let mut assistant_step = None;
         for envelope in events {
+            if let Some(message) = super::portable::truncated_response(envelope) {
+                messages.push(message);
+                assistant_step = None;
+                continue;
+            }
             if self
                 .portable_history_through
                 .is_some_and(|through| envelope.sequence <= through)
@@ -451,6 +479,14 @@ impl<'a> ToolOutputProjection<'a> {
                     // Native windows may already contain the assistant calls;
                     // their missing results must still appear in this tail.
                     for call in interrupted_calls {
+                        if self
+                            .truncated_calls
+                            .contains(&(envelope.step, call.call_id.as_str()))
+                        {
+                            // The incomplete call was projected as historical
+                            // text, so a protocol tool result would be orphaned.
+                            continue;
+                        }
                         if self.portable_history_through.is_some_and(|through| {
                             envelope.sequence <= through
                                 || self

@@ -36,9 +36,13 @@ export async function refreshModelContext(
     if (runs.some((run) => run.model_id === id && (run.status === 'running' || run.compacting)))
       throw new Error('此模型仍有运行或压缩任务，请等待结束后更新容量。')
 
-    // Only the window is refreshed. Preserve output and reasoning settings so
-    // existing provider replay state remains compatible (notably Messages thinking budgets).
-    const input = { ...saved, context_window: undefined }
+    // Preserve explicit/legacy output settings. Automatic profiles refresh their
+    // planning reserve from the same capacity metadata, without becoming custom.
+    const input = {
+      ...saved,
+      context_window: undefined,
+      ...(saved.output_limit_mode === 'auto' ? { max_output_tokens: undefined } : {}),
+    }
     const capacity = await discover(input)
     const limits = resolveModelLimits(input, capacity)
     const resolved = resolvedModelConfiguration({ ...input, ...limits })

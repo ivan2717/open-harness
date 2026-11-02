@@ -208,6 +208,7 @@ fn streaming_message(detail: &mut RunDetail) -> &mut ChatMessage {
             String::new(),
         );
         message.status = "streaming".into();
+        message.started_at = crate::projection::model_request_started_at(detail);
         detail.messages.push(message);
     }
     detail.messages.last_mut().expect("stream message inserted")

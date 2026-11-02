@@ -68,6 +68,8 @@ export interface ConfigureModelInput {
   context_window?: number
   /** Per-request output budget, not the provider's physical maximum. */
   max_output_tokens?: number
+  /** Automatic profiles retain a numeric planning reserve without imposing it on optional-cap APIs. */
+  output_limit_mode?: 'auto' | 'custom'
   reasoning_mode: 'off' | 'standard' | 'deepseek'
   reasoning_effort: string
   /** Omitted for legacy profiles; resolved independently of the default selection. */
@@ -132,6 +134,9 @@ export interface ChatMessage {
   images?: { sequence: number; mime_type: string }[]
   reasoning?: string
   tool_name?: string
+  tool_arguments?: string
+  started_at?: string
+  completed_at?: string
   is_error?: boolean
   status: 'pending' | 'streaming' | 'complete' | 'interrupted'
 }
@@ -351,7 +356,9 @@ export interface RunPermissions extends UpdateRunPermissionsInput {
 }
 
 export interface DesktopBridge {
-  watchComputerPreview(listener: (preview: import('./computer-preview').ComputerPreview) => void): () => void
+  watchComputerPreview(
+    listener: (preview: import('./computer-preview').ComputerPreview) => void,
+  ): () => void
   collapseComputerPreview(id: string, collapsed: boolean): Promise<void>
   runPermissions(id: string): Promise<RunPermissions>
   updateRunPermissions(id: string, input: UpdateRunPermissionsInput): Promise<RunPermissions>

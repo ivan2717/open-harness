@@ -32,6 +32,7 @@ fn input(window: usize) -> ConfigureModel {
         model: "fixture-model".into(),
         context_window: window,
         max_output_tokens: 2048,
+        output_limit_mode: Default::default(),
         reasoning_mode: "off".into(),
         reasoning_effort: "medium".into(),
         reasoning_capability: None,

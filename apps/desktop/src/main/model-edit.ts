@@ -54,6 +54,7 @@ export async function updateModelConfiguration(
       ...configuration,
       context_window: limits.context_window,
       max_output_tokens: limits.max_output_tokens,
+      output_limit_mode: limits.output_limit_mode,
       ...(configuration.reasoning_mode === 'off'
         ? {
             reasoning_capability:

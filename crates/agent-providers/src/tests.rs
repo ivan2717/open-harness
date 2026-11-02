@@ -31,6 +31,118 @@ fn request() -> ModelRequest {
     }
 }
 
+#[tokio::test]
+async fn provider_default_and_explicit_output_caps_reach_each_wire_protocol() {
+    for (protocol, response, field) in [
+        (
+            ProviderProtocol::ChatCompletions,
+            json!({"id":"chat-1","choices":[{"message":{"role":"assistant","content":"Done"},"finish_reason":"stop"}]}),
+            "max_tokens",
+        ),
+        (
+            ProviderProtocol::Responses,
+            json!({"id":"resp-1","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Done"}]}]}),
+            "max_output_tokens",
+        ),
+        (
+            ProviderProtocol::AnthropicMessages,
+            json!({"id":"msg-1","role":"assistant","content":[{"type":"text","text":"Done"}],"stop_reason":"end_turn"}),
+            "max_tokens",
+        ),
+    ] {
+        for (automatic, override_limit) in [
+            (false, None),
+            (true, None),
+            (true, Some(2048)),
+            (true, Some(8192)),
+        ] {
+            let (url, server) =
+                serve("200 OK", "application/json", vec![response.to_string()]).await;
+            let model = HttpModel::new(config(protocol, url))
+                .unwrap()
+                .with_provider_output_limit(automatic);
+            let omits_normal_limit = automatic && protocol != ProviderProtocol::AnthropicMessages;
+            assert_eq!(model.metadata.use_provider_output_limit, omits_normal_limit);
+            // Reserving context still needs the same numeric output budget.
+            assert_eq!(model.metadata.max_output_tokens, Some(4096));
+            let mut req = request();
+            req.max_output_tokens = override_limit;
+            assert_eq!(model.respond(req).await.unwrap().text(), "Done");
+            let wire = server.await.unwrap();
+            let body: Value = serde_json::from_str(wire.split_once("\r\n\r\n").unwrap().1).unwrap();
+            if omits_normal_limit && override_limit.is_none() {
+                for name in ["max_tokens", "max_output_tokens", "max_completion_tokens"] {
+                    assert!(
+                        body.get(name).is_none(),
+                        "{protocol:?}: {name} must be omitted"
+                    );
+                }
+            } else {
+                assert_eq!(body[field], override_limit.unwrap_or(4096).min(4096));
+            }
+        }
+    }
+}
+
+#[test]
+fn automatic_output_preserves_reasoning_and_bounded_auxiliary_requests() {
+    for protocol in [
+        ProviderProtocol::ChatCompletions,
+        ProviderProtocol::Responses,
+    ] {
+        let mut cfg = config(protocol, "https://relay.example/v1".into());
+        cfg.reasoning = ReasoningMode::Effort {
+            effort: "high".into(),
+        };
+        let model = HttpModel::new(cfg)
+            .unwrap()
+            .with_provider_output_limit(true);
+        let field = if protocol == ProviderProtocol::Responses {
+            "max_output_tokens"
+        } else {
+            "max_completion_tokens"
+        };
+        let mut req = request();
+        req.max_output_tokens = None;
+        let body = model.encode(&req).unwrap();
+        assert!(body.get(field).is_none());
+        if protocol == ProviderProtocol::Responses {
+            assert_eq!(body["reasoning"]["effort"], "high");
+        } else {
+            assert_eq!(body["reasoning_effort"], "high");
+        }
+        req.max_output_tokens = Some(1024);
+        assert_eq!(model.encode(&req).unwrap()[field], 1024);
+        req.max_output_tokens = Some(0);
+        assert!(model.encode(&req).is_err());
+        req.max_output_tokens = None;
+        assert_eq!(
+            model
+                .with_provider_output_limit(false)
+                .encode(&req)
+                .unwrap()[field],
+            4096
+        );
+    }
+    let mut cfg = config(
+        ProviderProtocol::AnthropicMessages,
+        "https://relay.example/v1".into(),
+    );
+    cfg.reasoning = ReasoningMode::AnthropicBudget { tokens: 2048 };
+    let model = HttpModel::new(cfg)
+        .unwrap()
+        .with_provider_output_limit(true);
+    let mut req = request();
+    req.max_output_tokens = None;
+    let body = model.encode(&req).unwrap();
+    assert_eq!(body["max_tokens"], 4096);
+    assert_eq!(body["thinking"]["budget_tokens"], 2048);
+    req.max_output_tokens = Some(1536);
+    let body = model.encode(&req).unwrap();
+    assert_eq!(body["max_tokens"], 1536);
+    assert_eq!(body["thinking"]["budget_tokens"], 1535);
+}
+
 #[test]
 fn session_reasoning_overrides_clone_the_model_and_use_each_wire_protocol() {
     for protocol in [

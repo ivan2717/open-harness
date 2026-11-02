@@ -126,6 +126,13 @@ pub struct ChatMessage {
     pub reasoning: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_name: Option<String>,
+    /// Original public tool arguments, retained independently from its output.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_arguments: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub is_error: Option<bool>,
     pub status: String,
@@ -141,6 +148,9 @@ impl ChatMessage {
             images: Vec::new(),
             reasoning: None,
             tool_name: None,
+            tool_arguments: None,
+            started_at: None,
+            completed_at: None,
             is_error: None,
             status: "complete".into(),
         }
@@ -272,6 +282,15 @@ pub struct SubmitInput {
     pub files: Vec<agent_core::TextFileReference>,
 }
 
+/// Legacy numeric configurations keep their explicit cap when restored.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OutputLimitMode {
+    Auto,
+    #[default]
+    Custom,
+}
+
 /// Credentials are accepted only on configuration and never included in responses.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -282,6 +301,8 @@ pub struct ConfigureModel {
     pub model: String,
     pub context_window: usize,
     pub max_output_tokens: usize,
+    #[serde(default)]
+    pub output_limit_mode: OutputLimitMode,
     pub reasoning_mode: String,
     pub reasoning_effort: String,
     #[serde(default)]

@@ -372,7 +372,7 @@ async fn malformed_truncated_and_failed_streams_cannot_execute_tool_effects() {
             BrokenStreamingModel(mode),
             CountingTools::new(),
             support::test_context_manager(),
-            Some(2),
+            Some(4),
         );
         let mut run = runtime
             .start_run(&agent, "broken-stream", "Read")
@@ -393,6 +393,221 @@ async fn malformed_truncated_and_failed_streams_cannot_execute_tool_effects() {
             );
         }
     }
+}
+
+fn truncated_events(text: &str, with_call: bool) -> Vec<ModelStreamEvent> {
+    let mut content = vec![ContentBlock::Text { text: text.into() }];
+    if with_call {
+        content.push(ContentBlock::Reasoning {
+            text: "private unfinished reasoning".into(),
+        });
+        content.push(call(r#"{"truncated_secret_payload":"#));
+    }
+    let mut output = ModelOutput::from(ModelResponse {
+        content,
+        finish_reason: ModelFinishReason::Length,
+    });
+    output.usage = Some(agent_runtime::ModelUsage {
+        input_tokens: 100,
+        output_tokens: 8192,
+        cached_input_tokens: None,
+    });
+    let mut sink = RecordingSink::default();
+    output.emit_stream(&mut sink);
+    sink.0
+}
+
+#[tokio::test]
+async fn truncated_outputs_recover_without_executing_or_replaying_partial_calls() {
+    let agent = Agent::new("recovery", "Recovery", "", "");
+    let runtime = AgentRuntime::new(
+        ScriptedStreamingModel::new(vec![
+            truncated_events("Partial answer", true),
+            truncated_events("More of the answer", false),
+            complete_events(ModelResponse::final_answer("Finished".into())),
+        ]),
+        CountingTools::new(),
+        support::test_context_manager(),
+        None,
+    );
+    let mut run = runtime
+        .start_run(&agent, "recover", "Write the answer")
+        .await
+        .unwrap();
+    assert_eq!(
+        runtime.run_until_blocked(&agent, &mut run).await.unwrap(),
+        RunStatus::Completed
+    );
+    assert_eq!(run.current_step(), 3);
+    assert_eq!(runtime.tools().calls.load(Ordering::SeqCst), 0);
+    let requests = runtime.model().requests.lock().unwrap();
+    for request in &requests[1..] {
+        let context = serde_json::to_string(&request.messages).unwrap();
+        assert!(context.contains("Partial answer"));
+        assert!(context.contains("None of its tool calls ran"));
+        assert!(!context.contains("truncated_secret_payload"));
+        assert!(!context.contains("private unfinished reasoning"));
+        assert!(
+            !request
+                .messages
+                .iter()
+                .flat_map(|message| &message.content)
+                .any(|block| matches!(
+                    block,
+                    ContentBlock::ToolCall { .. }
+                        | ContentBlock::ToolResult { .. }
+                        | ContentBlock::Reasoning { .. }
+                ))
+        );
+    }
+    assert_eq!(run.events().iter().filter(|entry| matches!(&entry.event, RunEvent::ModelResponseReceived { token_usage: Some(record), .. } if record.usage.output_tokens == 8192)).count(), 2);
+    assert!(!run.events().iter().any(|entry| matches!(
+        entry.event,
+        RunEvent::RunFailed { .. } | RunEvent::ToolCallRequested { .. }
+    )));
+    assert!(AgentRun::restore(run.id(), run.agent_id(), run.events().to_vec()).is_ok());
+}
+
+#[tokio::test]
+async fn repeated_truncation_is_bounded_and_manual_resume_preserves_protocol_validity() {
+    let agent = Agent::new("recovery", "Recovery", "", "");
+    let runtime = AgentRuntime::new(
+        ScriptedStreamingModel::new(vec![
+            truncated_events("", true),
+            truncated_events("", true),
+            truncated_events("", true),
+            complete_events(ModelResponse::final_answer("Finished".into())),
+        ]),
+        CountingTools::new(),
+        support::test_context_manager(),
+        None,
+    );
+    let mut run = runtime
+        .start_run(&agent, "bounded-recover", "Write")
+        .await
+        .unwrap();
+    assert!(matches!(
+        runtime.run_until_blocked(&agent, &mut run).await,
+        Err(AgentRuntimeError::OutputTruncated)
+    ));
+    assert_eq!(run.status(), RunStatus::Failed);
+    assert_eq!(run.current_step(), 3);
+    assert_eq!(runtime.tools().calls.load(Ordering::SeqCst), 0);
+    runtime
+        .resume_run(&mut run, "Continue in smaller parts")
+        .await
+        .unwrap();
+    assert_eq!(
+        runtime.run_until_blocked(&agent, &mut run).await.unwrap(),
+        RunStatus::Completed
+    );
+    let requests = runtime.model().requests.lock().unwrap();
+    assert!(
+        !requests[3]
+            .messages
+            .iter()
+            .flat_map(|message| &message.content)
+            .any(|block| matches!(
+                block,
+                ContentBlock::ToolCall { .. } | ContentBlock::ToolResult { .. }
+            ))
+    );
+}
+
+#[tokio::test]
+async fn successful_tool_response_resets_the_consecutive_truncation_budget() {
+    let agent = Agent::new("recovery", "Recovery", "", "");
+    let runtime = AgentRuntime::new(
+        ScriptedStreamingModel::new(vec![
+            truncated_events("Partial", false),
+            truncated_events("More", false),
+            complete_events(ModelResponse::tool_calls(
+                "Read".into(),
+                vec![ToolCall {
+                    id: "complete-call".into(),
+                    name: "read".into(),
+                    arguments: "{}".into(),
+                }],
+            )),
+            truncated_events("Then", false),
+            truncated_events("Almost", false),
+            complete_events(ModelResponse::final_answer("Finished".into())),
+        ]),
+        CountingTools::new(),
+        support::test_context_manager(),
+        None,
+    );
+    let mut run = runtime
+        .start_run(&agent, "reset-recovery", "Write")
+        .await
+        .unwrap();
+    assert_eq!(
+        runtime.run_until_blocked(&agent, &mut run).await.unwrap(),
+        RunStatus::Completed
+    );
+    assert_eq!(run.current_step(), 6);
+    assert_eq!(runtime.tools().calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn truncation_recovery_respects_the_normal_step_budget() {
+    let agent = Agent::new("recovery", "Recovery", "", "");
+    let runtime = AgentRuntime::new(
+        ScriptedStreamingModel::new(vec![truncated_events("Partial", true)]),
+        CountingTools::new(),
+        support::test_context_manager(),
+        Some(1),
+    );
+    let mut run = runtime
+        .start_run(&agent, "limited-recover", "Write")
+        .await
+        .unwrap();
+    assert_eq!(
+        runtime.run_until_blocked(&agent, &mut run).await.unwrap(),
+        RunStatus::Paused
+    );
+    assert_eq!(runtime.model().requests.lock().unwrap().len(), 1);
+    assert_eq!(runtime.tools().calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn restart_after_the_third_truncated_response_cannot_reset_the_retry_limit() {
+    let agent = Agent::new("recovery", "Recovery", "", "");
+    let mut run = AgentRun::new("restored-recovery", agent.id.clone(), "Write");
+    for _ in 0..3 {
+        run.begin_step().unwrap();
+        run.record(RunEvent::ModelResponseReceived {
+            content: "Partial".into(),
+            response: Some(ModelResponse {
+                content: vec![ContentBlock::Text {
+                    text: "Partial".into(),
+                }],
+                finish_reason: ModelFinishReason::Length,
+            }),
+            token_usage: None,
+            provider_state: None,
+            provider_continuation: None,
+        })
+        .unwrap();
+    }
+    let store = InMemoryEventStore::new();
+    for event in run.events() {
+        store.append(run.id(), run.agent_id(), event).await.unwrap();
+    }
+    let runtime = AgentRuntime::with_event_store(
+        ScriptedStreamingModel::new(Vec::new()),
+        CountingTools::new(),
+        support::test_context_manager(),
+        store,
+        None,
+    );
+    let mut run = AgentRun::restore(run.id(), run.agent_id(), run.events().to_vec()).unwrap();
+    assert!(matches!(
+        runtime.run_until_blocked(&agent, &mut run).await,
+        Err(AgentRuntimeError::OutputTruncated)
+    ));
+    assert!(runtime.model().requests.lock().unwrap().is_empty());
+    assert_eq!(run.status(), RunStatus::Failed);
 }
 
 struct DropFlag(Arc<AtomicBool>);

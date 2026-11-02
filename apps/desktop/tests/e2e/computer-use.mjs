@@ -350,9 +350,14 @@ try {
     0,
     'the grant covers subsequent approved browser operations',
   )
-  const screenshotCard = page.locator('.tool-card').last()
+  const screenshotCard = page.locator('.tool-activity').last()
+  await expect(screenshotCard).toHaveCount(1)
+  for (const section of await screenshotCard.locator('xpath=ancestor::details').all()) {
+    if ((await section.getAttribute('open')) === null)
+      await section.locator(':scope > summary').click()
+  }
   await expect(screenshotCard.locator('.message-image-button')).toHaveCount(0)
-  await screenshotCard.locator('summary').click()
+  await screenshotCard.locator(':scope > summary').click()
   const preview = screenshotCard.locator('.message-image-button')
   await expect(preview).toBeVisible()
   await preview.click()

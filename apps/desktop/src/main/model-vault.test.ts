@@ -133,6 +133,20 @@ describe('model credential storage', () => {
     )
     await expect(new ModelVault(file, cipher).load()).rejects.toThrow('无法解密')
   })
+  it('round-trips automatic reserves without turning them into explicit limits', async () => {
+    const file = await location()
+    const automatic = {
+      ...input,
+      context_window: 1_000_000,
+      max_output_tokens: 128000,
+      output_limit_mode: 'auto' as const,
+    }
+    await new ModelVault(file, cipher).save('automatic', automatic)
+    expect(await new ModelVault(file, cipher).load()).toEqual([automatic])
+    expect(() =>
+      resolvedModelConfiguration({ ...automatic, max_output_tokens: 1_000_000 }),
+    ).toThrow('输出上限过大')
+  })
 })
 
 describe('provider IPC validation', () => {

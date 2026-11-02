@@ -468,10 +468,18 @@ impl AgentRun {
             {
                 StepPhase::Ready
             }
-            RunEvent::ModelResponseReceived { .. }
+            RunEvent::ModelResponseReceived { response, .. }
                 if self.phase == StepPhase::AwaitingModelResponse =>
             {
-                StepPhase::ModelResponded
+                // A length-limited response is durably settled but never
+                // authorizes tool execution. It can start a recovery step.
+                if response.as_ref().is_some_and(|response| {
+                    response.finish_reason == crate::model_protocol::ModelFinishReason::Length
+                }) {
+                    StepPhase::Ready
+                } else {
+                    StepPhase::ModelResponded
+                }
             }
             RunEvent::ToolCallRequested { call_id, .. }
                 if matches!(
@@ -894,6 +902,7 @@ impl RunEvent {
             images.clear();
         }
         if let Self::ModelResponseReceived {
+            content,
             response,
             provider_state,
             provider_continuation,
@@ -901,6 +910,11 @@ impl RunEvent {
             ..
         } = &mut event
         {
+            if response.as_ref().is_some_and(|response| {
+                response.finish_reason == crate::model_protocol::ModelFinishReason::Length
+            }) {
+                content.insert_str(0, "[Incomplete assistant output: generation reached its output limit. None of this response's tool calls executed.]\n");
+            }
             // Summary/history projections use the visible text and separate
             // execution events. Including canonical blocks here would duplicate
             // the answer/calls and expose reasoning to a second model.

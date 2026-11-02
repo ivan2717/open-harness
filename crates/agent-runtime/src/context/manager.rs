@@ -295,8 +295,9 @@ where
                     matches!(
                         &event.event,
                         agent_core::agent::RunEvent::ModelResponseReceived {
-                            provider_state: Some(state), ..
+                            provider_state: Some(state), response, ..
                         } if state.scope == crate::ProviderReplayScope::Prefix
+                            && response.as_ref().is_none_or(|response| response.finish_reason != crate::ModelFinishReason::Length)
                     )
                 })
         {
@@ -376,8 +377,9 @@ where
                 .is_none_or(|through| event.sequence > through)
                 && matches!(&event.event,
                     agent_core::agent::RunEvent::ModelResponseReceived {
-                        provider_continuation: None, provider_state: Some(state), ..
-                    } if state.scope == crate::ProviderReplayScope::Prefix)
+                        provider_continuation: None, provider_state: Some(state), response, ..
+                    } if state.scope == crate::ProviderReplayScope::Prefix
+                        && response.as_ref().is_none_or(|response| response.finish_reason != crate::ModelFinishReason::Length))
         });
         if has_bound_state {
             if force_compaction || initial_tokens > policy.input_token_limit() {

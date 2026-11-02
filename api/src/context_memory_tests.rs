@@ -93,6 +93,7 @@ impl Fixture {
             model: "wiki-hook-fixture".into(),
             context_window: 128_000,
             max_output_tokens: 4_096,
+            output_limit_mode: Default::default(),
             reasoning_mode: "off".into(),
             reasoning_effort: "medium".into(),
             reasoning_capability: None,

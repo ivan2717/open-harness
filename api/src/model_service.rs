@@ -6,7 +6,7 @@ pub(super) fn context_policy(model: &impl Model) -> io::Result<ContextPolicy> {
             .model_context_window(metadata.context_window)
             .output_token_reserve(metadata.max_output_tokens.unwrap_or(8192))
             .safety_margin((metadata.context_window / 100).clamp(64, 2048))
-            .build()
+            .build_for_model(metadata)
             .map_err(io::Error::other),
         None => Ok(ContextPolicy::default()),
     }

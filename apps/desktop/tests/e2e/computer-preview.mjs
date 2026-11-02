@@ -31,8 +31,22 @@ try {
   await emit(source)
   const panel = page.getByRole('region', { name: '电脑操作预览' })
   const surface = panel.getByLabel('拖动预览位置，也可使用方向键移动')
+  const collapse = panel.getByRole('button', { name: '收起操作预览' })
   await expect(panel).toBeVisible()
   await expect(panel.getByRole('img', { name: /的实时操作画面/ })).toBeVisible()
+  // 200 × 133 CSS pixels corresponds to roughly 400 × 267 in a Retina screenshot.
+  await expect.poll(async () => Math.round((await surface.boundingBox()).width)).toBe(200)
+  await expect.poll(async () => Math.round((await surface.boundingBox()).height)).toBe(133)
+  await page.mouse.move(5, 5)
+  await expect(collapse).toHaveCSS('opacity', '0')
+  await expect(collapse).toHaveCSS('pointer-events', 'none')
+  await surface.hover()
+  await expect(collapse).toHaveCSS('opacity', '1')
+  await surface.click({ position: { x: 80, y: 80 } })
+  await expect(surface).toBeFocused()
+  await page.mouse.move(5, 5)
+  await expect(collapse).toHaveCSS('opacity', '0')
+  await expect(collapse).toHaveCSS('pointer-events', 'none')
   // Check pixel refresh, not just a changing IPC payload or image attribute.
   const frame = panel.getByRole('img', { name: /的实时操作画面/ })
   const beforeFrame = await frame.screenshot()
@@ -61,6 +75,62 @@ try {
     (await frame.screenshot()).equals(beforeFrame),
     'Restoring the window shows the latest frame',
   )
+  // A wide source is letterboxed in the stable 3:2 card, never cropped.
+  const wideJpeg = await page.evaluate(() => {
+    const canvas = document.createElement('canvas')
+    canvas.width = 1600
+    canvas.height = 400
+    const context = canvas.getContext('2d')
+    for (const [color, x, width] of [
+      ['#ff0000', 0, 400],
+      ['#00ff00', 400, 800],
+      ['#0000ff', 1200, 400],
+    ]) {
+      context.fillStyle = color
+      context.fillRect(x, 0, width, 400)
+    }
+    return canvas.toDataURL('image/jpeg').split(',')[1]
+  })
+  await emit({ ...source, width: 1600, height: 400, jpeg: wideJpeg })
+  await expect(frame).toHaveAttribute('src', `data:image/jpeg;base64,${wideJpeg}`)
+  await expect(frame).toHaveCSS('object-fit', 'contain')
+  await expect
+    .poll(async () => {
+      const box = await surface.boundingBox()
+      return Math.abs(box.width / box.height - 1.5) < 0.01
+    })
+    .toBe(true)
+  await page.mouse.move(5, 5)
+  const widePixels = await frame.screenshot()
+  const visibleEdges = await application.evaluate(({ nativeImage }, bytes) => {
+    const image = nativeImage.createFromBuffer(Buffer.from(bytes, 'base64'))
+    const size = image.getSize()
+    const pixels = image.toBitmap()
+    const sample = (x, y) =>
+      Array.from(
+        pixels.subarray(
+          (Math.floor(y * size.height) * size.width + Math.floor(x * size.width)) * 4,
+          (Math.floor(y * size.height) * size.width + Math.floor(x * size.width)) * 4 + 3,
+        ),
+      )
+    return { left: sample(0.1, 0.5), right: sample(0.9, 0.5), top: sample(0.5, 0.1) }
+  }, widePixels.toString('base64'))
+  // Electron bitmap channels are BGRA: retain the red/blue outer edges and black bars.
+  assert.ok(
+    visibleEdges.left[2] > 230 && visibleEdges.left[0] < 25,
+    'Wide source left edge remains visible',
+  )
+  assert.ok(
+    visibleEdges.right[0] > 230 && visibleEdges.right[2] < 25,
+    'Wide source right edge remains visible',
+  )
+  assert.ok(
+    visibleEdges.top.every((channel) => channel < 35),
+    'Wide image uses letterboxing',
+  )
+  await panel.screenshot({ path: resolve('test-results/computer-preview-wide-source.png') })
+  await emit(source)
+  await expect(frame).toHaveAttribute('src', `data:image/jpeg;base64,${jpeg}`)
   assert.equal(
     await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length),
     1,
@@ -73,6 +143,9 @@ try {
   await page.mouse.up()
   const moved = await panel.boundingBox()
   assert.ok(moved.x < start.x - 30, 'Preview moves inside the app')
+  await page.mouse.move(5, 5)
+  await expect(collapse).toHaveCSS('opacity', '0')
+  await expect(collapse).toHaveCSS('pointer-events', 'none')
   const body = await page.locator('.desktop-body').boundingBox()
   await page.mouse.move(moved.x + 60, moved.y + 20)
   await page.mouse.down()
@@ -129,6 +202,16 @@ try {
   await surface.focus()
   await page.keyboard.press('ArrowRight')
   assert.ok((await panel.boundingBox()).x > clamped.x, 'Keyboard can move the view')
+  await page.mouse.move(5, 5)
+  await page.keyboard.press('Tab')
+  await expect(collapse).toBeFocused()
+  await expect(collapse).toHaveCSS('opacity', '1')
+  await expect(collapse).toHaveCSS('pointer-events', 'auto')
+  await page.keyboard.press('Enter')
+  await expect(restore).toBeVisible()
+  await restore.focus()
+  await page.keyboard.press('Enter')
+  await expect(frame).toBeVisible()
   await emit({ ...source, id: 'second', title: '协作任务应用' })
   await emit({ ...source, id: 'third', title: '第三个窗口' })
   await emit({ ...source, id: 'fourth', title: '第四个窗口' })
@@ -215,11 +298,13 @@ try {
   await expect(panel).toHaveCount(0)
   assert.deepEqual(errors, [])
   console.log(
-    'Passed preview repaint/restore, collapsed dragging and activation, title-free stack, source switching, drag bounds and cleanup',
+    'Passed stable 200 CSS px 3:2 preview (Retina 400px), uncropped wide frames, hover/mouse-focus hiding, keyboard controls, repaint/restore, collapsed dragging, title-free stack, source switching, bounds and cleanup',
   )
 } catch (error) {
   const page = application?.windows()[0]
-  await page?.screenshot({ path: resolve('test-results/computer-preview-failure.png') }).catch(() => {})
+  await page
+    ?.screenshot({ path: resolve('test-results/computer-preview-failure.png') })
+    .catch(() => {})
   throw error
 } finally {
   await application?.close()

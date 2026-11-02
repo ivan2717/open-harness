@@ -4,7 +4,8 @@ import type { ComputerPreview as Preview } from '../../shared/computer-preview'
 import { ComputerPreviewFrame } from './ComputerPreviewFrame'
 import './computer-preview.css'
 
-const WIDTH = 320
+const WIDTH = 200
+const ASPECT_RATIO = 3 / 2
 const STACK_STEP = 18
 const STORAGE = 'openharness.preview.position'
 export function clampPreview(
@@ -40,12 +41,14 @@ export function ComputerPreview() {
   const index = entries.findIndex((item) => item.id === source?.id)
   const following = [...entries.slice(index + 1), ...entries.slice(0, index)]
   const depth = Math.min(2, following.length)
-  const width = Math.min(WIDTH, Math.max(160, area.width - 16))
-  const height = Math.min(
-    240,
-    Math.max(80, area.height - depth * STACK_STEP - 16),
-    source?.width && source.height ? (width * source.height) / source.width : 200,
+  // Keep a stable preview shape when switching between different windows.
+  // Shrink the entire card to fit the available space; the frame contains the
+  // original image without cropping it.
+  const width = Math.max(
+    1,
+    Math.min(WIDTH, area.width - 16, (area.height - depth * STACK_STEP - 16) * ASPECT_RATIO),
   )
+  const height = width / ASPECT_RATIO
   const size = collapsed
     ? { width: 36, height: 36 }
     : { width, height: height + depth * STACK_STEP }

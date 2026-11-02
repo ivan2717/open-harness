@@ -1,16 +1,9 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import type { RunSummary } from '../../shared/contracts'
 import { CollaborationTasks } from './CollaborationTasks'
-
-vi.mock('@tanstack/react-router', () => ({
-  Link: ({ to: _to, params, children, ...props }: any) => (
-    <a href={`/runs/${params.runId}`} {...props}>
-      {children}
-    </a>
-  ),
-}))
+import { collaborationRuns } from '../lib/collaboration'
 
 function render(runs: RunSummary[]): string {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -18,7 +11,11 @@ function render(runs: RunSummary[]): string {
   try {
     return renderToStaticMarkup(
       <QueryClientProvider client={client}>
-        <CollaborationTasks rootId="root" />
+        <CollaborationTasks
+          tasks={collaborationRuns(runs, 'root')}
+          onOpen={() => {}}
+          onRetry={() => {}}
+        />
       </QueryClientProvider>,
     )
   } finally {
@@ -52,8 +49,9 @@ describe('collaboration task list', () => {
       task('later', 'paused'),
     ])
     expect(html).toContain('协作任务')
-    expect(html).toContain('href="/runs/reviewer"')
-    expect(html).toContain('href="/runs/later"')
+    expect(html).toContain('查看协作任务：reviewer')
+    expect(html).toContain('查看协作任务：later')
+    expect(html).not.toContain('href=')
     expect(html).toContain('停止协作任务：writer')
     expect(html).not.toContain('停止协作任务：reviewer')
     expect(html).not.toContain('停止协作任务：later')

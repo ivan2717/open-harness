@@ -266,6 +266,15 @@ export function modelConfiguration(value: unknown): ConfigureModelInput {
     input.max_output_tokens === undefined
       ? undefined
       : integer(input.max_output_tokens, 64, MODEL_TOKEN_LIMIT, 'output limit')
+  const output_limit_mode = input.output_limit_mode
+  if (
+    output_limit_mode !== undefined &&
+    output_limit_mode !== 'auto' &&
+    output_limit_mode !== 'custom'
+  )
+    throw new Error('Invalid output limit mode')
+  if (output_limit_mode === 'custom' && max_output_tokens === undefined)
+    throw new Error('请填写单次输出上限，或恢复自动设置。')
   const reasoning_mode = input.reasoning_mode
   const reasoning_effort = input.reasoning_effort
   if (
@@ -296,6 +305,7 @@ export function modelConfiguration(value: unknown): ConfigureModelInput {
     base_url,
     context_window,
     max_output_tokens,
+    ...(output_limit_mode === undefined ? {} : { output_limit_mode }),
     model: boundedText(input.model, 256, 'model').trim(),
     api_key: boundedText(input.api_key, 4096, 'API key').trim(),
     reasoning_mode: reasoning_mode as ConfigureModelInput['reasoning_mode'],
@@ -311,7 +321,8 @@ export function modelConfiguration(value: unknown): ConfigureModelInput {
   if (input.supports_images !== undefined && typeof input.supports_images !== 'boolean')
     throw new Error('Invalid image capability')
   if (context_window !== undefined && max_output_tokens !== undefined)
-    resolveModelLimits(configuration)
+    // Validate the supplied reserve even when it belongs to an automatic profile.
+    resolveModelLimits({ ...configuration, output_limit_mode: 'custom' })
   return configuration
 }
 

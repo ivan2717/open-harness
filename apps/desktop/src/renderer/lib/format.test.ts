@@ -15,7 +15,7 @@ describe('command results in the conversation', () => {
       }
       const outcome = (result: unknown) => toolOutcome({ ...message, text: JSON.stringify(result) })
       expect(outcome({ status: 'running', exit_code: null })).toEqual({
-        label: '执行中',
+        label: '返回时仍在运行',
         failed: false,
       })
       expect(outcome({ status: 'awaiting_approval', exit_code: null })).toEqual({
