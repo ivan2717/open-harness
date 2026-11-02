@@ -283,7 +283,17 @@ try {
   await memoryPaste(page, memoryName, images[0], 'PASTED_WITH_IMAGE')
   await expect(draftFiles()).toHaveCount(1)
   await expect(description).toHaveValue('prefix PASTED_WITH_IMAGE suffix')
+  // Mixed paste restores the caret on the next animation frame. Wait for that
+  // user-visible result before fill('') selects all and sends Delete, otherwise
+  // the delayed restoration can replace the selection between those two steps.
+  const pastedCaret = 'prefix PASTED_WITH_IMAGE'.length
+  await expect
+    .poll(() =>
+      description.evaluate((textarea) => [textarea.selectionStart, textarea.selectionEnd]),
+    )
+    .toEqual([pastedCaret, pastedCaret])
   await description.fill('')
+  await expect(description).toHaveValue('')
 
   await application.evaluate(({ dialog }, path) => {
     dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [path] })
@@ -313,6 +323,7 @@ try {
     await restoreClipboard()
   }
   await expect(draftFiles().locator('img')).toHaveCount(3)
+  await expect(description).toHaveValue('')
   const snapshots = await draftFiles()
     .locator('img')
     .evaluateAll((images) => images.map((image) => image.src))

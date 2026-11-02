@@ -328,6 +328,9 @@ async fn full_access_network_is_really_enabled_without_a_grant() {
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         loop {
             if let Ok((mut stream, _)) = listener.accept() {
+                // Windows inherits the listener's nonblocking mode. Use a
+                // bounded blocking read for the accepted HTTP connection.
+                stream.set_nonblocking(false).unwrap();
                 stream
                     .set_read_timeout(Some(Duration::from_secs(2)))
                     .unwrap();
