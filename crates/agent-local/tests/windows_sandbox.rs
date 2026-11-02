@@ -21,7 +21,7 @@ use windows_sys::Win32::{
 #[path = "windows_sandbox/standard_user.rs"]
 mod standard_user;
 
-struct Fixture(PathBuf);
+struct Fixture(PathBuf, PathBuf);
 impl Fixture {
     fn new() -> Self {
         static NEXT_ID: AtomicU64 = AtomicU64::new(0);
@@ -76,7 +76,7 @@ impl Fixture {
             fs::canonicalize(root.join("outside")).unwrap(),
             "native junction fixture must resolve to the outside directory",
         );
-        Self(fs::canonicalize(root).unwrap())
+        Self(fs::canonicalize(&root).unwrap(), root)
     }
     fn run(&self, allowed: bool) -> std::process::Output {
         self.spawn(allowed, false).wait_with_output().unwrap()
@@ -187,7 +187,12 @@ assert.equal(require('fixture-package'), 42);
 assert.equal(fs.realpathSync(__filename).toLowerCase(), path.join(process.cwd(), 'main.cjs').toLowerCase());
 const parent = path.dirname(process.cwd());
 for (let current = parent;; current = path.dirname(current)) {
-    assert.equal(fs.lstatSync(current).isDirectory(), true);
+    assert.equal(path.isAbsolute(current), true, `ancestor must remain absolute: ${JSON.stringify(current)}`);
+    try {
+        assert.equal(fs.lstatSync(current).isDirectory(), true);
+    } catch (cause) {
+        throw new Error(`Cannot read ancestor metadata: ${JSON.stringify(current)} (cwd: ${JSON.stringify(process.cwd())})`, { cause });
+    }
     if (current === path.dirname(current)) break;
 }
 assert.throws(() => fs.readdirSync(parent), error => ['EACCES', 'EPERM'].includes(error.code));
@@ -197,8 +202,16 @@ assert.throws(() => fs.writeFileSync(path.join(parent, 'runtime/library.txt'), '
 assert.equal(fs.readFileSync(path.join(parent, 'runtime/library.txt'), 'utf8'), 'shared library');
 console.log('NODE_METADATA_BOUNDARY_OK');
 "#).unwrap();
+    // The product keeps canonical paths for ACLs but supplies a normal DOS/UNC
+    // cwd to shells and their children. Retain the original fixture path for
+    // this direct Node launch too, rather than passing Rust's verbatim prefix.
+    let cwd = fixture.1.join("workspace");
+    assert_eq!(
+        fs::canonicalize(&cwd).unwrap(),
+        fs::canonicalize(fixture.0.join("workspace")).unwrap(),
+    );
     let request = json!({"version":1,"program":program,"args":["main.cjs"],
-        "cwd":fixture.0.join("workspace"),"workspace":fixture.0.join("workspace"),
+        "cwd":cwd,"workspace":fixture.0.join("workspace"),
         "read_paths":[fixture.0.join("runtime")],"write_paths":[fixture.0.join("scratch")],
         "denied_paths":[],"network_allowed":false});
     let mut child = Command::new(env!("CARGO_BIN_EXE_openharness-sandbox"))
