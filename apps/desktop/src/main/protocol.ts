@@ -36,6 +36,8 @@ export const channels = {
   bundledPlugins: 'openharness:plugins:bundled',
   installBundledPlugin: 'openharness:plugins:install-bundled',
   prepareBrowser: 'openharness:browser:prepare',
+  windowsScriptEnvironmentStatus: 'openharness:windows-script-environment:status',
+  prepareWindowsScriptEnvironment: 'openharness:windows-script-environment:prepare',
   connectChrome: 'openharness:chrome:connect',
   chromeConnectionStatus: 'openharness:chrome:status',
   computerSettings: 'openharness:computer:settings',

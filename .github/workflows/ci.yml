@@ -175,6 +175,12 @@ jobs:
       - name: Build Windows command sandbox helper
         id: sandbox-helper
         run: cargo build -p agent-local --bin openharness-sandbox --locked
+      - name: Prepare Windows script environment
+        run: |
+          & $env:OPENHARNESS_WINDOWS_SANDBOX_HELPER --prepare-metadata
+          if ($LASTEXITCODE -ne 0) { throw 'Windows script environment preparation failed' }
+          $status = & $env:OPENHARNESS_WINDOWS_SANDBOX_HELPER --metadata-status | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or -not $status.ready) { throw 'Windows script environment is not ready' }
       - name: Check Windows local command permissions, sandbox, and lifecycle
         run: cargo test -p agent-local --all-targets --locked --no-fail-fast
       - name: Check Windows API execution and runtime shutdown
@@ -196,6 +202,7 @@ jobs:
           src/main/chrome-connection.windows.test.ts
           src/main/chrome-windows.test.ts
           src/main/computer-preview.test.ts
+          src/main/windows-script-environment.test.ts
       - name: Check Windows Chrome transport
         if: ${{ !cancelled() && steps.sandbox-helper.outcome == 'success' }}
         run: node --test ../../plugins/chrome-use/tests/bridge.test.mjs ../../plugins/chrome-use/tests/launch.test.mjs ../../plugins/chrome-use/tests/controller.test.mjs

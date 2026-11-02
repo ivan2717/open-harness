@@ -1,4 +1,4 @@
-use super::wide;
+use super::{metadata, wide};
 use std::{
     ffi::OsString,
     io,
@@ -21,20 +21,21 @@ use windows_sys::{
             },
             DACL_SECURITY_INFORMATION, DeleteAce, EqualSid, GENERIC_MAPPING, GetAce,
             GetSecurityDescriptorControl, GetSecurityDescriptorDacl, GetSidIdentifierAuthority,
-            GetSidSubAuthority, GetSidSubAuthorityCount, InitializeSecurityDescriptor,
-            IsWellKnownSid, MapGenericMask, PSECURITY_DESCRIPTOR, PSID, SE_DACL_AUTO_INHERIT_REQ,
-            SE_DACL_AUTO_INHERITED, SE_DACL_DEFAULTED, SE_DACL_PROTECTED, SECURITY_DESCRIPTOR,
-            SUB_CONTAINERS_AND_OBJECTS_INHERIT, SetSecurityDescriptorControl,
-            SetSecurityDescriptorDacl, WinCapabilityInternetClientSid,
-            WinCapabilityPrivateNetworkClientServerSid,
+            GetSidSubAuthority, GetSidSubAuthorityCount, INHERIT_ONLY_ACE,
+            InitializeSecurityDescriptor, IsWellKnownSid, MapGenericMask, PSECURITY_DESCRIPTOR,
+            PSID, SE_DACL_AUTO_INHERIT_REQ, SE_DACL_AUTO_INHERITED, SE_DACL_DEFAULTED,
+            SE_DACL_PROTECTED, SECURITY_DESCRIPTOR, SUB_CONTAINERS_AND_OBJECTS_INHERIT,
+            SetSecurityDescriptorControl, SetSecurityDescriptorDacl,
+            WinCapabilityInternetClientSid, WinCapabilityPrivateNetworkClientServerSid,
         },
         Storage::FileSystem::{
             BY_HANDLE_FILE_INFORMATION, CreateFileW, DELETE, FILE_ALL_ACCESS, FILE_APPEND_DATA,
-            FILE_ATTRIBUTE_REPARSE_POINT, FILE_DELETE_CHILD, FILE_FLAG_BACKUP_SEMANTICS,
-            FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_EXECUTE, FILE_GENERIC_READ,
-            FILE_GENERIC_WRITE, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
-            FILE_WRITE_ATTRIBUTES, FILE_WRITE_DATA, FILE_WRITE_EA, GetFileInformationByHandle,
-            GetFinalPathNameByHandleW, OPEN_EXISTING, READ_CONTROL, WRITE_DAC, WRITE_OWNER,
+            FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_DELETE_CHILD,
+            FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_EXECUTE,
+            FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_SHARE_DELETE, FILE_SHARE_READ,
+            FILE_SHARE_WRITE, FILE_WRITE_ATTRIBUTES, FILE_WRITE_DATA, FILE_WRITE_EA,
+            GetFileInformationByHandle, GetFinalPathNameByHandleW, OPEN_EXISTING, READ_CONTROL,
+            WRITE_DAC, WRITE_OWNER,
         },
     },
 };
@@ -57,6 +58,53 @@ pub(super) fn change_without_inheritance(
     mode: ACCESS_MODE,
 ) -> io::Result<()> {
     change_inheritance(path, sid, rights, mode, false)
+}
+
+/// Conservative proof of both sides of AppContainer metadata access: the host
+/// token must open this exact directory for attributes, and its DACL must grant
+/// attributes to the dedicated capability or an ambient package SID. Unknown
+/// conditional/object-specific policies and applicable deny bits are never
+/// guessed to be usable. No DACL write is required for this check.
+pub(super) fn has_metadata_access(path: &Path, capability: PSID) -> io::Result<bool> {
+    let handle = match open(path, READ_CONTROL | metadata::RIGHTS) {
+        Ok(handle) => handle,
+        Err(error) if error.kind() == io::ErrorKind::PermissionDenied => return Ok(false),
+        Err(error) => return Err(error),
+    };
+    let mut info = BY_HANDLE_FILE_INFORMATION::default();
+    bool_check(unsafe { GetFileInformationByHandle(handle.0, &mut info) })?;
+    if info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
+        || info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY == 0
+    {
+        return Err(io::Error::other(
+            "sandbox metadata target is not a plain directory",
+        ));
+    }
+    let descriptor = NativeDescriptor::read(handle.0)?;
+    let dacl = descriptor.dacl()?;
+    if dacl.is_null() {
+        return Ok(false);
+    }
+    let mut granted = 0;
+    for index in 0..unsafe { (*dacl).AceCount as u32 } {
+        let mut ace = ptr::null_mut();
+        bool_check(unsafe { GetAce(dacl, index, &mut ace) })?;
+        let entry = ace.cast::<ACCESS_ALLOWED_ACE>();
+        if unsafe {
+            (*entry).Header.AceFlags as u32 & INHERIT_ONLY_ACE != 0
+                || file_mask((*entry).Mask) & metadata::RIGHTS == 0
+        } {
+            continue;
+        }
+        if unsafe { (*entry).Header.AceType } != 0 {
+            return Ok(false);
+        }
+        let trustee = unsafe { ptr::addr_of_mut!((*entry).SidStart).cast() };
+        if unsafe { EqualSid(trustee, capability) != 0 } || ambient_package_sid(trustee) {
+            granted |= file_mask(unsafe { (*entry).Mask });
+        }
+    }
+    Ok(granted & metadata::RIGHTS == metadata::RIGHTS)
 }
 
 fn change_inheritance(
@@ -185,6 +233,7 @@ fn change_inheritance(
             {
                 let trustee = unsafe { ptr::addr_of_mut!((*entry).SidStart).cast() };
                 if ambient_package_sid(trustee)
+                    || unsafe { EqualSid(trustee, metadata::sid()?) } != 0
                     || [
                         WinCapabilityInternetClientSid,
                         WinCapabilityPrivateNetworkClientServerSid,
@@ -194,7 +243,7 @@ fn change_inheritance(
                 {
                     return Err(io::Error::new(
                         io::ErrorKind::PermissionDenied,
-                        "pre-existing AppContainer or network-capability grant conflicts with sandbox restrictions",
+                        "pre-existing AppContainer or capability grant conflicts with sandbox restrictions",
                     ));
                 }
             }
@@ -569,6 +618,54 @@ mod tests {
             }
         }
         rights
+    }
+
+    #[test]
+    fn ancestor_metadata_is_non_inheriting_and_cleanup_restores_acl() {
+        let fixture = Fixture::new();
+        let before = inspect(&fixture.root, fixture.sid);
+        let existing = fixture.root.join("existing");
+        fs::create_dir(&existing).unwrap();
+        let capability = metadata::sid().unwrap();
+        assert!(!has_metadata_access(&fixture.root, capability).unwrap());
+        change_without_inheritance(
+            &fixture.root,
+            capability,
+            windows_sys::Win32::Storage::FileSystem::FILE_READ_ATTRIBUTES,
+            GRANT_ACCESS,
+        )
+        .unwrap();
+        assert!(
+            !has_metadata_access(&fixture.root, capability).unwrap(),
+            "attributes alone must not report synchronous metadata opens ready"
+        );
+        change_without_inheritance(&fixture.root, capability, metadata::RIGHTS, GRANT_ACCESS)
+            .unwrap();
+        assert!(has_metadata_access(&fixture.root, capability).unwrap());
+        assert_eq!(allowed_mask(&fixture.root, capability), metadata::RIGHTS);
+        let later = fixture.root.join("later");
+        fs::create_dir(&later).unwrap();
+        for child in [&existing, &later] {
+            assert_eq!(allowed_mask(child, capability), 0);
+            assert!(!has_metadata_access(child, capability).unwrap());
+        }
+        let descriptor =
+            NativeDescriptor::read(open(&fixture.root, READ_CONTROL).unwrap().0).unwrap();
+        let dacl = descriptor.dacl().unwrap();
+        for index in 0..unsafe { (*dacl).AceCount as u32 } {
+            let mut ace = ptr::null_mut();
+            bool_check(unsafe { GetAce(dacl, index, &mut ace) }).unwrap();
+            let entry = ace.cast::<ACCESS_ALLOWED_ACE>();
+            if unsafe {
+                (*entry).Header.AceType == 0
+                    && EqualSid(ptr::addr_of_mut!((*entry).SidStart).cast(), capability) != 0
+            } {
+                assert_eq!(unsafe { (*entry).Header.AceFlags }, 0);
+            }
+        }
+        assert!(change(&fixture.root, fixture.sid, FILE_ALL_ACCESS, DENY_ACCESS).is_err());
+        change(&fixture.root, capability, 0, REVOKE_ACCESS).unwrap();
+        assert_eq!(inspect(&fixture.root, fixture.sid), before);
     }
 
     #[test]

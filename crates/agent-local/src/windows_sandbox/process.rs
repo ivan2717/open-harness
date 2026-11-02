@@ -1,4 +1,4 @@
-use super::{Request, wide};
+use super::{Request, metadata, wide};
 use std::{io, ptr};
 use windows_sys::Win32::{
     Foundation::{
@@ -47,7 +47,12 @@ pub(super) fn execute(request: &Request, sid: PSID) -> io::Result<u32> {
         ));
     }
 
-    let mut capabilities = Vec::new();
+    // A stable, metadata-only capability permits lstat on prepared system
+    // ancestors. File contents and writes still require the unique lease SID.
+    let mut capabilities = vec![SID_AND_ATTRIBUTES {
+        Sid: metadata::sid()?,
+        Attributes: 0x4,
+    }];
     let mut sid_storage = [[0u32; 17]; 2];
     if request.network_allowed {
         // These capabilities allow Internet and LAN traffic. Windows still

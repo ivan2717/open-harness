@@ -3,6 +3,7 @@
 //! each other's grants. Only that SID's ACEs are removed during cleanup.
 mod acl;
 mod lease;
+mod metadata;
 mod process;
 #[path = "../protected_paths.rs"]
 mod protected_paths;
@@ -33,6 +34,22 @@ pub struct Request {
 }
 
 pub fn run() -> io::Result<u32> {
+    let arguments: Vec<_> = std::env::args_os().skip(1).collect();
+    if !arguments.is_empty() {
+        if arguments.len() != 1 {
+            return Err(io::Error::other("invalid sandbox maintenance arguments"));
+        }
+        let status = match arguments[0].to_str() {
+            Some("--metadata-status") => metadata::status()?,
+            Some("--prepare-metadata") => metadata::prepare()?,
+            _ => return Err(io::Error::other("unknown sandbox maintenance command")),
+        };
+        println!(
+            "{}",
+            serde_json::to_string(&status).map_err(io::Error::other)?
+        );
+        return Ok(0);
+    }
     // Bound the trusted protocol, and never pass it through to command stdin.
     let mut line = String::new();
     io::stdin()

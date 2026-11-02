@@ -1015,6 +1015,12 @@ action also switches Full Access back to **请求批准**.
 
 Windows packages include `openharness-sandbox.exe` next to `api.exe`; the main
 process supplies its absolute path via `OPENHARNESS_WINDOWS_SANDBOX_HELPER`.
+Windows users prepare the script environment once from **设置 → 本地脚本**.
+The fixed setup operation requests UAC approval and installs only non-inheriting
+directory metadata rights for a dedicated capability on required system ancestors.
+This lets Node resolve paths without granting directory listing, file contents,
+or writes. The desktop application and ordinary commands remain unelevated;
+per-command workspace grants are still isolated and removed after execution.
 If the helper is missing or isolation setup fails, execution stops rather than
 falling back to ordinary PowerShell. Existing protected objects receive ACL
 denials; Windows ACLs do not provide Seatbelt's future-filename pattern rules.
