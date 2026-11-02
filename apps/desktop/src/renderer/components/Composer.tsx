@@ -1,9 +1,18 @@
-import { useLayoutEffect, useRef, useState, type ClipboardEvent, type DragEvent } from 'react'
-import { ArrowUp, LoaderCircle, Square } from 'lucide-react'
-import type { ModelInfo, TextFileReference } from '../../shared/contracts'
+import {
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ClipboardEvent,
+  type DragEvent,
+  type ReactNode,
+} from 'react'
+import { ArrowUp, ListEnd, LoaderCircle, Square } from 'lucide-react'
+import type { ModelInfo, FileReference } from '../../shared/contracts'
+import { fileReferenceSize } from '../../shared/file-references'
 import { useUiStore, type ProjectSelection } from '../state/ui-store'
 import { errorMessage } from '../lib/format'
 import { ComposerModel } from './ComposerModel'
+import { ComposerPermissions } from './ComposerPermissions'
 import { InlineError } from './Feedback'
 import { ProjectPicker } from './ProjectPicker'
 import { FileReferences } from './FileReferences'
@@ -25,7 +34,7 @@ interface ComposerProps {
   executionDirectory?: string | null
   onRevealWorkspace?: () => void
   onProjectChange?: (project: ProjectSelection | null) => void
-  onSubmit: (prompt: string, files: TextFileReference[]) => Promise<void>
+  onSubmit: (prompt: string, files: FileReference[]) => Promise<void>
   pending?: boolean
   running?: boolean
   onStop?: () => void
@@ -34,6 +43,7 @@ interface ComposerProps {
   submitDisabledReason?: string
   autoFocus?: boolean
   runId?: string
+  queuedMessages?: ReactNode
 }
 
 export function Composer({
@@ -58,6 +68,7 @@ export function Composer({
   submitDisabledReason,
   autoFocus,
   runId,
+  queuedMessages,
 }: ComposerProps) {
   const draft = useUiStore((state) => state.drafts[draftKey] ?? '')
   const setDraft = useUiStore((state) => state.setDraft)
@@ -68,6 +79,11 @@ export function Composer({
   const [choosing, setChoosing] = useState(false)
   const [projectError, setProjectError] = useState<string | null>(null)
   const references = useFileReferences(draftKey)
+  const imageInputError =
+    references.files.some((file) => file.image) &&
+    !models.find((model) => model.id === modelId)?.supports_images
+      ? '当前模型未启用图片输入，请切换支持图片的模型，或在模型设置中确认图片能力。'
+      : null
   const dragDepth = useRef(0)
   const [dragging, setDragging] = useState(false)
   const [skillsOpen, setSkillsOpen] = useState(false)
@@ -75,13 +91,14 @@ export function Composer({
   const canSubmit =
     Boolean(draft.trim() || references.files.length) &&
     !pending &&
-    !running &&
+    !stopping &&
     !disabled &&
     !submitDisabledReason &&
+    !imageInputError &&
     !choosing &&
     !references.pending
   const controlsBusy = pending || choosing || references.pending
-  const filesDisabled = controlsBusy || disabled || running
+  const filesDisabled = controlsBusy || disabled || stopping
 
   useLayoutEffect(() => {
     const field = textarea.current
@@ -111,8 +128,7 @@ export function Composer({
     setProjectError(null)
     try {
       const path = await window.harness.chooseWorkspace()
-      if (path)
-        onProjectChange(path === project?.path ? project : { path, permission: 'read_only' })
+      if (path) onProjectChange({ path, permission: 'workspace_write' })
     } catch (error) {
       setProjectError(errorMessage(error))
     } finally {
@@ -128,7 +144,7 @@ export function Composer({
     try {
       await onSubmit(
         submittedDraft.trim(),
-        submittedFiles.map(({ name, path, text }) => ({ name, path, text })),
+        submittedFiles.map(({ id: _id, ...file }) => file),
       )
       if (useUiStore.getState().drafts[draftKey] === submittedDraft) clearDraft(draftKey)
       useUiStore.getState().removeDraftFiles(
@@ -168,17 +184,28 @@ export function Composer({
     if (filesDisabled) return
     const start = event.currentTarget.selectionStart
     const end = event.currentTarget.selectionEnd
-    void references
-      .importReferences(
-        files.length ? () => window.harness.importFiles(files) : () => window.harness.pasteFiles(),
+    const pasteText = () => {
+      setDraft(draftKey, draft.slice(0, start) + text + draft.slice(end))
+      requestAnimationFrame(() =>
+        textarea.current?.setSelectionRange(start + text.length, start + text.length),
       )
+    }
+    // Rich clipboard content can contain both image pixels and useful text.
+    // Insert that text immediately, while file URI representations stay attachments.
+    const mixedImageText = Boolean(
+      text && !hasFileUri && files.some((file) => /^image\//i.test(file.type)),
+    )
+    if (mixedImageText) pasteText()
+    void references
+      .importReferences(() => window.harness.pasteFiles(files))
       .then((handled) => {
-        if (!handled && text && (useUiStore.getState().drafts[draftKey] ?? '') === draft) {
-          setDraft(draftKey, draft.slice(0, start) + text + draft.slice(end))
-          requestAnimationFrame(() =>
-            textarea.current?.setSelectionRange(start + text.length, start + text.length),
-          )
-        }
+        if (
+          !handled &&
+          !mixedImageText &&
+          text &&
+          (useUiStore.getState().drafts[draftKey] ?? '') === draft
+        )
+          pasteText()
       })
   }
 
@@ -192,6 +219,7 @@ export function Composer({
         onChange={onProjectChange}
         disabled={controlsBusy}
       />
+      {queuedMessages}
       <div
         className={`composer ${dragging ? 'composer-dragging' : ''}`}
         onDragEnter={(event) => {
@@ -216,7 +244,13 @@ export function Composer({
         <FileReferences
           files={references.files.map((file) => ({
             ...file,
-            size: new TextEncoder().encode(file.text).byteLength,
+            size: fileReferenceSize(file),
+            ...(file.image
+              ? {
+                  mime_type: file.image.mime_type,
+                  preview: `data:${file.image.mime_type};base64,${file.image.data_base64}`,
+                }
+              : {}),
           }))}
           onRemove={references.remove}
           disabled={pending}
@@ -226,7 +260,7 @@ export function Composer({
           autoFocus={autoFocus}
           rows={2}
           value={draft}
-          disabled={disabled || running}
+          disabled={disabled || stopping}
           onChange={(event) => setDraft(draftKey, event.target.value)}
           onPaste={pasteFiles}
           onCompositionStart={() => setComposing(true)}
@@ -247,18 +281,21 @@ export function Composer({
           aria-label="任务描述"
         />
         <div className="composer-footer">
-          <ComposerAddMenu
-            disabled={filesDisabled}
-            pending={references.pending}
-            onFiles={() => void references.importReferences(() => window.harness.chooseFiles())}
-            onSkills={() => {
-              skillCursor.current = {
-                start: textarea.current?.selectionStart ?? draft.length,
-                end: textarea.current?.selectionEnd ?? draft.length,
-              }
-              setSkillsOpen(true)
-            }}
-          />
+          <div className="composer-footer-left">
+            <ComposerAddMenu
+              disabled={filesDisabled}
+              pending={references.pending}
+              onFiles={() => void references.importReferences(() => window.harness.chooseFiles())}
+              onSkills={() => {
+                skillCursor.current = {
+                  start: textarea.current?.selectionStart ?? draft.length,
+                  end: textarea.current?.selectionEnd ?? draft.length,
+                }
+                setSkillsOpen(true)
+              }}
+            />
+            <ComposerPermissions runId={runId} disabled={pending} />
+          </div>
           <div className="composer-footer-right">
             <ComposerModel
               models={models}
@@ -272,13 +309,35 @@ export function Composer({
                 (running ? '任务运行中，停止或等待本轮结束后可切换模型和思考强度。' : undefined)
               }
             />
-            {running ? (
+            {(!running || Boolean(draft.trim() || references.files.length)) && (
+              <button
+                className="send-button"
+                disabled={!canSubmit || stopping}
+                onClick={() => void submit()}
+                aria-label={running ? '暂存追加消息' : '开始运行'}
+                aria-description={imageInputError ?? submitDisabledReason}
+                title={
+                  imageInputError ??
+                  submitDisabledReason ??
+                  (running ? '暂存消息 · 点击引导后发送' : '发送 · Enter')
+                }
+              >
+                {pending ? (
+                  <LoaderCircle size={17} className="animate-spin" />
+                ) : running ? (
+                  <ListEnd size={19} />
+                ) : (
+                  <ArrowUp size={19} />
+                )}
+              </button>
+            )}
+            {running && (
               <button
                 className="send-button stop-button"
                 onClick={onStop}
                 disabled={stopping}
                 aria-label="停止运行"
-                title="停止运行"
+                title="停止当前任务，保留会话"
               >
                 {stopping ? (
                   <LoaderCircle size={16} className="animate-spin" />
@@ -286,26 +345,12 @@ export function Composer({
                   <Square size={13} fill="currentColor" />
                 )}
               </button>
-            ) : (
-              <button
-                className="send-button"
-                disabled={!canSubmit}
-                onClick={() => void submit()}
-                aria-label="开始运行"
-                title={submitDisabledReason ?? '发送 · Enter'}
-                aria-description={submitDisabledReason}
-              >
-                {pending ? (
-                  <LoaderCircle size={17} className="animate-spin" />
-                ) : (
-                  <ArrowUp size={19} />
-                )}
-              </button>
             )}
           </div>
         </div>
       </div>
       {references.error && <InlineError message={references.error} />}
+      {imageInputError && <InlineError message={imageInputError} />}
       {projectError && <InlineError message={projectError} />}
       {skillsOpen && !filesDisabled && (
         <SkillPickerDialog

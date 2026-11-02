@@ -1,0 +1,211 @@
+[
+  {
+    "width": 64,
+    "height": 64,
+    "window_width": 128,
+    "window_height": 128,
+    "x": 32,
+    "y": 32,
+    "patches": [],
+    "matches": true,
+    "name": "unchanged"
+  },
+  {
+    "width": 64,
+    "height": 64,
+    "window_width": 128,
+    "window_height": 128,
+    "x": 32,
+    "y": 32,
+    "patches": [
+      [
+        40,
+        40,
+        20,
+        20,
+        240
+      ]
+    ],
+    "matches": true,
+    "name": "unrelated animation"
+  },
+  {
+    "width": 64,
+    "height": 64,
+    "window_width": 128,
+    "window_height": 128,
+    "x": 32,
+    "y": 32,
+    "patches": [
+      [
+        6,
+        6,
+        21,
+        21,
+        240
+      ]
+    ],
+    "matches": false,
+    "name": "target replaced"
+  },
+  {
+    "width": 64,
+    "height": 64,
+    "window_width": 128,
+    "window_height": 128,
+    "x": 32,
+    "y": 32,
+    "patches": [
+      [
+        0,
+        0,
+        64,
+        64,
+        120
+      ]
+    ],
+    "matches": true,
+    "name": "minor rendering noise"
+  },
+  {
+    "width": 64,
+    "height": 64,
+    "window_width": 128,
+    "window_height": 128,
+    "x": 32,
+    "y": 32,
+    "patches": [
+      [
+        10,
+        10,
+        2,
+        2,
+        240
+      ]
+    ],
+    "matches": true,
+    "name": "few changed pixels"
+  },
+  {
+    "width": 64,
+    "height": 64,
+    "window_width": 128,
+    "window_height": 128,
+    "x": 32,
+    "y": 32,
+    "patches": [
+      [
+        6,
+        6,
+        21,
+        21,
+        100,
+        240
+      ]
+    ],
+    "matches": false,
+    "name": "changed red channel"
+  },
+  {
+    "width": 64,
+    "height": 64,
+    "window_width": 128,
+    "window_height": 128,
+    "x": 32,
+    "y": 32,
+    "patches": [
+      [
+        12,
+        12,
+        8,
+        8,
+        240
+      ]
+    ],
+    "matches": false,
+    "name": "small meaningful target change"
+  },
+  {
+    "width": 64,
+    "height": 64,
+    "window_width": 128,
+    "window_height": 128,
+    "x": 0,
+    "y": 0,
+    "patches": [],
+    "matches": true,
+    "name": "clipped corner unchanged"
+  },
+  {
+    "width": 64,
+    "height": 64,
+    "window_width": 128,
+    "window_height": 128,
+    "x": 0,
+    "y": 0,
+    "patches": [
+      [
+        0,
+        0,
+        11,
+        11,
+        240
+      ]
+    ],
+    "matches": false,
+    "name": "clipped corner changed"
+  },
+  {
+    "width": 64,
+    "height": 64,
+    "window_width": 128,
+    "window_height": 128,
+    "x": 127,
+    "y": 127,
+    "patches": [
+      [
+        53,
+        53,
+        11,
+        11,
+        240
+      ]
+    ],
+    "matches": false,
+    "name": "scaled lower right"
+  },
+  {
+    "width": 64,
+    "height": 64,
+    "window_width": 128,
+    "window_height": 128,
+    "x": 128,
+    "y": 32,
+    "patches": [],
+    "matches": false,
+    "name": "outside window"
+  },
+  {
+    "width": 64,
+    "height": 64,
+    "window_width": 128,
+    "window_height": 128,
+    "x": 32,
+    "y": -1,
+    "patches": [],
+    "matches": false,
+    "name": "negative coordinate"
+  },
+  {
+    "width": 64,
+    "height": 64,
+    "window_width": 128,
+    "window_height": 128,
+    "x": 32,
+    "y": 32,
+    "patches": [],
+    "matches": false,
+    "name": "image dimensions changed",
+    "after_width": 32
+  }
+]

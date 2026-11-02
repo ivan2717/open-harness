@@ -185,7 +185,12 @@ pub(super) fn source_text(
     Some(match event {
         event @ (RunEvent::RunStarted { .. }
         | RunEvent::InputReceived { .. }
+        | RunEvent::UserInputReceived { .. }
         | RunEvent::RunResumed { .. }) => ("user", event.user_input()?),
+        RunEvent::ModelResponseInterrupted { content } => (
+            "assistant_interrupted",
+            format!("Incomplete assistant output, not a verified result: {content}"),
+        ),
         RunEvent::ModelResponseReceived { content, .. } => ("assistant", content.clone()),
         RunEvent::ToolCallRequested {
             call_id,

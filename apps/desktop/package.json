@@ -1,6 +1,6 @@
 {
   "name": "@openharness/desktop",
-  "version": "0.1.10",
+  "version": "0.1.11",
   "private": true,
   "description": "Open Harness desktop workspace",
   "author": "Open Harness contributors",
@@ -21,12 +21,16 @@
     "test:e2e:packaged": "node tests/e2e/packaged.mjs",
     "test:packaging": "vitest run scripts/packaging.test.mjs",
     "test:e2e": "pnpm run build && node scripts/backend.mjs debug && node tests/e2e/desktop.mjs",
+    "test:e2e:regression": "node tests/e2e/regression.mjs",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
+    "test:e2e:steering": "pnpm run build && node scripts/backend.mjs debug && node tests/e2e/steering.mjs",
     "test:e2e:models": "pnpm run build && node scripts/backend.mjs debug && node tests/e2e/models.mjs",
+    "test:e2e:model-edit": "pnpm run build && node scripts/backend.mjs debug && node tests/e2e/model-editing.mjs",
     "test:e2e:workspace": "pnpm run build && node scripts/backend.mjs debug && node tests/e2e/workspace.mjs",
     "test:e2e:scripts": "pnpm run build && node scripts/backend.mjs debug && node tests/e2e/script-workflow.mjs",
     "test:e2e:files": "pnpm run build && node scripts/backend.mjs debug && node tests/e2e/file-references.mjs",
+    "test:e2e:images": "pnpm run build && node scripts/backend.mjs debug && node tests/e2e/image-references.mjs",
     "test:e2e:extensions": "pnpm run build && node scripts/backend.mjs debug && node tests/e2e/extensions.mjs",
     "test:e2e:rich": "pnpm run build && node scripts/backend.mjs debug && node tests/e2e/rich-messages.mjs",
     "test:e2e:navigation": "pnpm run build && node scripts/backend.mjs debug && node tests/e2e/navigation.mjs",
@@ -37,7 +41,8 @@
     "test:chrome": "node --test ../../plugins/chrome-use/tests/*.test.mjs",
     "test:e2e:control-setup": "node tests/e2e/control-setup.mjs",
     "test:e2e:computer": "pnpm run build && node scripts/backend.mjs debug && node tests/e2e/computer-use.mjs",
-    "test:e2e:native": "node tests/e2e/native-computer.mjs"
+    "test:e2e:native": "node tests/e2e/native-computer.mjs",
+    "test:e2e:permissions": "node tests/e2e/permissions.mjs"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.90.0",

@@ -28,8 +28,8 @@ const compile = (name, sources, references) => {
   if (result.error) throw result.error;
   if (result.status !== 0) throw new Error(`The Windows Computer Use compiler failed (${result.status}).`);
 };
-compile('OpenHarnessComputerUse.exe', ['Protocol.cs', 'Native.cs', 'Identity.cs', 'Foreground.cs', 'Observation.cs', 'Input.cs', 'Program.cs'], [
-  'System.dll', 'System.Core.dll', 'System.Drawing.dll', 'System.Web.Extensions.dll',
+compile('OpenHarnessComputerUse.exe', ['Protocol.cs', 'Native.cs', 'Identity.cs', 'Foreground.cs', 'Observation.cs', 'VisualGuard.cs', 'Input.cs', 'Program.cs', 'Feedback.cs', 'FeedbackNative.cs', 'FeedbackCursor.cs', 'FeedbackPreview.cs'], [
+  'System.dll', 'System.Core.dll', 'System.Drawing.dll', 'System.Windows.Forms.dll', 'System.Web.Extensions.dll',
   'WPF/UIAutomationClient.dll', 'WPF/UIAutomationTypes.dll', 'WPF/WindowsBase.dll',
 ]);
 const verification = spawnSync(path.join(output, 'OpenHarnessComputerUse.exe'), ['--self-test'], {

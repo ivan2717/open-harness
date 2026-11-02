@@ -12,7 +12,7 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-pub(crate) fn definitions(mode: PermissionMode) -> Vec<ToolDefinition> {
+pub(crate) fn definitions(mode: PermissionMode, unrestricted: bool) -> Vec<ToolDefinition> {
     let make = |name: &str, description: &str, properties: serde_json::Value, required: &[&str]| {
         ToolDefinition { name: name.into(), description: description.into(), input_schema: json!({"type":"object","properties":properties,"required":required,"additionalProperties":false}).to_string() }
     };
@@ -44,9 +44,9 @@ pub(crate) fn definitions(mode: PermissionMode) -> Vec<ToolDefinition> {
         make(
             "run_command",
             if cfg!(windows) {
-                "Execute PowerShell in a Windows AppContainer within the user-approved access scope. Writes are confined to the workspace; protected files are denied. Network is denied by default; request network_access=allowed only when the command needs Internet/LAN access. Windows loopback remains blocked. Isolation failure stops execution. Set access=read_only for tests/inspection: the project is OS read-only, only this command’s temporary directory ($TMPDIR on macOS, $env:TEMP on Windows) is writable and is removed after exit. Read-only commands can run concurrently and see live files, not a snapshot; rerun final checks after edits settle. Delegated agents can only use read_only. Workspace writes require access=workspace_write and run exclusively. Returns a command_id if still running; use manage_command to inspect or stop it. yield_time_ms is only the initial wait (default 10000); timeout_seconds is an optional total deadline. Output is bounded. Do not start detached daemons."
+                "Execute PowerShell in a Windows AppContainer within the user-approved access scope. Writes are confined to the workspace; protected files are denied. Commands within the configured workspace sandbox run without a separate prompt when network is denied. Request network_access=allowed only when Internet/LAN access is needed; it follows the approval policy selected by the user. Windows loopback remains blocked. Isolation failure stops execution. Set access=read_only for tests/inspection: the project is OS read-only, only this command’s temporary directory ($TMPDIR on macOS, $env:TEMP on Windows) is writable and is removed after exit. Read-only commands can run concurrently and see live files, not a snapshot; rerun final checks after edits settle. Delegated tasks inherit the parent workspace permission; file-scoped delegates can only use read_only commands. Workspace writes require access=workspace_write and run exclusively. Returns a command_id if still running; use manage_command to inspect or stop it. yield_time_ms is only the initial wait (default 10000); timeout_seconds is an optional total deadline. Output is bounded. Do not start detached daemons."
             } else {
-                "Execute /bin/sh in the macOS sandbox within the user-approved access scope. macOS sandbox allows workspace writes and denies protected paths. Network is denied by default; request network_access=allowed only when necessary. The user approves access and network together, once or for subsequent commands in this conversation; file restrictions stay in place. Set access=read_only for tests/inspection: the project is OS read-only, only this command’s temporary directory ($TMPDIR on macOS, $env:TEMP on Windows) is writable and is removed after exit. Read-only commands can run concurrently and see live files, not a snapshot; rerun final checks after edits settle. Delegated agents can only use read_only. Workspace writes require access=workspace_write and run exclusively. Returns a command_id if still running; use manage_command to inspect or stop it. yield_time_ms is only the initial wait (default 10000); timeout_seconds is an optional total deadline. Output is bounded. Do not start detached daemons."
+                "Execute /bin/sh in the macOS sandbox within the user-approved access scope. macOS sandbox allows workspace writes and denies protected paths. Network is denied by default; request network_access=allowed only when necessary. Commands within the configured workspace sandbox run without a separate prompt when network is denied. Network access follows the approval policy selected by the user; file restrictions stay in place. Set access=read_only for tests/inspection: the project is OS read-only, only this command’s temporary directory ($TMPDIR on macOS, $env:TEMP on Windows) is writable and is removed after exit. Read-only commands can run concurrently and see live files, not a snapshot; rerun final checks after edits settle. Delegated tasks inherit the parent workspace permission; file-scoped delegates can only use read_only commands. Workspace writes require access=workspace_write and run exclusively. Returns a command_id if still running; use manage_command to inspect or stop it. yield_time_ms is only the initial wait (default 10000); timeout_seconds is an optional total deadline. Output is bounded. Do not start detached daemons."
             },
             json!({"command":{"type":"string"},"access":{"type":"string","enum":["read_only","workspace_write"]},"network_access":{"type":"string","enum":["denied","allowed"],"default":"denied"},"yield_time_ms":{"type":"integer","minimum":0,"maximum":30000},"timeout_seconds":{"type":"integer","minimum":1,"maximum":86400}}),
             &["command"],
@@ -64,10 +64,30 @@ pub(crate) fn definitions(mode: PermissionMode) -> Vec<ToolDefinition> {
             &[],
         ),
     ];
+    if unrestricted {
+        for tool in &mut definitions {
+            match tool.name.as_str() {
+                "run_command" => {
+                    tool.description = "Execute a noninteractive host command with full user access and network enabled by default (PowerShell on Windows, /bin/sh elsewhere). No additional approval is needed. Commands can read/write outside the project; project review/undo cannot cover those files. Explicit access=read_only or network_access=denied uses the OS sandbox instead and fails if it is unavailable; filesystem protection then remains workspace-scoped. File-scoped/readonly delegated tasks never receive host execution. Workspace-writing commands run exclusively. Returns command_id if still running; manage_command reads bounded output or stops the entire process tree. yield_time_ms only controls initial wait; timeout_seconds is optional total deadline. Do not start detached daemons.".into();
+                    let mut schema: serde_json::Value = serde_json::from_str(&tool.input_schema).expect("tool schema");
+                    schema["properties"]["network_access"]["default"] = json!("allowed");
+                    tool.input_schema = schema.to_string();
+                }
+                "apply_patch" => {
+                    tool.description = tool.description.replace("Apply journaled UTF-8 edits", "Apply UTF-8 edits with full filesystem access")
+                        .replace("supports safe undo.", "project undo covers only ordinary files within the project, never outside paths or protected files.");
+                    tool.description.push_str(" Paths may be absolute or relative to the working directory.");
+                }
+                "list_files" => tool.description = "List a directory using an absolute or working-directory-relative path. Large dependency/build directories are omitted from listings; they can be addressed directly.".into(),
+                "read_file" | "search_files" => tool.description.push_str(" Paths may be absolute or relative to the working directory, including outside the project."),
+                _ => (),
+            }
+        }
+    }
     definitions.retain(|tool| match tool.name.as_str() {
         "apply_patch" => mode == PermissionMode::WorkspaceWrite,
         "run_command" | "manage_command" | "load_workspace_dependencies" => {
-            crate::command::execution_available()
+            unrestricted || crate::command::execution_available()
         }
         _ => true,
     });
@@ -100,13 +120,16 @@ impl LocalTools {
         let output = match call.name.as_str() {
             "list_files" => {
                 let input: PathInput = parse(&call.arguments)?;
-                let target = paths::resolve(self.root(), &input.path)?;
+                let target = self.file_scope().resolve(&input.path)?;
                 let mut entries = Vec::new();
                 for entry in fs::read_dir(target)? {
                     let entry = entry?;
                     let name = entry.file_name().to_string_lossy().into_owned();
                     let kind = entry.file_type()?;
-                    if paths::skipped_directory(&name) || kind.is_symlink() {
+                    if (paths::skipped_directory(&name)
+                        && !(self.full_access() && paths::denied_component(&name)))
+                        || kind.is_symlink()
+                    {
                         continue;
                     }
                     let metadata = entry.metadata()?;
@@ -125,13 +148,17 @@ impl LocalTools {
                 entries.sort_by_key(|entry| entry["name"].as_str().unwrap_or_default().to_owned());
                 json!({"entries":entries}).to_string()
             }
-            "read_file" => crate::reader::read(self.root(), &call.arguments)?,
-            "search_files" => crate::reader::search(self.root(), &call.arguments)?,
-            "load_workspace_dependencies" => {
-                crate::workspace_runtime::describe(self.root(), &call.arguments)?
-            }
+            "read_file" => crate::reader::read(self.file_scope(), &call.arguments)?,
+            "search_files" => crate::reader::search(self.file_scope(), &call.arguments)?,
+            "load_workspace_dependencies" => crate::workspace_runtime::describe(
+                self.root(),
+                self.execution_mode(),
+                &call.arguments,
+            )?,
             "apply_patch" => self.apply_patch(&call.arguments)?,
-            "read_document" | "search_document" => crate::documents::call(self.root(), &call)?,
+            "read_document" | "search_document" => {
+                crate::documents::call(self.file_scope(), &call)?
+            }
 
             "write_file" => {
                 let input: WriteInput = parse(&call.arguments)?;
@@ -140,7 +167,7 @@ impl LocalTools {
             }
             "edit_file" => {
                 let input: EditInput = parse(&call.arguments)?;
-                let target = paths::resolve(self.root(), &input.path)?;
+                let target = self.file_scope().resolve(&input.path)?;
                 let before = paths::text_file(&target)?.ok_or_else(|| {
                     io::Error::new(io::ErrorKind::NotFound, "file does not exist")
                 })?;
@@ -171,11 +198,6 @@ impl LocalTools {
             ));
         }
         let target = self.authorize_write(path)?;
-        let path = target
-            .strip_prefix(self.root())
-            .unwrap()
-            .to_str()
-            .ok_or_else(|| paths::denied("path must be UTF-8"))?;
         let before = paths::text_file(&target)?;
         if before != expected {
             return Err(io::Error::new(
@@ -183,14 +205,15 @@ impl LocalTools {
                 "file changed; read current contents before editing",
             ));
         }
-        let parent = target
-            .parent()
-            .ok_or_else(|| paths::denied("cannot replace the workspace"))?;
-        fs::create_dir_all(parent)?;
+        paths::create_parent_directory(&target)?;
+        let Some(path) = self.journal_path(&target) else {
+            // Full host edits are deliberately absent from project-only undo.
+            return replace_file(&target, Some(&content));
+        };
         let mut journal = self.inner.journal.lock().map_err(lock_error)?;
         // Persist intent before touching the workspace. After a crash, review
         // compares the actual file to this expected result before allowing undo.
-        let prior = journal.files.get(path).cloned();
+        let prior = journal.files.get(&path).cloned();
         let saved = SavedFile {
             before_permissions: prior
                 .as_ref()
@@ -207,9 +230,9 @@ impl LocalTools {
         journal.files.insert(path.to_owned(), saved);
         if let Err(error) = journal.save(&self.inner.state_dir) {
             if let Some(prior) = prior {
-                journal.files.insert(path.into(), prior);
+                journal.files.insert(path, prior);
             } else {
-                journal.files.remove(path);
+                journal.files.remove(&path);
             }
             return Err(error);
         }
@@ -241,34 +264,31 @@ pub(crate) fn replace_with_permissions(
     content: Option<&str>,
     original: Option<&SavedPermissions>,
 ) -> io::Result<()> {
+    let parent = paths::ParentDirectory::open(target, content.is_some())?;
     let Some(content) = content else {
-        fs::remove_file(target)?;
-        #[cfg(unix)]
-        fs::File::open(
-            target
-                .parent()
-                .ok_or_else(|| paths::denied("cannot remove root"))?,
-        )?
-        .sync_all()?;
+        // Refuse aliases before deletion too, so legacy edit and undo paths
+        // obey the same file identity policy as reads and patches.
+        drop(parent.read()?);
+        parent.remove(None)?;
+        parent.sync()?;
         return Ok(());
     };
     static NEXT: AtomicU64 = AtomicU64::new(1);
-    let parent = target
-        .parent()
-        .ok_or_else(|| paths::denied("cannot replace root"))?;
-    let temporary = parent.join(format!(
+    let temporary = std::ffi::OsString::from(format!(
         ".openharness-edit-{}-{}",
         std::process::id(),
         NEXT.fetch_add(1, Ordering::Relaxed)
     ));
     use std::io::Write;
     let result = (|| {
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temporary)?;
-        if let Ok(metadata) = fs::metadata(target) {
-            file.set_permissions(metadata.permissions())?;
+        let current = match parent.read() {
+            Ok(file) => Some(file.metadata()?.permissions()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error),
+        };
+        let mut file = parent.create(&temporary)?;
+        if let Some(permissions) = current {
+            file.set_permissions(permissions)?;
         } else if let Some(original) = original {
             #[cfg(unix)]
             if let Some(mode) = original.unix_mode {
@@ -284,13 +304,13 @@ pub(crate) fn replace_with_permissions(
         }
         file.write_all(content.as_bytes())?;
         file.sync_all()?;
-        fs::rename(&temporary, target)?;
-        #[cfg(unix)]
-        fs::File::open(parent)?.sync_all()?;
+        drop(file);
+        parent.replace(&temporary)?;
+        parent.sync()?;
         Ok(())
     })();
     if result.is_err() {
-        let _ = fs::remove_file(&temporary);
+        let _ = parent.remove(Some(&temporary));
     }
     result
 }
@@ -298,8 +318,9 @@ pub(crate) fn replace_with_permissions(
 /// Store permissions before deletion so rollback and restart-safe undo can
 /// recreate a script or private file without losing its original mode.
 pub(crate) fn file_permissions(path: &Path) -> io::Result<Option<SavedPermissions>> {
-    match fs::symlink_metadata(path) {
-        Ok(metadata) => {
+    match paths::ParentDirectory::open(path, false).and_then(|parent| parent.read()) {
+        Ok(file) => {
+            let metadata = file.metadata()?;
             let permissions = metadata.permissions();
             #[cfg(unix)]
             let unix_mode = {

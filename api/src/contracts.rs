@@ -6,6 +6,8 @@ pub struct AppConfig {
     pub models: Vec<ModelInfo>,
     pub default_model: String,
     pub storage_path: String,
+    #[serde(default)]
+    pub recovery_issues: Vec<crate::RecoveryIssue>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -15,6 +17,8 @@ pub struct ModelInfo {
     pub description: String,
     pub available: bool,
     pub context_window: usize,
+    #[serde(default)]
+    pub supports_images: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<ModelReasoning>,
 }
@@ -58,6 +62,9 @@ pub struct Delegation {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExecutionPolicy {
+    /// User-selected preset: reviewed sandbox access, or explicit full host access.
+    #[serde(default)]
+    pub approval_mode: agent_local::ApprovalMode,
     /// Optional per-turn model step limit. Interactive conversations default to none.
     pub max_steps: Option<u32>,
     /// Number of concurrently active direct children; the coordinator is excluded.
@@ -121,6 +128,13 @@ pub struct ChatMessage {
     pub reasoning: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_name: Option<String>,
+    /// Original public tool arguments, retained independently from its output.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_arguments: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub is_error: Option<bool>,
     pub status: String,
@@ -136,6 +150,9 @@ impl ChatMessage {
             images: Vec::new(),
             reasoning: None,
             tool_name: None,
+            tool_arguments: None,
+            started_at: None,
+            completed_at: None,
             is_error: None,
             status: "complete".into(),
         }
@@ -148,13 +165,15 @@ pub struct ToolImageInfo {
     pub mime_type: String,
 }
 
-/// Display metadata only; the durable user event owns the immutable text snapshot.
+/// Display metadata only; the durable user event owns the immutable attachment.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct FileReferenceInfo {
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
     pub size: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mime_type: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -205,6 +224,10 @@ pub struct ContextSnapshot {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunDetail {
+    #[serde(default)]
+    pub pending_inputs: Vec<agent_runtime::PendingUserInput>,
+    #[serde(default)]
+    pub pending_inputs_paused: bool,
     #[serde(flatten)]
     pub summary: RunSummary,
     pub messages: Vec<ChatMessage>,
@@ -244,7 +267,7 @@ pub struct ResumeRunInput {
 pub struct ApprovalInput {
     pub allow: bool,
     #[serde(default)]
-    pub scope: agent_local::CommandApprovalScope,
+    pub scope: crate::service::permissions::CommandDecisionScope,
 }
 
 #[derive(Debug, Deserialize)]
@@ -261,6 +284,15 @@ pub struct SubmitInput {
     pub files: Vec<agent_core::TextFileReference>,
 }
 
+/// Legacy numeric configurations keep their explicit cap when restored.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OutputLimitMode {
+    Auto,
+    #[default]
+    Custom,
+}
+
 /// Credentials are accepted only on configuration and never included in responses.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -271,6 +303,8 @@ pub struct ConfigureModel {
     pub model: String,
     pub context_window: usize,
     pub max_output_tokens: usize,
+    #[serde(default)]
+    pub output_limit_mode: OutputLimitMode,
     pub reasoning_mode: String,
     pub reasoning_effort: String,
     #[serde(default)]
@@ -285,6 +319,10 @@ pub struct ConfigureModel {
 #[serde(deny_unknown_fields)]
 pub struct ReplaceModelInput {
     pub replacement_model_id: String,
+    /// Explicit profile edits may change the provider and reasoning contract.
+    /// Capacity refreshes retain their stricter replay-compatible behavior.
+    #[serde(default)]
+    pub allow_configuration_change: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -322,4 +360,27 @@ mod tests {
         let legacy: RunDetail = serde_json::from_value(saved).unwrap();
         assert!(!legacy.summary.compacting);
     }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
+pub enum PendingInputAction {
+    Enqueue {
+        content: String,
+        #[serde(default)]
+        files: Vec<agent_core::TextFileReference>,
+    },
+    Edit {
+        id: String,
+        revision: u64,
+        content: String,
+    },
+    Steer {
+        id: String,
+        revision: u64,
+    },
+    Remove {
+        id: String,
+        revision: u64,
+    },
 }

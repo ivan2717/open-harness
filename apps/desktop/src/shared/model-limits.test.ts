@@ -15,7 +15,8 @@ describe('automatic model limits', () => {
   it('uses exact published models only on their official protocol and endpoint', () => {
     expect(resolveModelLimits(input)).toEqual({
       context_window: 1_050_000,
-      max_output_tokens: 8192,
+      max_output_tokens: 128000,
+      output_limit_mode: 'auto',
       context_source: 'catalog',
       output_source: 'catalog',
     })
@@ -30,7 +31,8 @@ describe('automatic model limits', () => {
     ])
       expect(resolveModelLimits({ ...input, ...change })).toMatchObject({
         context_window: 1_000_000,
-        max_output_tokens: 8192,
+        max_output_tokens: 32768,
+        output_limit_mode: 'auto',
         context_source: 'fallback',
       })
     expect(
@@ -61,7 +63,8 @@ describe('automatic model limits', () => {
       }
       expect(resolveModelLimits(unknown)).toEqual({
         context_window: 1_000_000,
-        max_output_tokens: 8192,
+        max_output_tokens: 32768,
+        output_limit_mode: 'auto',
         context_source: 'fallback',
         output_source: 'fallback',
       })
@@ -96,6 +99,7 @@ describe('automatic model limits', () => {
     expect(resolveModelLimits(input, { context_window: 32768, max_output_tokens: 4096 })).toEqual({
       context_window: 32768,
       max_output_tokens: 4096,
+      output_limit_mode: 'auto',
       context_source: 'metadata',
       output_source: 'metadata',
     })
@@ -103,11 +107,11 @@ describe('automatic model limits', () => {
       resolveModelLimits(input, { context_window: 1024, max_output_tokens: 512 }),
     ).toMatchObject({
       context_window: 1024,
-      max_output_tokens: 256,
+      max_output_tokens: 512,
     })
     expect(
       resolveModelLimits({ ...input, model: 'unknown' }, { context_window: 131072 }),
-    ).toMatchObject({ context_window: 131072, max_output_tokens: 8192 })
+    ).toMatchObject({ context_window: 131072, max_output_tokens: 32768 })
     expect(
       resolveModelLimits(input, { context_window: Number.NaN, max_output_tokens: 8_000_001 }),
     ).toEqual(resolveModelLimits(input))
@@ -122,6 +126,7 @@ describe('automatic model limits', () => {
     ).toEqual({
       context_window: 16384,
       max_output_tokens: 4096,
+      output_limit_mode: 'custom',
       context_source: 'override',
       output_source: 'override',
     })
@@ -134,5 +139,35 @@ describe('automatic model limits', () => {
       { context_window: 1024, max_output_tokens: 960 },
     ])
       expect(() => resolveModelLimits({ ...input, ...change })).toThrow()
+  })
+
+  it('retains large published output capacities and separates automatic reserves from overrides', () => {
+    expect(resolveModelLimits(input)).toMatchObject({
+      max_output_tokens: 128000,
+      output_limit_mode: 'auto',
+    })
+    expect(resolveModelLimits(input, { max_output_tokens: 256000 })).toMatchObject({
+      max_output_tokens: 256000,
+      output_source: 'metadata',
+    })
+    expect(resolveModelLimits({ ...input, max_output_tokens: 8192 })).toMatchObject({
+      max_output_tokens: 8192,
+      output_limit_mode: 'custom',
+    })
+    expect(
+      resolveModelLimits({ ...input, max_output_tokens: 8192, output_limit_mode: 'auto' }),
+    ).toMatchObject({ max_output_tokens: 128000, output_limit_mode: 'auto' })
+    expect(() => resolveModelLimits({ ...input, output_limit_mode: 'custom' })).toThrow()
+  })
+
+  it('leaves usable input space when automatic output capacity exceeds a smaller window', () => {
+    expect(resolveModelLimits({ ...input, context_window: 8192 })).toMatchObject({
+      max_output_tokens: 6063,
+      output_limit_mode: 'auto',
+      output_source: 'catalog',
+    })
+    expect(
+      resolveModelLimits({ ...input, context_window: 8192, max_output_tokens: 7000 }),
+    ).toMatchObject({ max_output_tokens: 7000, output_limit_mode: 'custom' })
   })
 })

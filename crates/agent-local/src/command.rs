@@ -1,7 +1,8 @@
 use crate::{
-    Approval, CommandAccess, CommandRecord, CommandStatus, Inner, LocalTools, NetworkAccess,
+    ApprovalMode, CommandAccess, CommandRecord, CommandStatus, Inner, LocalTools, NetworkAccess,
     PendingApproval, PermissionMode,
     command_environment::ReadOnlyScratch,
+    command_policy::{Authorization, CommandPermissions},
     command_process::{CommandProcess, CommandProcessOptions},
     command_session::CommandSession,
     files::parse,
@@ -27,7 +28,7 @@ struct CommandInput {
     #[serde(default)]
     timeout_seconds: Option<u64>,
     #[serde(default)]
-    network_access: NetworkAccess,
+    network_access: Option<NetworkAccess>,
     #[serde(default)]
     access: Option<CommandAccess>,
 }
@@ -101,11 +102,25 @@ impl LocalTools {
                 "yield_time_ms must be between 0 and 30000; optional timeout_seconds must be between 1 and 86400",
             ));
         }
-        if !execution_available() {
+        let full_access = self.full_access();
+        let network_access = input.network_access.unwrap_or(if full_access {
+            NetworkAccess::Allowed
+        } else {
+            NetworkAccess::Denied
+        });
+        let unrestricted = full_access
+            && access == CommandAccess::WorkspaceWrite
+            && network_access == NetworkAccess::Allowed;
+        if !unrestricted && !execution_available() {
             return Err(paths::denied(
                 "command execution is not available on this platform",
             ));
         }
+        let actual_execution_mode = if unrestricted {
+            "unrestricted"
+        } else {
+            execution_mode()
+        };
         self.verify_root()?;
         self.authorize_command(access)?;
         let id = format!(
@@ -120,6 +135,7 @@ impl LocalTools {
         self.inner.commands.insert(id.clone(), session.clone())?;
         let mut guard = CommandGuard {
             inner: Arc::downgrade(&self.inner),
+            permissions: self.command_permissions.clone(),
             id: id.clone(),
             session: session.clone(),
             finished: false,
@@ -136,42 +152,38 @@ impl LocalTools {
             }
             journal.commands.push(CommandRecord {
                 id: id.clone(),
+                execution_mode: actual_execution_mode.into(),
                 task_title: None,
                 command: input.command.clone(),
                 status: "awaiting_approval".into(),
                 output: String::new(),
                 exit_code: None,
-                network_access: input.network_access,
+                network_access,
                 access,
             });
             journal.save(&self.inner.state_dir)?;
         }
         let mut cancelled = session.cancellation();
-        let allowed = if self
-            .command_permissions
-            .allows(access, input.network_access)?
-        {
-            true
-        } else {
-            let (sender, receiver) = oneshot::channel();
-            self.inner.approvals.lock().map_err(lock_error)?.insert(
-                id.clone(),
-                Approval {
-                    info: PendingApproval {
-                        task_title: None,
-                        id: id.clone(),
-                        command: input.command.clone(),
-                        cwd: self.root().display().to_string(),
-                        execution_mode: execution_mode().into(),
-                        network_access: input.network_access,
-                        access,
-                    },
-                    sender,
-                },
-            );
-            await_approval(receiver, &mut cancelled).await
+        let authorization = self.command_permissions.request_for_task(
+            &self.inner.state_dir,
+            PendingApproval {
+                task_title: None,
+                id: id.clone(),
+                review_mode: ApprovalMode::default(),
+                epoch: 0,
+                command: input.command.clone(),
+                cwd: self.root().display().to_string(),
+                execution_mode: actual_execution_mode.into(),
+                network_access,
+                access,
+            },
+            full_access,
+        )?;
+        let epoch = match authorization {
+            Authorization::Ready(epoch) => Some(epoch),
+            Authorization::Pending(receiver) => await_approval(receiver, &mut cancelled).await,
         };
-        if !allowed || *cancelled.borrow() {
+        if epoch.is_none() || *cancelled.borrow() {
             guard.finish(
                 if *cancelled.borrow() {
                     "cancelled"
@@ -180,13 +192,17 @@ impl LocalTools {
                 },
                 None,
             )?;
-            return Err(paths::denied("command was denied or cancelled"));
+            return Err(paths::denied(
+                "command was denied, cancelled, or its permission was revoked",
+            ));
         }
         // Approval is not a workspace lock. Recheck delegated authority after
         // the user decides; file leases may have changed while we were waiting.
         self.verify_root()?;
         self.authorize_command(access)?;
-        let slot = self.command_permissions.admit()?;
+        let slot = self
+            .command_permissions
+            .admit_at_epoch(epoch.expect("authorization checked"))?;
         let shared_operation = self
             .collaboration
             .as_ref()
@@ -243,8 +259,9 @@ impl LocalTools {
         let mut process = match CommandProcess::spawn_with_options(
             self,
             &input.command,
-            input.network_access,
+            network_access,
             CommandProcessOptions {
+                unrestricted,
                 write_paths: (access == CommandAccess::ReadOnly).then(Vec::new),
                 temporary_directory: scratch.as_ref().map(|scratch| scratch.path().to_owned()),
             },
@@ -386,6 +403,7 @@ impl LocalTools {
 
     pub async fn stop_command(&self, id: &str) -> io::Result<CommandStatus> {
         let session = self.inner.commands.get(id)?;
+        self.command_permissions.remove_pending(id)?;
         session.cancel();
         wait_until_finished(&session, 5000).await;
         session.snapshot(id, 0)
@@ -393,6 +411,9 @@ impl LocalTools {
 
     /// Signal every live process and pending approval when the owning run stops.
     pub fn cancel_commands(&self) {
+        let _ = self
+            .command_permissions
+            .cancel_pending(&self.inner.state_dir);
         self.inner.commands.cancel_all();
     }
 
@@ -402,6 +423,8 @@ impl LocalTools {
 
     /// The host must prevent new command admission before invoking shutdown.
     pub async fn cancel_commands_and_wait(&self) -> io::Result<()> {
+        self.command_permissions
+            .cancel_pending(&self.inner.state_dir)?;
         let sessions = self.inner.commands.active_sessions();
         for session in &sessions {
             session.cancel();
@@ -425,16 +448,16 @@ impl LocalTools {
 }
 
 async fn await_approval(
-    receiver: oneshot::Receiver<bool>,
+    receiver: oneshot::Receiver<Option<u64>>,
     cancelled: &mut tokio::sync::watch::Receiver<bool>,
-) -> bool {
+) -> Option<u64> {
     if *cancelled.borrow() {
-        return false;
+        return None;
     }
     tokio::select! {
         biased;
-        _ = cancelled.changed() => false,
-        result = receiver => result.unwrap_or(false),
+        _ = cancelled.changed() => None,
+        result = receiver => result.unwrap_or(None),
     }
 }
 
@@ -478,6 +501,7 @@ impl Drop for InitialWait {
 
 struct CommandGuard {
     inner: Weak<Inner>,
+    permissions: Arc<CommandPermissions>,
     id: String,
     session: Arc<CommandSession>,
     finished: bool,
@@ -495,8 +519,8 @@ impl CommandGuard {
         cleanup: impl FnOnce(),
     ) -> io::Result<()> {
         let persisted = (|| -> io::Result<()> {
+            self.permissions.remove_pending(&self.id)?;
             if let Some(inner) = self.inner.upgrade() {
-                inner.approvals.lock().map_err(lock_error)?.remove(&self.id);
                 let mut journal = inner.journal.lock().map_err(lock_error)?;
                 if self.owns_baseline
                     && let Some(before) = journal.command_baseline.take()
@@ -599,6 +623,7 @@ mod tests {
             .commands
             .push(CommandRecord {
                 id: "publication".into(),
+                execution_mode: "sandboxed".into(),
                 task_title: None,
                 command: "test".into(),
                 status: "running".into(),
@@ -609,6 +634,7 @@ mod tests {
             });
         let mut guard = CommandGuard {
             inner: Arc::downgrade(&tools.inner),
+            permissions: tools.command_permissions.clone(),
             id: "publication".into(),
             session: session.clone(),
             finished: false,
@@ -643,12 +669,13 @@ mod tests {
         let mut cancellation = session.cancellation();
         let (_sender, receiver) = oneshot::channel();
         assert!(
-            !tokio::time::timeout(
+            tokio::time::timeout(
                 Duration::from_millis(100),
                 await_approval(receiver, &mut cancellation)
             )
             .await
             .unwrap()
+            .is_none()
         );
     }
 }

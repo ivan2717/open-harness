@@ -38,6 +38,7 @@ export function errorMessage(error: unknown): string {
 }
 
 export function toolOutcome(message: ChatMessage): { label: string; failed: boolean } {
+  if (message.status === 'interrupted') return { label: '已中断', failed: true }
   if (message.status === 'pending' || message.status === 'streaming')
     return { label: '执行中', failed: false }
   if (message.is_error) return { label: '失败', failed: true }
@@ -46,7 +47,9 @@ export function toolOutcome(message: ChatMessage): { label: string; failed: bool
       const result: unknown = JSON.parse(message.text)
       if (result && typeof result === 'object' && !Array.isArray(result)) {
         const { status, exit_code } = result as { status?: unknown; exit_code?: unknown }
-        if (status === 'running') return { label: '执行中', failed: false }
+        // This is the process state when a completed tool call returned, not
+        // evidence that the status query (or launch request) is still pending.
+        if (status === 'running') return { label: '返回时仍在运行', failed: false }
         if (status === 'awaiting_approval') return { label: '待批准', failed: false }
         if (status === 'denied') return { label: '已拒绝', failed: true }
         if (status === 'timed_out') return { label: '已超时', failed: true }

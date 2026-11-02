@@ -132,6 +132,15 @@ impl<C: NativeContextCompactor, K: NativeContextCheckpointStore, N: TokenCounter
         else {
             return Ok(false);
         };
+        if matches!(
+            &input.events[index].event,
+            RunEvent::ModelResponseReceived { response: Some(response), .. }
+                if response.finish_reason == crate::ModelFinishReason::Length
+        ) {
+            // Older runtimes may have cached the provider's incomplete native
+            // continuation. Rebuild from the prior window and safe projection.
+            return Ok(false);
+        }
         let fingerprint = event_prefix_fingerprint(&input.events[..=index])
             .map_err(NativeContextError::Fingerprint)?;
         Ok(checkpoint.source_fingerprint == fingerprint)
@@ -152,8 +161,14 @@ impl<C: NativeContextCompactor, K: NativeContextCheckpointStore, N: TokenCounter
                 .find_map(|(index, event)| match &event.event {
                     RunEvent::ModelResponseReceived {
                         provider_continuation: Some(continuation),
+                        response,
                         ..
-                    } => Some((index, continuation)),
+                    } if response.as_ref().is_none_or(|response| {
+                        response.finish_reason != crate::ModelFinishReason::Length
+                    }) =>
+                    {
+                        Some((index, continuation))
+                    }
                     _ => None,
                 })
         else {

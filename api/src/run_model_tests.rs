@@ -19,6 +19,7 @@ fn config(protocol: ProviderProtocol, url: &str, name: &str) -> ConfigureModel {
         model: name.into(),
         context_window: 32_000,
         max_output_tokens: 16_384,
+        output_limit_mode: Default::default(),
         reasoning_mode: "off".into(),
         reasoning_effort: "medium".into(),
         reasoning_capability: Some(serde_json::from_value(json!({
@@ -65,6 +66,8 @@ impl Fixture {
             .state
             .make_entry(
                 RunDetail {
+                    pending_inputs: Vec::new(),
+                    pending_inputs_paused: false,
                     summary: RunSummary {
                         reasoning_settings_version: 1,
                         id: id.into(),

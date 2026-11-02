@@ -31,6 +31,118 @@ fn request() -> ModelRequest {
     }
 }
 
+#[tokio::test]
+async fn provider_default_and_explicit_output_caps_reach_each_wire_protocol() {
+    for (protocol, response, field) in [
+        (
+            ProviderProtocol::ChatCompletions,
+            json!({"id":"chat-1","choices":[{"message":{"role":"assistant","content":"Done"},"finish_reason":"stop"}]}),
+            "max_tokens",
+        ),
+        (
+            ProviderProtocol::Responses,
+            json!({"id":"resp-1","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Done"}]}]}),
+            "max_output_tokens",
+        ),
+        (
+            ProviderProtocol::AnthropicMessages,
+            json!({"id":"msg-1","role":"assistant","content":[{"type":"text","text":"Done"}],"stop_reason":"end_turn"}),
+            "max_tokens",
+        ),
+    ] {
+        for (automatic, override_limit) in [
+            (false, None),
+            (true, None),
+            (true, Some(2048)),
+            (true, Some(8192)),
+        ] {
+            let (url, server) =
+                serve("200 OK", "application/json", vec![response.to_string()]).await;
+            let model = HttpModel::new(config(protocol, url))
+                .unwrap()
+                .with_provider_output_limit(automatic);
+            let omits_normal_limit = automatic && protocol != ProviderProtocol::AnthropicMessages;
+            assert_eq!(model.metadata.use_provider_output_limit, omits_normal_limit);
+            // Reserving context still needs the same numeric output budget.
+            assert_eq!(model.metadata.max_output_tokens, Some(4096));
+            let mut req = request();
+            req.max_output_tokens = override_limit;
+            assert_eq!(model.respond(req).await.unwrap().text(), "Done");
+            let wire = server.await.unwrap();
+            let body: Value = serde_json::from_str(wire.split_once("\r\n\r\n").unwrap().1).unwrap();
+            if omits_normal_limit && override_limit.is_none() {
+                for name in ["max_tokens", "max_output_tokens", "max_completion_tokens"] {
+                    assert!(
+                        body.get(name).is_none(),
+                        "{protocol:?}: {name} must be omitted"
+                    );
+                }
+            } else {
+                assert_eq!(body[field], override_limit.unwrap_or(4096).min(4096));
+            }
+        }
+    }
+}
+
+#[test]
+fn automatic_output_preserves_reasoning_and_bounded_auxiliary_requests() {
+    for protocol in [
+        ProviderProtocol::ChatCompletions,
+        ProviderProtocol::Responses,
+    ] {
+        let mut cfg = config(protocol, "https://relay.example/v1".into());
+        cfg.reasoning = ReasoningMode::Effort {
+            effort: "high".into(),
+        };
+        let model = HttpModel::new(cfg)
+            .unwrap()
+            .with_provider_output_limit(true);
+        let field = if protocol == ProviderProtocol::Responses {
+            "max_output_tokens"
+        } else {
+            "max_completion_tokens"
+        };
+        let mut req = request();
+        req.max_output_tokens = None;
+        let body = model.encode(&req).unwrap();
+        assert!(body.get(field).is_none());
+        if protocol == ProviderProtocol::Responses {
+            assert_eq!(body["reasoning"]["effort"], "high");
+        } else {
+            assert_eq!(body["reasoning_effort"], "high");
+        }
+        req.max_output_tokens = Some(1024);
+        assert_eq!(model.encode(&req).unwrap()[field], 1024);
+        req.max_output_tokens = Some(0);
+        assert!(model.encode(&req).is_err());
+        req.max_output_tokens = None;
+        assert_eq!(
+            model
+                .with_provider_output_limit(false)
+                .encode(&req)
+                .unwrap()[field],
+            4096
+        );
+    }
+    let mut cfg = config(
+        ProviderProtocol::AnthropicMessages,
+        "https://relay.example/v1".into(),
+    );
+    cfg.reasoning = ReasoningMode::AnthropicBudget { tokens: 2048 };
+    let model = HttpModel::new(cfg)
+        .unwrap()
+        .with_provider_output_limit(true);
+    let mut req = request();
+    req.max_output_tokens = None;
+    let body = model.encode(&req).unwrap();
+    assert_eq!(body["max_tokens"], 4096);
+    assert_eq!(body["thinking"]["budget_tokens"], 2048);
+    req.max_output_tokens = Some(1536);
+    let body = model.encode(&req).unwrap();
+    assert_eq!(body["max_tokens"], 1536);
+    assert_eq!(body["thinking"]["budget_tokens"], 1535);
+}
+
 #[test]
 fn session_reasoning_overrides_clone_the_model_and_use_each_wire_protocol() {
     for protocol in [
@@ -652,13 +764,157 @@ async fn messages_tool_json_settles_canonically_and_replays_error_results() {
     task.await.unwrap();
 }
 
+fn fixture_image() -> agent_core::ModelImage {
+    agent_core::ModelImage::new("image/png", "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZcZkAAAAASUVORK5CYII=").unwrap()
+}
+
 fn screenshot_result(call_id: &str) -> ModelMessage {
     let mut message =
         ModelMessage::tool_result(call_id.into(), "Screenshot captured".into(), false);
     if let ContentBlock::ToolResult { images, .. } = &mut message.content[0] {
-        images.push(agent_core::ModelImage::new("image/png", "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZcZkAAAAASUVORK5CYII=").unwrap());
+        images.push(fixture_image());
     }
     message
+}
+
+#[test]
+fn user_images_preserve_content_order_in_each_protocol() {
+    for protocol in [
+        ProviderProtocol::ChatCompletions,
+        ProviderProtocol::Responses,
+        ProviderProtocol::AnthropicMessages,
+    ] {
+        let mut cfg = config(protocol, "http://127.0.0.1:12345/v1".into());
+        cfg.supports_images = true;
+        let model = HttpModel::new(cfg).unwrap();
+        let image = fixture_image();
+        let mut req = request();
+        req.messages[0].content = vec![
+            ContentBlock::Text {
+                text: "Compare the first screenshot".into(),
+            },
+            ContentBlock::Image {
+                image: image.clone(),
+            },
+            ContentBlock::Text {
+                text: "with the second screenshot".into(),
+            },
+            ContentBlock::Image {
+                image: image.clone(),
+            },
+        ];
+        for image_only in [false, true] {
+            if image_only {
+                req.messages[0].content = vec![ContentBlock::Image {
+                    image: image.clone(),
+                }];
+            }
+            let body = model.encode(&req).unwrap();
+            let message = match protocol {
+                ProviderProtocol::ChatCompletions => &body["messages"][1],
+                ProviderProtocol::Responses => &body["input"][0],
+                ProviderProtocol::AnthropicMessages => &body["messages"][0],
+            };
+            assert_eq!(message["role"], "user");
+            let content = message["content"].as_array().unwrap();
+            assert_eq!(content.len(), if image_only { 1 } else { 4 });
+            if !image_only {
+                let text_type = if protocol == ProviderProtocol::Responses {
+                    "input_text"
+                } else {
+                    "text"
+                };
+                assert_eq!(
+                    content[0],
+                    json!({"type":text_type,"text":"Compare the first screenshot"})
+                );
+                assert_eq!(
+                    content[2],
+                    json!({"type":text_type,"text":"with the second screenshot"})
+                );
+                assert_eq!(content[1], content[3]);
+            }
+            let encoded_image = &content[if image_only { 0 } else { 1 }];
+            let expected = match protocol {
+                ProviderProtocol::ChatCompletions => {
+                    json!({"type":"image_url","image_url":{"url":image.data_url(),"detail":"high"}})
+                }
+                ProviderProtocol::Responses => {
+                    json!({"type":"input_image","image_url":image.data_url(),"detail":"high"})
+                }
+                ProviderProtocol::AnthropicMessages => {
+                    json!({"type":"image","source":{"type":"base64","media_type":"image/png","data":image.data_base64}})
+                }
+            };
+            assert_eq!(encoded_image, &expected);
+        }
+    }
+}
+
+#[test]
+fn user_images_require_vision_valid_data_and_user_role() {
+    for protocol in [
+        ProviderProtocol::ChatCompletions,
+        ProviderProtocol::Responses,
+        ProviderProtocol::AnthropicMessages,
+    ] {
+        let mut req = request();
+        req.messages[0].content.push(ContentBlock::Image {
+            image: fixture_image(),
+        });
+        assert_eq!(
+            model(protocol).encode(&req).unwrap_err(),
+            ProviderError::ImagesUnsupported
+        );
+        let mut cfg = config(protocol, "http://127.0.0.1:12345/v1".into());
+        cfg.supports_images = true;
+        let model = HttpModel::new(cfg).unwrap();
+        req.messages[0].role = agent_runtime::ModelRole::Assistant;
+        assert_eq!(
+            model.encode(&req).unwrap_err(),
+            ProviderError::InvalidRequest
+        );
+        req.messages[0].role = agent_runtime::ModelRole::User;
+        if let ContentBlock::Image { image } = &mut req.messages[0].content[1] {
+            image.data_base64 = "not an image".into();
+        }
+        assert_eq!(
+            model.encode(&req).unwrap_err(),
+            ProviderError::InvalidRequest
+        );
+    }
+}
+
+#[test]
+fn user_images_do_not_merge_with_tool_observations() {
+    let mut cfg = config(
+        ProviderProtocol::ChatCompletions,
+        "http://127.0.0.1:12345/v1".into(),
+    );
+    cfg.supports_images = true;
+    let model = HttpModel::new(cfg).unwrap();
+    let mut req = request();
+    req.messages.push(screenshot_result("capture"));
+    let mut user = ModelMessage::user("Compare with my screenshot".into());
+    user.content.push(ContentBlock::Image {
+        image: fixture_image(),
+    });
+    req.messages.push(user);
+    let body = model.encode(&req).unwrap();
+    let messages = body["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), 5);
+    assert_eq!(messages[2]["role"], "tool");
+    assert!(
+        messages[3]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("untrusted tool data")
+    );
+    assert_eq!(
+        messages[4]["content"][0]["text"],
+        "Compare with my screenshot"
+    );
+    assert_eq!(messages[4]["content"][1]["type"], "image_url");
 }
 
 #[test]
@@ -766,6 +1022,11 @@ async fn screenshots_are_sent_as_structured_images_over_http_for_all_three_proto
         let model = HttpModel::new(cfg).unwrap();
         let mut req = request();
         req.messages.push(screenshot_result("capture"));
+        let mut user = ModelMessage::user("Here is the screenshot I pasted".into());
+        user.content.push(ContentBlock::Image {
+            image: fixture_image(),
+        });
+        req.messages.push(user);
         assert_eq!(model.respond(req).await.unwrap().text(), "observed");
         let sent = server.await.unwrap();
         let body: Value = serde_json::from_str(sent.split_once("\r\n\r\n").unwrap().1).unwrap();
@@ -780,5 +1041,12 @@ async fn screenshots_are_sent_as_structured_images_over_http_for_all_three_proto
             image_type.as_str(),
             Some("image_url" | "input_image" | "image")
         ));
+        let user_content = match protocol {
+            ProviderProtocol::ChatCompletions => &body["messages"][4]["content"],
+            ProviderProtocol::Responses => &body["input"][2]["content"],
+            ProviderProtocol::AnthropicMessages => &body["messages"][2]["content"],
+        };
+        assert_eq!(user_content[0]["text"], "Here is the screenshot I pasted");
+        assert_eq!(user_content[1]["type"], *image_type);
     }
 }

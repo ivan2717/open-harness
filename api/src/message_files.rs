@@ -1,4 +1,4 @@
-//! Retrieve the exact text-file snapshot attached to a persisted user message.
+//! Retrieve the exact text or raster snapshot attached to a persisted user message.
 use super::{AppState, ServiceError};
 use agent_core::{TextFileReference, agent::RunEvent};
 use agent_runtime::EventStore;
@@ -79,6 +79,7 @@ impl AppState {
             .and_then(|envelope| match &envelope.event {
                 RunEvent::RunStarted { files, .. }
                 | RunEvent::InputReceived { files, .. }
+                | RunEvent::UserInputReceived { files, .. }
                 | RunEvent::RunResumed { files, .. } => files.get(index).cloned(),
                 _ => None,
             })

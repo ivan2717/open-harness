@@ -161,18 +161,20 @@ async fn run(tools: &LocalTools, command: String, network: NetworkAccess) -> Val
             arguments: json!({"command":command,"network_access":network,"access":"workspace_write",
                 "yield_time_ms":30000,"timeout_seconds":if network == NetworkAccess::Denied { 5 } else { 25 }}).to_string() }).await
     });
-    tokio::time::timeout(Duration::from_secs(10), async {
-        loop {
-            if let Some(approval) = tools.review().unwrap().approvals.first() {
-                assert_eq!(approval.network_access, network);
-                tools.approve(&approval.id, true).unwrap();
-                break;
+    if network == NetworkAccess::Allowed {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if let Some(approval) = tools.review().unwrap().approvals.first() {
+                    assert_eq!(approval.network_access, network);
+                    tools.approve(&approval.id, true).unwrap();
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
             }
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-    })
-    .await
-    .expect("missing approval");
+        })
+        .await
+        .expect("missing approval");
+    }
     serde_json::from_str(&task.await.unwrap().unwrap()).unwrap()
 }
 

@@ -95,7 +95,23 @@ impl Fixture {
         read_only: bool,
         probe: &str,
     ) -> std::process::Child {
+        self.spawn_with_read_paths(allowed, pause, read_only, probe, &[])
+    }
+    fn spawn_with_read_paths(
+        &self,
+        allowed: bool,
+        pause: bool,
+        read_only: bool,
+        probe: &str,
+        extra_read_paths: &[PathBuf],
+    ) -> std::process::Child {
         let program = std::env::current_exe().unwrap();
+        let mut read_paths = vec![
+            program.clone(),
+            self.0.join("runtime"),
+            self.0.join("workspace/managed-runtime"),
+        ];
+        read_paths.extend_from_slice(extra_read_paths);
         let mut child = Command::new(env!("CARGO_BIN_EXE_openharness-sandbox"))
             .env("OPENHARNESS_SANDBOX_PROBE_ROOT", &self.0)
             .env(
@@ -117,7 +133,7 @@ impl Fixture {
             .unwrap();
         let request = json!({"version":1,"program":program,"args":["--exact",probe,"--nocapture"],
             "cwd":self.0.join("workspace"),"workspace":self.0.join("workspace"),
-            "read_paths":[program,self.0.join("runtime"),self.0.join("workspace/managed-runtime")],
+            "read_paths":read_paths,
             "write_paths":[self.0.join(if read_only { "scratch" } else { "workspace" })],
             "denied_paths":[],"network_allowed":allowed});
         writeln!(child.stdin.take().unwrap(), "{request}").unwrap();
@@ -129,6 +145,102 @@ impl Drop for Fixture {
         let _ = fs::remove_dir(self.0.join("workspace/junction"));
         let _ = fs::remove_dir_all(&self.0);
     }
+}
+
+#[test]
+fn attachment_file_grants_do_not_expose_or_modify_the_containing_store() {
+    let fixture = Fixture::new();
+    let store = fixture.0.join("attachment-store");
+    fs::create_dir(&store).unwrap();
+    let original = store.join("a".repeat(64));
+    let neighbour = store.join("b".repeat(64));
+    fs::write(&original, "authorized original").unwrap();
+    fs::write(&neighbour, "another conversation").unwrap();
+    for read_only in [true, false] {
+        let output = fixture
+            .spawn_with_read_paths(
+                false,
+                false,
+                read_only,
+                "attachment_file_probe",
+                std::slice::from_ref(&original),
+            )
+            .wait_with_output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "attachment isolation failed:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("exact attachment grant verified")
+        );
+        assert_eq!(
+            fs::read_to_string(&original).unwrap(),
+            "authorized original"
+        );
+        assert_eq!(
+            fs::read_to_string(&neighbour).unwrap(),
+            "another conversation"
+        );
+    }
+    let without_grant = fixture
+        .spawn_with_probe(false, false, true, "attachment_without_grant_probe")
+        .wait_with_output()
+        .unwrap();
+    assert!(
+        without_grant.status.success(),
+        "new command inherited another command's attachment grant:\n{}\n{}",
+        String::from_utf8_lossy(&without_grant.stdout),
+        String::from_utf8_lossy(&without_grant.stderr)
+    );
+    // ACL cleanup must preserve normal host access to these originals.
+    fs::write(&original, "host still owns original").unwrap();
+    fs::write(&neighbour, "host still owns neighbour").unwrap();
+}
+
+#[test]
+fn attachment_file_probe() {
+    let Some(root) = std::env::var_os("OPENHARNESS_SANDBOX_PROBE_ROOT").map(PathBuf::from) else {
+        return;
+    };
+    let store = root.join("attachment-store");
+    let original = store.join("a".repeat(64));
+    let neighbour = store.join("b".repeat(64));
+    assert_eq!(
+        fs::read_to_string(&original).unwrap(),
+        "authorized original"
+    );
+    assert!(
+        fs::read(&neighbour).is_err(),
+        "neighbouring attachment was readable"
+    );
+    assert!(
+        fs::read_dir(&store).is_err(),
+        "the attachment store became listable"
+    );
+    assert!(
+        fs::write(&original, "mutation").is_err(),
+        "original became writable"
+    );
+    assert!(
+        fs::remove_file(&original).is_err(),
+        "original became deletable"
+    );
+    assert_eq!(
+        fs::read_to_string(&original).unwrap(),
+        "authorized original"
+    );
+    println!("exact attachment grant verified");
+}
+
+#[test]
+fn attachment_without_grant_probe() {
+    let Some(root) = std::env::var_os("OPENHARNESS_SANDBOX_PROBE_ROOT").map(PathBuf::from) else {
+        return;
+    };
+    assert!(fs::read(root.join("attachment-store").join("a".repeat(64))).is_err());
 }
 
 #[test]

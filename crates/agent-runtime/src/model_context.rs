@@ -21,6 +21,9 @@ pub struct ModelContextMetadata {
     pub auto_compact_token_limit: Option<usize>,
     pub effective_context_window_percent: u8,
     pub max_output_tokens: Option<usize>,
+    /// Keep an output reservation for context planning without imposing it on
+    /// ordinary generation. Explicit per-request caps (e.g. summaries) still apply.
+    pub use_provider_output_limit: bool,
 }
 
 impl ModelContextMetadata {
@@ -39,6 +42,7 @@ impl ModelContextMetadata {
             auto_compact_token_limit: None,
             effective_context_window_percent: 95,
             max_output_tokens: None,
+            use_provider_output_limit: false,
         };
         metadata.validate()?;
         Ok(metadata)

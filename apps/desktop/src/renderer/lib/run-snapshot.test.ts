@@ -20,6 +20,23 @@ function snapshot(overrides: Partial<RunDetail> = {}): RunDetail {
 }
 
 describe('snapshot ordering', () => {
+  it('bounds full mutation replies without letting equal-revision SSE restore the full log', () => {
+    const full = snapshot({
+      revision: 12,
+      messages: Array.from({ length: 1000 }, (_, index) => ({
+        id: `event-${index}`,
+        role: 'assistant',
+        status: 'complete',
+        text: `${index}`,
+      })),
+    })
+    const result = latestSnapshot(undefined, full)
+    expect(result.messages).toHaveLength(100)
+    expect(result.history?.before).toBe('event-900')
+    expect(result.history?.total_messages).toBe(1000)
+    expect(latestSnapshot(result, full)).toBe(result)
+    expect(full.messages).toHaveLength(1000)
+  })
   it('keeps a newer stream update when an older HTTP response arrives later', () => {
     const streamed = snapshot({
       revision: 9,

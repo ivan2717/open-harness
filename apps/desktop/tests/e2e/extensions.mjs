@@ -167,7 +167,8 @@ async function approval(page, id, allow) {
     .toBe(1)
   const pending = (await page.evaluate((id) => window.harness.runExtensions(id), id)).approvals[0]
   await page.evaluate(
-    ({ id, approvalId, allow }) => window.harness.approveExtension(id, approvalId, allow),
+    ({ id, approvalId, allow }) =>
+      window.harness.approveExtension(id, approvalId, allow ? 'allow' : 'cancel'),
     { id, approvalId: pending.id, allow },
   )
   return pending
@@ -429,9 +430,17 @@ try {
   await page.getByRole('button', { name: '开始运行', exact: true }).click()
   await expect.poll(() => requestsFor(documentsPrompt).length).toBeGreaterThan(0)
   const documents = await settled(page, run.id)
-  await expect(
-    page.locator('.tool-card summary').filter({ hasText: /已加载技能.*review/ }),
-  ).toBeVisible()
+  const skillActivity = page
+    .locator('.tool-activity > summary')
+    .filter({ hasText: /已读取技能.*review/ })
+    .first()
+  await expect(skillActivity).toHaveCount(1)
+  // Settled work and consecutive tool operations are independently collapsible.
+  for (const section of await skillActivity.locator('xpath=../ancestor::details').all()) {
+    if ((await section.getAttribute('open')) === null)
+      await section.locator(':scope > summary').click()
+  }
+  await expect(skillActivity).toBeVisible()
   assert(
     documents.messages
       .filter((message) => message.role === 'tool')
@@ -449,11 +458,11 @@ try {
     assert.deepEqual(request.tools, first.tools, 'tool definitions remain stable within a turn')
   }
   await page.evaluate((id) => window.harness.submitInput(id, 'MCP'), run.id)
-  await expect(page.getByRole('button', { name: '允许本次', exact: true })).toBeVisible({
+  await expect(page.getByRole('button', { name: '允许', exact: true })).toBeVisible({
     timeout: 20_000,
   })
   await page.screenshot({ path: resolve('test-results/desktop-mcp-approval.png') })
-  await page.getByRole('button', { name: '允许本次', exact: true }).click()
+  await page.getByRole('button', { name: '允许', exact: true }).click()
   await approval(page, run.id, true)
   const mcp = await settled(page, run.id)
   const outputs = mcp.messages

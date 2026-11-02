@@ -72,7 +72,9 @@ export function CommandApprovals({
                 : `${approval.access === 'read_only' ? '项目只读，文件写入仅限临时目录。' : '可读写工作目录及临时目录。'}${approval.network_access === 'allowed' ? '允许命令及其子进程访问网络。' : '网络关闭。'}`}
           </p>
           {approval.execution_mode === 'sandboxed' && (
-            <p>本会话授权适用于主任务及子任务；此范围内的后续命令不再询问，重启应用后失效。</p>
+            <p>
+              “允许”适用于本会话及协作任务，同一工作区及读写、联网范围内不再询问，重启应用后失效。“始终允许”在本会话重启后仍保留，不授权其他会话或项目。
+            </p>
           )}
           <div className="approval-actions">
             <button
@@ -80,25 +82,41 @@ export function CommandApprovals({
               disabled={busy}
               onClick={() => onDecide(approval.id, false)}
             >
-              拒绝
+              取消
             </button>
             {approval.execution_mode === 'sandboxed' && (
               <button
                 className="button button-secondary"
                 disabled={busy}
-                onClick={() => onDecide(approval.id, true, 'session')}
+                onClick={() => onDecide(approval.id, true, 'always')}
               >
-                本会话同范围允许
+                始终允许
               </button>
             )}
             <button
               className="button button-primary"
               disabled={busy || approval.execution_mode === 'unavailable'}
-              onClick={() => onDecide(approval.id, true, 'once')}
+              onClick={() =>
+                onDecide(
+                  approval.id,
+                  true,
+                  approval.execution_mode === 'sandboxed' ? 'session' : 'once',
+                )
+              }
             >
-              {approval.network_access === 'allowed' ? '允许本次联网执行' : '允许本次'}
+              允许
             </button>
           </div>
+          {approval.execution_mode === 'sandboxed' && (
+            <button
+              type="button"
+              className="permission-text-button"
+              disabled={busy}
+              onClick={() => onDecide(approval.id, true, 'once')}
+            >
+              仅允许本次
+            </button>
+          )}
         </div>
       ))}
     </section>
@@ -300,7 +318,7 @@ export function WorkspaceReviewPanel({
                   ))}
                 </ul>
                 <p className="review-note">
-                  主任务及子任务在以上范围内的后续命令不再询问，重启应用后失效。撤销后恢复询问，不会停止已经批准的命令。
+                  主任务及协作任务在以上范围内的后续命令不再询问。持久授权可在设置的授权记录中查看；撤销会同时清除保存的命令许可，不会停止正在执行的命令。
                 </p>
                 <button
                   className="button button-secondary"
@@ -313,7 +331,9 @@ export function WorkspaceReviewPanel({
             )}
             {review.execution_mode === 'unrestricted' ? (
               <p className="review-note">
-                命令经逐次批准后，以你的系统账户权限运行；不限制文件或网络访问。
+                {review.approval_mode === 'full_access'
+                  ? '当前为完全访问权限；命令以你的系统账户权限运行，不限制文件或网络访问。'
+                  : '命令经逐次批准后，以你的系统账户权限运行；不限制文件或网络访问。'}
               </p>
             ) : (
               !review.sandbox_available && (
@@ -341,8 +361,14 @@ export function WorkspaceReviewPanel({
                   <p className="command-record-scope">子任务：{command.task_title}</p>
                 )}
                 <p className="command-record-scope">
-                  请求范围：{command.access === 'read_only' ? '项目只读' : '可修改项目'} ·{' '}
-                  {command.network_access === 'allowed' ? '请求联网' : '网络关闭'}
+                  {command.execution_mode === 'unrestricted' ? (
+                    '执行范围：主机完全访问，可联网并读写项目外文件'
+                  ) : (
+                    <>
+                      请求范围：{command.access === 'read_only' ? '项目只读' : '可修改项目'} ·{' '}
+                      {command.network_access === 'allowed' ? '请求联网' : '网络关闭'}
+                    </>
+                  )}
                 </p>
                 {command.status === 'running' && (
                   <div className="change-actions">

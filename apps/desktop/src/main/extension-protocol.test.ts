@@ -76,56 +76,73 @@ describe('extension bridge validation', () => {
       extensionConfiguration(fixture),
     )
     expect(
-      apiRequest({ operation: 'approveExtension', id: 'run-1', approvalId: 'mcp-1', allow: true }),
+      apiRequest({
+        operation: 'approveExtension',
+        id: 'run-1',
+        approvalId: 'mcp-1',
+        decision: 'allow',
+      }),
     ).toEqual({
       path: '/api/runs/run-1/extensions/approvals/mcp-1',
       method: 'POST',
-      body: { allow: true },
+      body: { decision: 'allow' },
     })
     expect(apiRequest({ operation: 'refreshRunSkills', id: 'run-1' }).path).toBe(
       '/api/runs/run-1/extensions/refresh',
     )
   })
-  it('preserves an explicit boolean session grant without silently widening one-shot approvals', () => {
-    for (const session of [true, false]) {
+  it('preserves the explicit control decision and rejects obsolete or ambiguous payloads', () => {
+    for (const decision of ['allow', 'always', 'cancel']) {
       expect(
         apiRequest({
           operation: 'approveExtension',
           id: 'run-1',
           approvalId: 'mcp-2',
-          allow: true,
-          session,
+          decision,
         }),
       ).toEqual({
         path: '/api/runs/run-1/extensions/approvals/mcp-2',
         method: 'POST',
-        body: { allow: true, session },
+        body: { decision },
       })
     }
-    expect(
-      apiRequest({ operation: 'approveExtension', id: 'run-1', approvalId: 'mcp-2', allow: false })
-        .body,
-    ).toEqual({ allow: false })
-    for (const session of [null, 'true', 'false', 1, 0, {}, []])
+    for (const decision of [undefined, null, true, false, 'once', 'session', '', {}, []])
       expect(() =>
         apiRequest({
           operation: 'approveExtension',
           id: 'run-1',
           approvalId: 'mcp-2',
-          allow: true,
-          session,
+          decision,
         }),
-      ).toThrow('Invalid approval scope')
+      ).toThrow('Invalid approval decision')
+    expect(() =>
+      apiRequest({
+        operation: 'approveExtension',
+        id: 'run-1',
+        approvalId: 'mcp-2',
+        allow: true,
+        session: true,
+      }),
+    ).toThrow('Invalid approval decision')
     for (const approvalId of ['../other', 'mcp-2?allow=true', '', null])
       expect(() =>
         apiRequest({
           operation: 'approveExtension',
           id: 'run-1',
           approvalId,
-          allow: true,
-          session: true,
+          decision: 'always',
         }),
       ).toThrow()
+  })
+  it('revokes a saved capability only through its fixed server endpoint', () => {
+    expect(
+      apiRequest({ operation: 'revokeControlPermission', serverId: 'plugin_chrome_use_chrome' }),
+    ).toEqual({
+      path: '/api/extensions/control-permissions/plugin_chrome_use_chrome',
+      method: 'DELETE',
+    })
+    for (const serverId of ['../other', 'chrome?all=true', '', null])
+      expect(() => apiRequest({ operation: 'revokeControlPermission', serverId })).toThrow()
   })
   it('revokes only the named run through a fixed DELETE endpoint', () => {
     expect(apiRequest({ operation: 'revokeControl', id: 'run-1' })).toEqual({

@@ -63,24 +63,39 @@ where
             .map_err(AgentRuntimeError::ModelCapabilities)?;
 
         let accounting_metadata = self.accounting_metadata();
-        let turn_start_step = run
-            .events()
-            .iter()
-            .rev()
-            .find_map(|event| {
-                matches!(
-                    event.event,
-                    RunEvent::RunResumed { .. } | RunEvent::InputReceived { .. }
-                )
-                .then_some(event.step)
-            })
-            .unwrap_or(0);
-
         let mut repetition_monitor = ToolRepetitionMonitor::default();
-        while run.is_running() {
+        'execution: while run.is_running() {
             if control.is_cancelled() {
                 return self.finish_cancellation(run).await;
             }
+            self.receive_user_inputs(run).await?;
+            if consecutive_truncations(run) > 2 {
+                // Also enforce the limit after a process restart between the
+                // response commit and its failure record.
+                self.record_persisted(
+                    run,
+                    RunEvent::RunFailed {
+                        message: AgentRuntimeError::<M::Error>::OutputTruncated.to_string(),
+                    },
+                )
+                .await?;
+                return Err(AgentRuntimeError::OutputTruncated);
+            }
+            let turn_start_step = run
+                .events()
+                .iter()
+                .rev()
+                .find_map(|event| {
+                    matches!(
+                        event.event,
+                        RunEvent::UserInputReceived { .. }
+                            | RunEvent::RunResumed { .. }
+                            | RunEvent::InputReceived { .. }
+                    )
+                    .then_some(event.step)
+                })
+                .unwrap_or(0);
+
             for warning in repetition_monitor.pending_warnings(run.events()) {
                 self.record_persisted(run, warning).await?;
             }
@@ -189,13 +204,33 @@ where
                     };
                     let response = control
                         .until_cancelled(|| {
-                            self.model.stream(prepared.request.clone(), &mut forwarding)
+                            async {
+                                tokio::select! {
+                                    biased;
+                                    _ = self.wait_for_steering() => None,
+                                    response = self.model.stream(prepared.request.clone(), &mut forwarding) => Some(response),
+                                }
+                            }
                         })
                         .await;
                     (response, forwarding.emitted)
                 };
-                let Some(response) = response else {
-                    return self.finish_cancellation(run).await;
+                let response = match response {
+                    Some(Some(response)) => response,
+                    interrupted => {
+                        self.record_persisted(
+                            run,
+                            RunEvent::ModelResponseInterrupted {
+                                content: assembler.interrupted_text(),
+                            },
+                        )
+                        .await?;
+                        if interrupted.is_none() || control.is_cancelled() {
+                            return self.finish_cancellation(run).await;
+                        }
+                        self.receive_user_inputs(run).await?;
+                        continue 'execution;
+                    }
                 };
                 let Err(source) = response else {
                     break (
@@ -409,6 +444,9 @@ where
                     {
                         return Ok(run.status());
                     }
+                    if self.receive_user_inputs(run).await? {
+                        continue;
+                    }
                     if self.receive_agent_messages(run, control, true).await? {
                         continue;
                     }
@@ -425,10 +463,17 @@ where
                     self.record_persisted(run, event).await?;
                 }
                 ModelFinishReason::Length => {
+                    if consecutive_truncations(run) <= 2 {
+                        // Project the settled response as incomplete historical
+                        // text on the next iteration. No truncated call is
+                        // declared or executed, and normal step/cancel limits
+                        // still apply to the recovery request.
+                        continue;
+                    }
                     self.record_persisted(
                         run,
                         RunEvent::RunFailed {
-                            message: "model output was truncated before completion".into(),
+                            message: AgentRuntimeError::<M::Error>::OutputTruncated.to_string(),
                         },
                     )
                     .await?;
@@ -603,6 +648,13 @@ where
         }
 
         for call in calls {
+            if control.is_cancelled() {
+                self.finish_cancellation(run).await?;
+                return Ok(());
+            }
+            if self.receive_user_inputs(run).await? {
+                return Ok(());
+            }
             let call_id = call.id.clone();
             let result = control
                 .until_cancelled(|| self.execute_tool(call, tools, history_context.clone()))
@@ -720,6 +772,31 @@ where
             last_sequence: last.sequence,
         })
     }
+}
+
+/// Count from durable history so restoring the runtime cannot silently reset
+/// the automatic retry budget. A new user turn or complete response resets it.
+fn consecutive_truncations(run: &AgentRun) -> usize {
+    let mut count = 0;
+    for event in run.events().iter().rev() {
+        match &event.event {
+            RunEvent::ModelResponseReceived { response, .. } => {
+                if response
+                    .as_ref()
+                    .is_some_and(|response| response.finish_reason == ModelFinishReason::Length)
+                {
+                    count += 1;
+                } else {
+                    break;
+                }
+            }
+            RunEvent::RunResumed { .. }
+            | RunEvent::UserInputReceived { .. }
+            | RunEvent::InputReceived { .. } => break,
+            _ => {}
+        }
+    }
+    count
 }
 
 struct DiscardStream;

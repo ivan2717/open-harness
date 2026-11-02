@@ -184,7 +184,112 @@ async fn desktop_routes_use_real_runtime_compaction_and_stable_contracts() {
 }
 
 #[tokio::test]
-async fn cancellation_discards_stream_and_prevents_further_tools() {
+async fn history_routes_and_recent_stream_keep_the_legacy_detail_contract() {
+    let directory = Directory::new();
+    let state = state(&directory).await;
+    let created = create(&state, "验证历史分页与实时视图").await;
+    let id = &created.summary.id;
+    let completed = settled(&state, id).await;
+    let app = api::app(state);
+    let (status, legacy) = request(app.clone(), "GET", &format!("/api/runs/{id}"), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(!legacy.as_object().unwrap().contains_key("history"));
+
+    let (status, recent) = request(app.clone(), "GET", &format!("/api/runs/{id}/view"), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        recent["history"]["total_messages"],
+        completed.messages.len()
+    );
+    assert_eq!(recent["history"]["total_events"], completed.events.len());
+    assert_eq!(recent["history"]["before"], Value::Null);
+    assert_eq!(recent["history"]["events_before"], Value::Null);
+    assert_eq!(recent["messages"], legacy["messages"]);
+    assert_eq!(recent["events"], legacy["events"]);
+
+    let message_index = completed.messages.len() / 2;
+    assert!(message_index > 0);
+    let cursor = &completed.messages[message_index].id;
+    let (status, page) = request(
+        app.clone(),
+        "GET",
+        &format!("/api/runs/{id}/view?before={cursor}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        page["messages"],
+        json!(&completed.messages[..message_index])
+    );
+    assert_eq!(page["history"]["total_messages"], completed.messages.len());
+    assert_eq!(
+        request(
+            app.clone(),
+            "GET",
+            &format!("/api/runs/{id}/view?before=unknown-message"),
+            None
+        )
+        .await
+        .0,
+        StatusCode::NOT_FOUND,
+    );
+
+    let event_index = completed.events.len() / 2;
+    let cursor = completed.events[event_index].sequence;
+    let (status, page) = request(
+        app.clone(),
+        "GET",
+        &format!("/api/runs/{id}/history/events?before={cursor}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(page["events"], json!(&completed.events[..event_index]));
+    assert_eq!(page["before"], Value::Null);
+
+    // The desktop opts into bounded SSE payloads. Older subscribers continue to
+    // receive the original RunDetail shape without the history metadata.
+    for recent_stream in [false, true] {
+        let suffix = if recent_stream { "?recent=true" } else { "" };
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/runs/{id}/events{suffix}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let mut stream = response.into_body().into_data_stream();
+        let bytes = tokio::time::timeout(Duration::from_secs(1), stream.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let text = String::from_utf8(bytes.to_vec()).unwrap();
+        assert!(text.contains("event: snapshot"));
+        let data = text
+            .lines()
+            .find_map(|line| line.strip_prefix("data: "))
+            .unwrap();
+        let streamed: Value = serde_json::from_str(data).unwrap();
+        assert_eq!(streamed["messages"], recent["messages"]);
+        assert_eq!(streamed["events"], recent["events"]);
+        assert_eq!(
+            streamed.as_object().unwrap().contains_key("history"),
+            recent_stream
+        );
+        if recent_stream {
+            assert_eq!(streamed["history"], recent["history"]);
+        }
+    }
+}
+
+#[tokio::test]
+async fn cancellation_preserves_partial_text_and_prevents_further_tools() {
     let directory = Directory::new();
     let state = AppState::open_with_delay(directory.0.clone(), None, Duration::from_millis(15))
         .await
@@ -198,7 +303,7 @@ async fn cancellation_discards_stream_and_prevents_further_tools() {
                 .unwrap()
                 .messages
                 .iter()
-                .any(|message| message.status == "streaming")
+                .any(|message| message.status == "streaming" && !message.text.is_empty())
             {
                 break;
             }
@@ -214,6 +319,12 @@ async fn cancellation_discards_stream_and_prevents_further_tools() {
             .messages
             .iter()
             .all(|message| message.status != "streaming")
+    );
+    assert!(
+        cancelled
+            .messages
+            .iter()
+            .any(|message| message.status == "interrupted" && !message.text.is_empty())
     );
     let count = cancelled.events.len();
     tokio::time::sleep(Duration::from_millis(60)).await;
@@ -630,7 +741,7 @@ async fn file_only_messages_use_filenames_for_titles_and_invalid_files_do_not_cr
         json!([{"name":"notes.md", "path":"bad\npath", "text":"x"}]),
         json!([{"name":"notes.md", "text":"binary\u{0000}value"}]),
         json!([{"name":"notes.md", "text":"x".repeat(256 * 1024 + 1)}]),
-        json!((0..9).map(|_| file.clone()).collect::<Vec<_>>()),
+        json!((0..65).map(|_| file.clone()).collect::<Vec<_>>()),
         json!(
             (0..3)
                 .map(|_| json!({"name":"notes.md", "text":"x".repeat(200 * 1024)}))
@@ -664,4 +775,389 @@ async fn file_only_messages_use_filenames_for_titles_and_invalid_files_do_not_cr
     assert_eq!(created["messages"][0]["files"][0]["name"], "notes.md");
     assert!(!created.to_string().contains("FILE_BODY_SENTINEL"));
     state.shutdown().await;
+}
+
+fn screenshot_file() -> Value {
+    json!({"name":"screenshot.png", "image":{"mime_type":"image/png", "data_base64":"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZcZkAAAAASUVORK5CYII="}})
+}
+
+#[tokio::test]
+async fn image_inputs_require_vision_and_validate_rasters_before_admission() {
+    let directory = Directory::new();
+    let state = state(&directory).await;
+    let app = api::app(state.clone());
+    let (status, error) = request(
+        app.clone(),
+        "POST",
+        "/api/runs",
+        Some(json!({"prompt":"", "model_id":"local-demo", "files":[screenshot_file()]})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(error.to_string().contains("图片输入"));
+    let mut combined = screenshot_file();
+    combined["text"] = json!("both representations are invalid");
+    let mut malformed = screenshot_file();
+    malformed["image"]["data_base64"] = json!("not an image");
+    let mut reference = screenshot_file();
+    reference["image"]["data_base64"] = json!(format!("sha256:{}", "a".repeat(64)));
+    for files in [
+        json!([combined]),
+        json!([malformed]),
+        json!([reference]),
+        json!(vec![screenshot_file(); 5]),
+    ] {
+        let (status, _) = request(
+            app.clone(),
+            "POST",
+            "/api/runs",
+            Some(json!({"prompt":"test", "model_id":"local-demo", "files":files})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+    // This valid raster is >4 MiB as JSON. It reaches image capability
+    // validation rather than the unrelated default route's 4 MiB body limit.
+    let original: agent_core::ModelImage =
+        serde_json::from_value(screenshot_file()["image"].clone()).unwrap();
+    let mut bytes = original.decoded_bytes().unwrap();
+    bytes.resize(4 * 1024 * 1024, 0);
+    let large = agent_core::ModelImage::from_bytes("image/png", &bytes).unwrap();
+    let (status, _) = request(app, "POST", "/api/runs", Some(json!({"prompt":"", "model_id":"local-demo", "files":[{"name":"large.png","image":large}]}))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(state.list().is_empty());
+    state.shutdown().await;
+}
+
+#[tokio::test]
+async fn screenshot_api_uses_vision_content_and_restores_snapshot_previews() {
+    use std::sync::{Arc, Mutex};
+    let directory = Directory::new();
+    let requests = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let captured = requests.clone();
+    let mock = Router::new().route("/v1/chat/completions", axum::routing::post(move |axum::Json(body): axum::Json<Value>| {
+        let captured = captured.clone();
+        async move {
+            captured.lock().unwrap().push(body);
+            axum::Json(json!({"id":"r1", "choices":[{"index":0,"message":{"role":"assistant","content":"I received the screenshot."},"finish_reason":"stop"}], "usage":{"prompt_tokens":150,"completion_tokens":10,"total_tokens":160}}))
+        }
+    }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base_url = format!("http://{}/v1", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        axum::serve(listener, mock).await.unwrap();
+    });
+    let initial = state(&directory).await;
+    let app = api::app(initial.clone());
+    let (status, model) = request(app.clone(), "POST", "/api/models", Some(json!({
+        "protocol":"chat_completions", "base_url":base_url,"api_key":"fixture-only", "model":"vision-fixture", "context_window":128000,"max_output_tokens":4096,"supports_images":true,"reasoning_mode":"off","reasoning_effort":"high"
+    }))).await;
+    assert_eq!(status, StatusCode::OK, "{model}");
+    assert_eq!(model["supports_images"], true);
+    let file = screenshot_file();
+    let (status, created) = request(
+        app,
+        "POST",
+        "/api/runs",
+        Some(json!({"prompt":"Read this", "model_id":model["id"], "files":[file]})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    let id = created["id"].as_str().unwrap().to_owned();
+    assert_eq!(created["messages"][0]["files"][0]["mime_type"], "image/png");
+    assert_eq!(created["messages"][0]["files"][0]["size"], 68);
+    assert!(!created.to_string().contains("data_base64"));
+    let completed = settled(&initial, &id).await;
+    assert_eq!(
+        completed.summary.status,
+        RunStatus::WaitingForInput,
+        "{:?}",
+        completed.error
+    );
+    {
+        let captured = requests.lock().unwrap();
+        let content = captured[0]["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["role"] == "user")
+            .unwrap()["content"]
+            .as_array()
+            .unwrap();
+        assert!(content.iter().any(|b| b["type"] == "image_url"));
+        assert!(
+            content
+                .iter()
+                .filter(|b| b["type"] == "text")
+                .all(|b| !b["text"].as_str().unwrap().contains("iVBOR"))
+        );
+    }
+    let (status, _) = request(
+        api::app(initial.clone()),
+        "POST",
+        &format!("/api/runs/{id}/input"),
+        Some(json!({"message":"Compare again", "files":[screenshot_file()]})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    settled(&initial, &id).await;
+    initial.shutdown().await;
+    let reopened = state(&directory).await;
+    let detail = reopened.get(&id).unwrap();
+    let users: Vec<_> = detail
+        .messages
+        .iter()
+        .filter(|m| m.role == "user")
+        .collect();
+    assert_eq!(users.len(), 2);
+    for message in users {
+        assert_eq!(message.files[0].mime_type.as_deref(), Some("image/png"));
+        assert_eq!(message.files[0].size, 68);
+        let (status, original) = request(
+            api::app(reopened.clone()),
+            "GET",
+            &format!("/api/runs/{id}/messages/{}/files/0", message.id),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(original, screenshot_file());
+    }
+    let stored = fs::read_dir(directory.0.join("events"))
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .find(|p| p.extension().is_some_and(|e| e == "jsonl"))
+        .unwrap();
+    assert!(!fs::read_to_string(stored).unwrap().contains("iVBOR"));
+    assert_eq!(
+        fs::read_dir(directory.0.join("events/images"))
+            .unwrap()
+            .count(),
+        1,
+        "identical pixels are stored only once"
+    );
+    reopened.shutdown().await;
+    server.abort();
+}
+
+#[tokio::test]
+async fn queued_input_is_editable_survives_stop_and_restart_and_steers_exactly_once() {
+    let directory = Directory::new();
+    let initial = AppState::open_with_delay(directory.0.clone(), None, Duration::from_millis(30))
+        .await
+        .unwrap();
+    let created = create(&initial, "queue fixture").await;
+    let id = created.summary.id;
+    let path = format!("/api/runs/{id}/pending-inputs");
+    let app = api::app(initial.clone());
+    let (status, queued) = request(app.clone(), "POST", &path, Some(json!({
+        "action":"enqueue", "content":"original queued", "files":[{"name":"evidence.txt","text":"QUEUED_ATTACHMENT_BODY"}]
+    }))).await;
+    assert_eq!(status, StatusCode::OK, "{queued}");
+    assert!(
+        !queued.to_string().contains("QUEUED_ATTACHMENT_BODY"),
+        "streaming snapshots contain only queued attachment metadata"
+    );
+    let message_id = queued["pending_inputs"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let (status, _) = request(
+        app.clone(),
+        "POST",
+        &path,
+        Some(json!({"action":"edit","id":message_id,"revision":0,"content":"corrected queued"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = request(
+        app.clone(),
+        "POST",
+        &path,
+        Some(json!({"action":"remove","id":message_id,"revision":0})),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "stale UI must not delete an edited message"
+    );
+    initial.cancel(&id).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(80)).await;
+    let stopped = initial.get(&id).unwrap();
+    assert_eq!(stopped.summary.status, RunStatus::Cancelled);
+    assert!(stopped.pending_inputs_paused);
+    assert_eq!(stopped.pending_inputs.len(), 1);
+    assert!(
+        !stopped
+            .messages
+            .iter()
+            .any(|message| message.text == "corrected queued")
+    );
+    initial.shutdown().await;
+    // Simulate a process exiting after claiming an input but before delivery.
+    let snapshot_path = directory.0.join("runs").join(format!("{id}.json"));
+    let mut snapshot: Value =
+        serde_json::from_slice(&std::fs::read(&snapshot_path).unwrap()).unwrap();
+    snapshot["pending_inputs_paused"] = json!(false);
+    snapshot["pending_inputs"][0]["steer"] = json!(true);
+    snapshot["pending_inputs"][0]["delivering"] = json!(true);
+    std::fs::write(&snapshot_path, serde_json::to_vec(&snapshot).unwrap()).unwrap();
+    let reopened = state(&directory).await;
+    assert!(reopened.get(&id).unwrap().pending_inputs_paused);
+    assert!(!reopened.get(&id).unwrap().pending_inputs[0].delivering);
+    assert!(!reopened.get(&id).unwrap().pending_inputs[0].steer);
+    assert_eq!(
+        reopened.get(&id).unwrap().pending_inputs[0].content,
+        "corrected queued"
+    );
+    let (status, detail) = request(
+        api::app(reopened.clone()),
+        "POST",
+        &path,
+        Some(json!({"action":"steer","id":message_id,"revision":1})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{detail}");
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let detail = reopened.get(&id).unwrap();
+            if detail.pending_inputs.is_empty() && detail.summary.status == RunStatus::Completed {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let detail = reopened.get(&id).unwrap();
+    let messages: Vec<_> = detail
+        .messages
+        .iter()
+        .filter(|message| message.text == "corrected queued")
+        .collect();
+    assert_eq!(messages.len(), 1);
+    let attachment = reopened
+        .message_file(&id, &messages[0].id, 0)
+        .await
+        .unwrap();
+    assert_eq!(attachment.text, "QUEUED_ATTACHMENT_BODY");
+    reopened.shutdown().await;
+    let restored = state(&directory).await;
+    assert!(restored.get(&id).unwrap().pending_inputs.is_empty());
+    assert_eq!(
+        restored
+            .get(&id)
+            .unwrap()
+            .messages
+            .iter()
+            .filter(|m| m.text == "corrected queued")
+            .count(),
+        1
+    );
+    restored.shutdown().await;
+}
+
+#[tokio::test]
+async fn drafts_require_explicit_steering_after_completion_resume_and_restart() {
+    let directory = Directory::new();
+    let initial = AppState::open_with_delay(directory.0.clone(), None, Duration::from_millis(5))
+        .await
+        .unwrap();
+    let id = create(&initial, "queue tail fixture").await.summary.id;
+    let path = format!("/api/runs/{id}/pending-inputs");
+    let app = api::app(initial.clone());
+    let (status, queued) = request(
+        app.clone(),
+        "POST",
+        &path,
+        Some(json!({"action":"enqueue","content":"remove me"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = request(
+        app.clone(),
+        "POST",
+        &path,
+        Some(json!({"action":"remove","id":queued["pending_inputs"][0]["id"],"revision":0})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let completed = settled(&initial, &id).await;
+    for content in ["untouched draft", "selected draft"] {
+        let (status, _) = request(
+            app.clone(),
+            "POST",
+            &path,
+            Some(json!({"action":"enqueue","content":content})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+    }
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let staged = initial.get(&id).unwrap();
+    assert_eq!(staged.events.len(), completed.events.len());
+    assert_eq!(staged.pending_inputs.len(), 2);
+    let selected_id = staged.pending_inputs[1].id.clone();
+    let (status, result) = request(
+        app,
+        "POST",
+        &format!("/api/runs/{id}/resume"),
+        Some(json!({"message":"continue the original task"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    let completed = settled(&initial, &id).await;
+    assert_eq!(
+        completed.pending_inputs.len(),
+        2,
+        "resume must not deliver drafts"
+    );
+    initial.shutdown().await;
+    let reopened = state(&directory).await;
+    let staged = reopened.get(&id).unwrap();
+    assert_eq!(staged.pending_inputs.len(), 2);
+    assert!(
+        staged
+            .pending_inputs
+            .iter()
+            .all(|input| !input.steer && !input.delivering)
+    );
+    assert!(staged.pending_inputs_paused);
+    let (status, result) = request(
+        api::app(reopened.clone()),
+        "POST",
+        &path,
+        Some(json!({"action":"steer","id":selected_id,"revision":0})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let detail = reopened.get(&id).unwrap();
+            if detail.pending_inputs.len() == 1 && detail.summary.status == RunStatus::Completed {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let detail = reopened.get(&id).unwrap();
+    assert_eq!(detail.pending_inputs[0].content, "untouched draft");
+    assert!(
+        !detail
+            .messages
+            .iter()
+            .any(|m| m.text == "remove me" || m.text == "untouched draft")
+    );
+    assert_eq!(
+        detail
+            .messages
+            .iter()
+            .filter(|m| m.text == "selected draft")
+            .count(),
+        1
+    );
+    reopened.shutdown().await;
 }

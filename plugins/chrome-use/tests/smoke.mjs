@@ -40,6 +40,9 @@ try {
   await agentPage.waitForLoadState('domcontentloaded');
   let snapshot = await call('chrome_snapshot');
   assert.match(snapshot.text, /Background test/);
+  const preview = await call('__openharness_preview', { frame: true });
+  assert.match(preview.jpeg, /^\/9j\//); assert.ok(preview.width <= 960);
+  assert.equal((await call('__openharness_preview', { frame: false })).jpeg, undefined);
   const input = snapshot.elements.find(element => element.role === 'input'); assert.ok(input);
   const fill = await call('chrome_action', { revision: snapshot.revision, action: 'fill', ref: input.ref, text: 'MAPLE-4827' });
   assert.equal(fill.dispatched, true); assert.equal(fill.error, undefined); snapshot = fill;
@@ -68,7 +71,7 @@ try {
   assert.equal(await worker.evaluate(async id => { try { await chrome.tabs.get(id); return true; } catch { return false; } }, opened.tab_id), false);
   assert.equal(await worker.evaluate(async id => (await chrome.tabs.get(id)).id, activeBefore), activeBefore);
   assert.equal((await worker.evaluate(async () => (await chrome.tabs.query({ active: true }))[0])).id, activeBefore);
-  console.log(JSON.stringify({ passed: true, checks: ['unshared tabs private', 'background creation', 'named task group', 'same task reuses group', 'separate tasks have separate groups', 'DOM snapshot', 'fill', 'click', 'result verification', 'background screenshot', 'active user tab unchanged', 'user input untouched', 'cross-tab rejection', 'group membership does not grant access', 'close only owned tab'], screenshot: imagePath }));
+  console.log(JSON.stringify({ passed: true, checks: ['unshared tabs private', 'background creation', 'named task group', 'same task reuses group', 'separate tasks have separate groups', 'DOM snapshot', 'fill', 'click', 'result verification', 'background screenshot', 'preview preserves action revision', 'preview does not activate tab', 'active user tab unchanged', 'user input untouched', 'cross-tab rejection', 'group membership does not grant access', 'close only owned tab'], screenshot: imagePath }));
 } finally {
   try { await context?.close(); }
   finally { if (server) await new Promise(resolve => server.close(resolve)); await rm(profile, { recursive: true, force: true }); }

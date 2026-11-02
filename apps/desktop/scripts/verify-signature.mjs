@@ -46,6 +46,18 @@ export function verifyMacSignature(context, run = spawnSync) {
       `Computer Use signature identity mismatch: expected dev.openharness.computeruse, received ${computerIdentifier ?? 'none'}`,
     )
   }
+  if (context.packager.platformSpecificBuildOptions?.sign === './scripts/sign-local-mac.mjs') {
+    const requirements = [appPath, computerApp].map((target) =>
+      codesign(['--display', '-r-'], target),
+    )
+    const certificates = requirements.map((text) =>
+      /certificate leaf = H"([a-f0-9]{40})"/i.exec(text)?.[1]?.toLowerCase(),
+    )
+    if (!certificates[0] || certificates[0] !== certificates[1])
+      throw new Error(
+        'Local desktop and Computer Use must share a stable certificate-backed signing identity',
+      )
+  }
 }
 
 export default function afterSign(context) {

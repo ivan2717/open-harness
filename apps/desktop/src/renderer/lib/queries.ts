@@ -8,6 +8,8 @@ export const configOptions = queryOptions({
   queryKey: ['config'],
   queryFn: () => window.harness.config(),
   staleTime: 60_000,
+  refetchInterval: (query) =>
+    query.state.data?.model_restore_status === 'loading' ? 1_000 : false,
 })
 
 export const runsOptions = queryOptions({

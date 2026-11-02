@@ -3,6 +3,24 @@ use crate::extensions::{ExtensionConfig, ExtensionSettings, RunExtensions, Skill
 use std::path::Path;
 
 impl AppState {
+    pub fn control_permissions(
+        &self,
+        run: Option<&str>,
+    ) -> Vec<crate::extensions::ControlPermission> {
+        self.inner.extensions.permissions(run)
+    }
+
+    pub fn revoke_target_permission(
+        &self,
+        run: Option<&str>,
+        permission: &crate::extensions::ControlPermission,
+    ) -> Result<Vec<crate::extensions::ControlPermission>, ServiceError> {
+        if let Some(id) = run {
+            self.get(id)?;
+        }
+        self.inner.extensions.revoke_permission(run, permission)?;
+        Ok(self.inner.extensions.permissions(run))
+    }
     pub async fn run_memory(&self, id: &str) -> Result<crate::memory::RunMemoryView, ServiceError> {
         self.get(id)?;
         let host = &self.inner.extensions;
@@ -106,6 +124,50 @@ impl AppState {
             .collect();
         children.sort();
         children
+    }
+    pub fn revoke_control_permission(
+        &self,
+        server: &str,
+    ) -> Result<ExtensionSettings, ServiceError> {
+        self.inner
+            .extensions
+            .revoke_control_permission(server)
+            .map_err(|error| ServiceError::BadRequest(error.to_string()))?;
+        Ok(self.extension_settings())
+    }
+    pub fn decide_extension(
+        &self,
+        id: &str,
+        approval: &str,
+        decision: crate::extensions::ApprovalDecision,
+    ) -> Result<RunExtensions, ServiceError> {
+        self.decide_extension_with_extent(
+            id,
+            approval,
+            decision,
+            crate::extensions::ApprovalExtent::Target,
+        )
+    }
+    pub fn decide_extension_with_extent(
+        &self,
+        id: &str,
+        approval: &str,
+        decision: crate::extensions::ApprovalDecision,
+        extent: crate::extensions::ApprovalExtent,
+    ) -> Result<RunExtensions, ServiceError> {
+        let state = self.run_extensions(id)?;
+        let pending = state
+            .approvals
+            .iter()
+            .find(|request| request.id == approval)
+            .ok_or_else(|| ServiceError::Conflict("审批已失效，请刷新会话".into()))?;
+        let owner = pending.source_run_id.as_deref().unwrap_or(id);
+        self.inner
+            .extensions
+            .approvals
+            .decide_permission_with_extent(owner, approval, decision, extent)
+            .map_err(|error| ServiceError::Conflict(error.to_string()))?;
+        self.run_extensions(id)
     }
     pub fn approve_extension(
         &self,

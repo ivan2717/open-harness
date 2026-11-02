@@ -122,7 +122,8 @@ export function BundledPluginSetup({
               在系统列表中选择 Open Harness Computer Use。它是独立的电脑控制组件，主程序仍叫 Open
               Harness。 旧 Open Harness
               条目的授权不会自动转移到新组件；首次使用需要单独开启两项权限。
-              授权后返回这里会自动重新检查。本地开发版本更新签名后，系统可能要求重新授权。
+              这里显示当前组件实际查询到的权限。若系统开关已开启但仍显示未生效，可能是旧授权与当前版本的签名不匹配；请移除旧条目，再按下面的路径添加当前组件。
+              授权后返回这里会自动重新检查。
             </p>
             <p>当前控制组件：</p>
             <code>{plugin.permissions?.helperPath}</code>
@@ -136,6 +137,6 @@ export function BundledPluginSetup({
 
 function permissionLabel(value: boolean | null | undefined): string {
   if (value === true) return '已授权'
-  if (value === false) return '未授权'
+  if (value === false) return '未生效'
   return '检查失败'
 }

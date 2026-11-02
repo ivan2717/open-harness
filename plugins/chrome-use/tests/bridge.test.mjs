@@ -276,3 +276,17 @@ test('closing the native host releases the endpoint for the next Chrome connecti
   t.after(async () => { nextBridge.close(); await nextHost.close(); });
   assert.equal((await nextBridge.request('chrome_status')).connected, true);
 });
+
+test('private preview uses authenticated host routing with strict arguments', async t => {
+  const { bridge, input, output, messages } = await fixture(t);
+  const decoder = new NativeDecoder(message => {
+    if (message.method === '__openharness_preview') input.write(nativeFrame({ id: message.id, result: { active: true, title: 'Chrome' } }));
+  });
+  output.on('data', data => decoder.push(data));
+  assert.deepEqual(await bridge.request('__openharness_preview', { frame: false }), { active: true, title: 'Chrome' });
+  assert.ok(messages.some(m => m.method === '__openharness_preview'));
+  await assert.rejects(bridge.request('__openharness_preview', { frame: true, tab_id: 1 }), /Invalid preview/);
+  const { validate, tools } = await import('../schema.mjs');
+  assert.ok(!tools.some(tool => tool.name === '__openharness_preview'));
+  assert.throws(() => validate('__openharness_preview', { frame: true }));
+});

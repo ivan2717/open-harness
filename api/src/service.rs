@@ -45,8 +45,20 @@ mod tests;
 #[path = "execution_lifecycle_tests.rs"]
 mod execution_lifecycle_tests;
 
+#[path = "pending_inputs.rs"]
+mod pending_inputs;
+
 #[path = "workspace_service.rs"]
 mod workspace;
+
+#[path = "permissions/mod.rs"]
+pub(crate) mod permissions;
+
+#[path = "attachments.rs"]
+pub(crate) mod attachments;
+
+#[path = "attachment_cleanup.rs"]
+mod attachment_cleanup;
 
 #[path = "message_files.rs"]
 mod message_files;
@@ -63,6 +75,10 @@ mod models;
 #[path = "run_model.rs"]
 mod run_model;
 
+#[path = "startup_recovery.rs"]
+mod startup_recovery;
+pub use startup_recovery::{RecoveryIssue, RecoveryStage};
+
 #[path = "collaboration/mod.rs"]
 pub(crate) mod collaboration;
 
@@ -71,12 +87,15 @@ pub struct AppState {
     inner: Arc<Service>,
 }
 struct Service {
+    permission_gate: std::sync::Mutex<()>,
+    permission_records: permissions::PermissionRecords,
     mailboxes: collaboration::Mailboxes,
     workspace_access: std::sync::Mutex<HashMap<String, agent_local::WorkspaceAccess>>,
     extensions: Arc<crate::extensions::ExtensionHost>,
     directory: PathBuf,
     token: Option<String>,
     runs: RwLock<HashMap<String, Arc<RunEntry>>>,
+    recovery_issues: RwLock<Vec<RecoveryIssue>>,
     delay: Duration,
     models: RwLock<HashMap<String, ConfiguredModel>>,
     model_gate: Mutex<()>,
@@ -107,71 +126,29 @@ impl AppState {
         let directory = fs::canonicalize(directory)?;
         let state = Self {
             inner: Arc::new(Service {
+                permission_gate: std::sync::Mutex::new(()),
+                permission_records: permissions::PermissionRecords::open(&directory)?,
                 mailboxes: collaboration::Mailboxes::open(directory.join("collaboration.json"))?,
                 workspace_access: std::sync::Mutex::new(HashMap::new()),
                 extensions: crate::extensions::ExtensionHost::open(&directory)?,
                 directory,
                 token: token.filter(|token| !token.is_empty()),
                 runs: RwLock::new(HashMap::new()),
+                recovery_issues: RwLock::new(Vec::new()),
                 delay,
                 models: RwLock::new(HashMap::new()),
                 model_gate: Mutex::new(()),
                 shutting_down: AtomicBool::new(false),
             }),
         };
-        for entry in fs::read_dir(state.inner.directory.join("runs"))? {
-            let path = entry?.path();
-            if path.extension().is_none_or(|extension| extension != "json") {
-                continue;
-            }
-            let mut detail: RunDetail =
-                serde_json::from_slice(&fs::read(&path)?).map_err(io::Error::other)?;
-            if !valid_id(&detail.summary.id) {
-                return Err(io::Error::other("invalid persisted run identifier"));
-            }
-            let store = JsonlEventStore::new(state.inner.directory.join("events"));
-            use agent_runtime::EventStore;
-            let Some(stored) = store
-                .load_for_runtime(&detail.summary.id)
-                .await
-                .map_err(io::Error::other)?
-            else {
-                continue;
-            };
-            let run = AgentRun::restore(stored.run_id, stored.agent_id, stored.events)
-                .map_err(io::Error::other)?;
-            detail.messages.clear();
-            detail.events.clear();
-            detail.error = None;
-            detail.summary.compacting = false;
-            for event in run.events() {
-                projection::apply(&mut detail, event);
-            }
-            if run.status() == CoreStatus::Running {
-                detail.summary.status = RunStatus::Interrupted;
-                detail.error = Some(
-                    "运行已中断，历史已保存。继续时会先核实未完成操作，不会自动重放命令。".into(),
-                );
-            }
-            detail.summary.revision = detail.summary.revision.saturating_add(1);
-            let entry = state.make_entry(detail, run.current_step())?;
-            state
-                .inner
-                .runs
-                .write()
-                .expect("runs lock poisoned")
-                .insert(run.id().into(), entry);
-        }
-        let restored: Vec<_> = state
-            .inner
-            .runs
-            .read()
-            .expect("runs lock poisoned")
-            .values()
-            .cloned()
-            .collect();
-        for entry in restored {
-            state.settle_child(&entry).await?;
+        state.recover_runs().await?;
+        // No uploads or UI drafts are active before the host is returned. A
+        // failed reachability inventory must never delete files or block launch.
+        if state.recovery_issues().is_empty()
+            && let Err(error) =
+                attachment_cleanup::collect(state.inner.directory.clone(), SystemTime::now()).await
+        {
+            tracing::warn!(%error, "skipped abandoned attachment cleanup");
         }
         Ok(state)
     }
@@ -179,7 +156,7 @@ impl AppState {
         self.inner.token.as_deref()
     }
     pub fn config(&self) -> AppConfig {
-        let mut models = vec![ModelInfo { id: MODEL_ID.into(), name: "Local demo · 离线演示".into(), description: "确定性本地脚本，使用真实运行循环、工具与压缩管理器。8K 演示窗口用于快速观察压缩；不会产生 API 费用。".into(), available: true, context_window: WINDOW_TOKENS, reasoning: None }];
+        let mut models = vec![ModelInfo { id: MODEL_ID.into(), name: "Local demo · 离线演示".into(), description: "确定性本地脚本，使用真实运行循环、工具与压缩管理器。8K 演示窗口用于快速观察压缩；不会产生 API 费用。".into(), available: true, context_window: WINDOW_TOKENS, supports_images: false, reasoning: None }];
         let mut configured: Vec<_> = self
             .inner
             .models
@@ -191,14 +168,20 @@ impl AppState {
         configured.sort_by(|a, b| a.id.cmp(&b.id));
         models.extend(configured);
         for entry in self.inner.runs.read().expect("runs lock poisoned").values() {
-            let detail = entry.snapshot.get();
-            if !models.iter().any(|m| m.id == detail.summary.model_id) {
+            let (model_id, context_window) = entry.snapshot.read(|detail| {
+                (
+                    detail.summary.model_id.clone(),
+                    detail.context.as_ref().map_or(0, |c| c.window_tokens),
+                )
+            });
+            if !models.iter().any(|m| m.id == model_id) {
                 models.push(ModelInfo {
-                    id: detail.summary.model_id.clone(),
-                    name: format!("未配置模型 · {}", detail.summary.model_id),
+                    id: model_id.clone(),
+                    name: format!("未配置模型 · {model_id}"),
                     description: "重新添加相同模型配置后可继续此会话。".into(),
                     available: false,
-                    context_window: detail.context.map_or(0, |c| c.window_tokens),
+                    supports_images: false,
+                    context_window,
                     reasoning: None,
                 });
             }
@@ -208,20 +191,45 @@ impl AppState {
             models,
             default_model: MODEL_ID.into(),
             storage_path: self.inner.directory.display().to_string(),
+            recovery_issues: self.recovery_issues(),
         }
     }
     pub async fn configure_model(&self, input: ConfigureModel) -> Result<ModelInfo, ServiceError> {
+        self.configure_model_for_edit(input, None).await
+    }
+    pub async fn configure_model_for_edit(
+        &self,
+        input: ConfigureModel,
+        edit_source_id: Option<&str>,
+    ) -> Result<ModelInfo, ServiceError> {
         let configured =
             model::configure(input).map_err(|error| ServiceError::BadRequest(error.to_string()))?;
         let _gate = self.inner.model_gate.lock().await;
         self.ensure_accepting_work()?;
+        if let Some(source) = edit_source_id {
+            let models = self.inner.models.read().expect("models lock poisoned");
+            if !valid_id(source) || !models.contains_key(source) {
+                return Err(ServiceError::NotFound);
+            }
+            if configured.info.id != source && models.contains_key(&configured.info.id) {
+                // IDs intentionally omit credentials and vision. Never rotate
+                // an unrelated profile's key while staging another edit.
+                return Err(ServiceError::Conflict(
+                    "此配置与另一个已保存模型重复，请选择现有模型或修改配置；原有密钥未更改".into(),
+                ));
+            }
+        }
         let entries: Vec<_> = self
             .inner
             .runs
             .read()
             .expect("runs lock poisoned")
             .values()
-            .filter(|entry| entry.snapshot.get().summary.model_id == configured.info.id)
+            .filter(|entry| {
+                let detail = entry.snapshot.get();
+                detail.summary.model_id == configured.info.id
+                    || edit_source_id.is_some_and(|id| models::references_model(&detail, id))
+            })
             .cloned()
             .collect();
         for entry in &entries {
@@ -241,7 +249,10 @@ impl AppState {
             }
         }
         let mut prepared = Vec::new();
-        for entry in entries {
+        for entry in entries
+            .into_iter()
+            .filter(|entry| entry.snapshot.get().summary.model_id == configured.info.id)
+        {
             entry
                 .runtime
                 .context_manager()
@@ -275,7 +286,7 @@ impl AppState {
             .read()
             .expect("runs lock poisoned")
             .values()
-            .map(|entry| entry.snapshot.get().summary)
+            .map(|entry| entry.snapshot.summary())
             .collect::<Vec<_>>();
         runs.sort_by(|left, right| {
             right
@@ -287,6 +298,32 @@ impl AppState {
     }
     pub fn get(&self, id: &str) -> Result<RunDetail, ServiceError> {
         Ok(self.entry(id)?.snapshot.get())
+    }
+    pub fn view(
+        &self,
+        id: &str,
+        before: Option<&str>,
+    ) -> Result<crate::run_view::RunView, ServiceError> {
+        self.entry(id)?
+            .snapshot
+            .read(|detail| crate::run_view::RunView::new(detail, before))
+            .ok_or(ServiceError::NotFound)
+    }
+    pub fn event_page(
+        &self,
+        id: &str,
+        before: u64,
+    ) -> Result<crate::run_view::EventPage, ServiceError> {
+        Ok(self
+            .entry(id)?
+            .snapshot
+            .read(|detail| crate::run_view::EventPage::new(detail, before)))
+    }
+    pub fn subscribe_revision(
+        &self,
+        id: &str,
+    ) -> Result<tokio::sync::watch::Receiver<u64>, ServiceError> {
+        Ok(self.entry(id)?.snapshot.subscribe_revision())
     }
     pub fn subscribe(
         &self,
@@ -317,6 +354,7 @@ impl AppState {
         configured: Option<&agent_providers::HttpModel>,
         restore_saved_reasoning: bool,
     ) -> io::Result<Arc<RunEntry>> {
+        self.inherit_root_permissions(&mut detail);
         let id = detail.summary.id.clone();
         let operations = self
             .inner
@@ -335,6 +373,7 @@ impl AppState {
             .as_ref()
             .map_or_else(|| id.clone(), |delegation| delegation.root_run_id.clone());
         let max_steps = detail.summary.execution_policy.max_steps;
+        let approval_mode = detail.summary.execution_policy.approval_mode;
         let model_history_through = detail.summary.model_history_through;
         let demo = detail.summary.model_id == MODEL_ID;
         if !demo && detail.summary.workspace_path.is_none() {
@@ -461,7 +500,8 @@ impl AppState {
                         project,
                         workspace.clone(),
                     )
-                    .with_authorization_scope(&authorization_scope),
+                    .with_authorization_scope(&authorization_scope)
+                    .with_approval_mode(approval_mode),
                     child,
                 )))
             },
@@ -478,7 +518,8 @@ impl AppState {
             EventStoreHistoryAccess::new().with_excluded_tools(["session_memory".to_owned()]),
             !demo,
         ))
-        .with_continue_after_response(!demo && !child);
+        .with_continue_after_response(!demo && !child)
+        .with_user_inputs(Arc::new(snapshot.clone()));
         Ok(Arc::new(RunEntry {
             background: AtomicBool::new(false),
             runtime: Arc::new(runtime),
@@ -489,19 +530,54 @@ impl AppState {
             operations,
         }))
     }
+
+    fn inherit_root_permissions(&self, detail: &mut RunDetail) {
+        let Some(delegation) = &detail.summary.delegation else {
+            return;
+        };
+        let root = self
+            .entry(&delegation.root_run_id)
+            .ok()
+            .map(|entry| entry.snapshot.get().summary)
+            .filter(|summary| summary.delegation.is_none());
+        // An orphan's history remains readable, but it cannot recover a saved
+        // FullAccess policy without its authoritative root conversation.
+        detail.summary.execution_policy.approval_mode = root
+            .as_ref()
+            .map_or(agent_local::ApprovalMode::Ask, |summary| {
+                summary.execution_policy.approval_mode
+            });
+        detail.summary.permission_mode =
+            if delegation.write_paths.as_ref().is_some_and(Vec::is_empty) {
+                agent_local::PermissionMode::ReadOnly
+            } else {
+                root.map_or(agent_local::PermissionMode::ReadOnly, |summary| {
+                    summary.permission_mode
+                })
+            };
+    }
     pub async fn create(&self, input: CreateRunInput) -> Result<RunDetail, ServiceError> {
         let _gate = self.inner.model_gate.lock().await;
         self.ensure_accepting_work()?;
         collaboration::validate_policy(&input.execution_policy)?;
         self.validate_run_model(&input.model_id, input.reasoning_effort.as_deref())?;
         crate::input::validate(&input.prompt, &input.files)?;
+        self.validate_stored_attachments(&input.files).await?;
         let workspace_path = self.validate_workspace_input(&input)?;
         if let Some(path) = &workspace_path {
             self.ensure_workspace_idle(path, None)?;
         }
         let id = new_run_id();
         let now = time::now();
+        let permission_mode =
+            if input.execution_policy.approval_mode == agent_local::ApprovalMode::FullAccess {
+                agent_local::PermissionMode::WorkspaceWrite
+            } else {
+                input.permission_mode
+            };
         let detail = RunDetail {
+            pending_inputs: Vec::new(),
+            pending_inputs_paused: false,
             summary: RunSummary {
                 reasoning_settings_version: 1,
                 reasoning_effort: input.reasoning_effort,
@@ -517,7 +593,7 @@ impl AppState {
                 model_id: input.model_id,
                 workspace_path,
                 execution_directory: None,
-                permission_mode: input.permission_mode,
+                permission_mode,
                 created_at: now.clone(),
                 updated_at: now,
             },
@@ -527,6 +603,10 @@ impl AppState {
             error: None,
         };
         let entry = self.make_entry(detail, 0)?;
+        crate::input::validate_images(
+            &input.files,
+            entry.runtime.model().capabilities().supports_images,
+        )?;
         Self::require_workspace_available(&entry)?;
         let run = entry
             .runtime
@@ -544,8 +624,13 @@ impl AppState {
         Ok(snapshot)
     }
     pub async fn cancel(&self, id: &str) -> Result<RunDetail, ServiceError> {
-        self.get(id)?;
-        self.inner.extensions.revoke_run(id);
+        self.entry(id)?.snapshot.update(|detail| {
+            detail.pending_inputs_paused = true;
+            for input in &mut detail.pending_inputs {
+                input.steer = false;
+            }
+        })?;
+        self.inner.extensions.interrupt_run(id);
         let _gate = self.inner.model_gate.lock().await;
         // Stop the coordinator first so no new delegation can be admitted.
         let detail = self.cancel_member(id, true).await?;
@@ -582,9 +667,14 @@ impl AppState {
     ) -> Result<RunDetail, ServiceError> {
         self.reject_direct_child_input(id)?;
         crate::input::validate(&message, &files)?;
+        self.validate_stored_attachments(&files).await?;
         let _gate = self.inner.model_gate.lock().await;
         self.ensure_accepting_work()?;
         let entry = self.entry(id)?;
+        crate::input::validate_images(
+            &files,
+            entry.runtime.model().capabilities().supports_images,
+        )?;
         if !entry.runtime.model().available() {
             return Err(ServiceError::BadRequest(
                 "请重新配置此会话原来的模型".into(),
@@ -855,7 +945,13 @@ async fn execute_and_settle<E: std::fmt::Display>(
 ) {
     use futures_util::FutureExt;
     let _activity = BackgroundExecution { state, entry };
-    let execution_error = match std::panic::AssertUnwindSafe(execution).catch_unwind().await {
+    let execution = std::panic::AssertUnwindSafe(execution).catch_unwind();
+    tokio::pin!(execution);
+    let result = tokio::select! {
+        result = &mut execution => result,
+        _ = state.review_pending_loop(id) => execution.await,
+    };
+    let execution_error = match result {
         Ok(Ok(_)) => None,
         Ok(Err(error)) => Some(error.to_string()),
         Err(_) => Some("执行过程中发生内部异常".into()),
@@ -866,6 +962,15 @@ async fn execute_and_settle<E: std::fmt::Display>(
                 if let Err(error) = entry.snapshot.event(event) {
                     tracing::error!(%error, run_id = id, "could not publish final execution history");
                 }
+            }
+            if execution_error.is_some() && !entry.snapshot.get().pending_inputs.is_empty() {
+                let _ = entry.snapshot.update(|detail| {
+                    detail.pending_inputs_paused = true;
+                    for input in &mut detail.pending_inputs {
+                        input.delivering = false;
+                        input.steer = false;
+                    }
+                });
             }
             execution_error
         }

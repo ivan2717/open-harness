@@ -1,8 +1,10 @@
 import { BrowserError, BrowserSession } from "./browser.mjs";
 import { tools } from "./schema.mjs";
+import { pathToFileURL } from "node:url";
 
 const session = new BrowserSession({
   headless: process.argv.includes("--headless") ? true : undefined,
+  requireHostPermission: process.argv.includes("--host-permissions"),
 });
 const versions = new Set([
   "2025-11-25",
@@ -16,6 +18,8 @@ let initialized = false;
 let shuttingDown = false;
 const pending = new Set();
 const cancelled = new Set();
+const preview = process.env.OPENHARNESS_PREVIEW_ENDPOINT && process.env.OPENHARNESS_PREVIEW_RUNTIME
+  ? new (await import(pathToFileURL(process.env.OPENHARNESS_PREVIEW_RUNTIME).href)).BrowserPreview(process.env.OPENHARNESS_PREVIEW_ENDPOINT, frame => session.preview(frame)) : undefined;
 
 function send(value) {
   if (!shuttingDown) process.stdout.write(`${JSON.stringify(value)}\n`);
@@ -24,6 +28,7 @@ function send(value) {
 async function shutdown() {
   if (shuttingDown) return;
   shuttingDown = true;
+  preview?.stop();
   // The host bounds shutdown and escalates if necessary. Exiting here on a
   // shorter timer can orphan Chromium while Playwright is still closing it.
   try {
@@ -51,6 +56,7 @@ async function handle(request) {
   if (method === "notifications/cancelled") {
     if (pending.has(params.requestId)) {
       cancelled.add(params.requestId);
+      preview?.clear();
       await session.close();
     }
     return;
@@ -74,7 +80,7 @@ async function handle(request) {
           ? params.protocolVersion
           : "2025-11-25",
         capabilities: { tools: { listChanged: false } },
-        serverInfo: { name: "openharness-browser", version: "0.1.0" },
+        serverInfo: { name: "openharness-browser", version: "0.2.0" },
       };
     } else if (!initialized) {
       send({
@@ -87,7 +93,12 @@ async function handle(request) {
     else if (method === "tools/list") result = { tools };
     else if (method === "tools/call") {
       try {
-        result = await session.call(params.name, params.arguments ?? {});
+        const { _host_permission: authorization, ...arguments_ } = params.arguments ?? {};
+        result = await session.call(params.name, arguments_, authorization);
+        if (!cancelled.has(id) && !shuttingDown && !params.name?.startsWith('__')) {
+          if (params.name === 'browser_close') preview?.clear();
+          else preview?.refresh();
+        }
       } catch (error) {
         result = {
           isError: true,

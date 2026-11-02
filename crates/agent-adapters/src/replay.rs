@@ -37,7 +37,9 @@ pub fn validate_replay_state(
                 name: name.clone(),
                 arguments: arguments.clone(),
             }),
-            ContentBlock::ToolResult { .. } => return Err(ProviderStateError::InvalidPayload),
+            ContentBlock::ToolResult { .. } | ContentBlock::Image { .. } => {
+                return Err(ProviderStateError::InvalidPayload);
+            }
         }
     }
     captured.validate_legacy(&text, &calls)?;
@@ -59,7 +61,9 @@ pub fn validate_replay_state(
         ContentBlock::Text { text } => ComparableBlock::Text(text.clone()),
         ContentBlock::Reasoning { text } => ComparableBlock::Reasoning(text.clone()),
         ContentBlock::ToolCall { .. } => ComparableBlock::Call,
-        ContentBlock::ToolResult { .. } => unreachable!("tool results rejected above"),
+        ContentBlock::ToolResult { .. } | ContentBlock::Image { .. } => {
+            unreachable!("tool results rejected above")
+        }
     }));
     if wire != portable {
         return Err(ProviderStateError::ContentMismatch);

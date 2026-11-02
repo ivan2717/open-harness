@@ -253,7 +253,10 @@ impl AgentRun {
             .rev()
             .take_while(|entry| {
                 entry.step == self.current_step
-                    && !matches!(entry.event, RunEvent::RunResumed { .. })
+                    && !matches!(
+                        entry.event,
+                        RunEvent::RunResumed { .. } | RunEvent::UserInputReceived { .. }
+                    )
             })
             .collect();
         let mut calls = Vec::new();
@@ -375,16 +378,37 @@ impl AgentRun {
     }
 
     fn validate_event(&self, event: &RunEvent) -> Result<(RunStatus, StepPhase), AgentRunError> {
+        if let RunEvent::UserInputReceived { id, .. } = event
+            && (id.is_empty() || self.events.iter().any(|entry| {
+                matches!(
+                    &entry.event, RunEvent::UserInputReceived { id: previous, .. } if previous == id
+                )
+            }))
+        {
+            return Err(AgentRunError::InvalidResume);
+        }
         if let RunEvent::RunResumed {
             content,
             files,
             interrupted_calls,
+        }
+        | RunEvent::UserInputReceived {
+            content,
+            files,
+            interrupted_calls,
+            ..
         } = event
         {
             if (content.trim().is_empty() && files.is_empty())
                 || *interrupted_calls != self.interrupted_tool_calls()
             {
                 return Err(AgentRunError::InvalidResume);
+            }
+            return Ok((RunStatus::Running, StepPhase::Ready));
+        }
+        if let RunEvent::ModelResponseInterrupted { .. } = event {
+            if !self.is_running() || self.phase != StepPhase::AwaitingModelResponse {
+                return Err(self.invalid_phase(event.name()));
             }
             return Ok((RunStatus::Running, StepPhase::Ready));
         }
@@ -444,10 +468,18 @@ impl AgentRun {
             {
                 StepPhase::Ready
             }
-            RunEvent::ModelResponseReceived { .. }
+            RunEvent::ModelResponseReceived { response, .. }
                 if self.phase == StepPhase::AwaitingModelResponse =>
             {
-                StepPhase::ModelResponded
+                // A length-limited response is durably settled but never
+                // authorizes tool execution. It can start a recovery step.
+                if response.as_ref().is_some_and(|response| {
+                    response.finish_reason == crate::model_protocol::ModelFinishReason::Length
+                }) {
+                    StepPhase::Ready
+                } else {
+                    StepPhase::ModelResponded
+                }
             }
             RunEvent::ToolCallRequested { call_id, .. }
                 if matches!(
@@ -620,6 +652,9 @@ impl AgentRun {
             }
             RunEvent::RunResumed {
                 interrupted_calls, ..
+            }
+            | RunEvent::UserInputReceived {
+                interrupted_calls, ..
             } => {
                 self.pending_tool_calls.clear();
                 for call in interrupted_calls {
@@ -648,21 +683,10 @@ impl RunEventEnvelope {
     /// Stable integrity representation independent of whether image bytes are
     /// resident in memory. Text-only event serialization remains unchanged.
     pub fn with_image_references(&self) -> Result<Self, crate::ImageError> {
-        let event = match &self.event {
-            RunEvent::ToolCallSucceeded {
-                call_id,
-                output,
-                images,
-            } => RunEvent::ToolCallSucceeded {
-                call_id: call_id.clone(),
-                output: output.clone(),
-                images: images
-                    .iter()
-                    .map(crate::ModelImage::as_reference)
-                    .collect::<Result<_, _>>()?,
-            },
-            other => other.clone(),
-        };
+        let mut event = self.event.clone();
+        for image in event.images_mut() {
+            *image = image.as_reference()?;
+        }
         Ok(Self {
             sequence: self.sequence,
             step: self.step,
@@ -752,6 +776,18 @@ pub enum RunEvent {
         files: Vec<TextFileReference>,
         interrupted_calls: Vec<InterruptedToolCall>,
     },
+    /// Public text only: never authorizes tool calls or replays opaque reasoning.
+    ModelResponseInterrupted {
+        content: String,
+    },
+    /// User input delivered at an execution boundary, with unresolved work settled.
+    UserInputReceived {
+        id: String,
+        content: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        files: Vec<TextFileReference>,
+        interrupted_calls: Vec<InterruptedToolCall>,
+    },
     RunCompleted {
         answer: String,
     },
@@ -776,6 +812,57 @@ pub enum RunEvent {
 }
 
 impl RunEvent {
+    pub fn files(&self) -> &[crate::FileReference] {
+        match self {
+            Self::RunStarted { files, .. }
+            | Self::InputReceived { files, .. }
+            | Self::UserInputReceived { files, .. }
+            | Self::RunResumed { files, .. } => files,
+            _ => &[],
+        }
+    }
+
+    pub fn images(&self) -> Vec<&crate::ModelImage> {
+        match self {
+            Self::ToolCallSucceeded { images, .. } => images.iter().collect(),
+            _ => self
+                .files()
+                .iter()
+                .filter_map(|file| file.image.as_ref())
+                .collect(),
+        }
+    }
+
+    pub fn images_mut(&mut self) -> Vec<&mut crate::ModelImage> {
+        match self {
+            Self::ToolCallSucceeded { images, .. } => images.iter_mut().collect(),
+            Self::RunStarted { files, .. }
+            | Self::InputReceived { files, .. }
+            | Self::UserInputReceived { files, .. }
+            | Self::RunResumed { files, .. } => files
+                .iter_mut()
+                .filter_map(|file| file.image.as_mut())
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    pub fn user_message(&self, supports_images: bool) -> Option<crate::ModelMessage> {
+        match self {
+            Self::RunStarted { instruction, files } => Some(crate::user_input_message(
+                instruction,
+                files,
+                supports_images,
+            )),
+            Self::InputReceived { content, files }
+            | Self::UserInputReceived { content, files, .. }
+            | Self::RunResumed { content, files, .. } => {
+                Some(crate::user_input_message(content, files, supports_images))
+            }
+            _ => None,
+        }
+    }
+
     /// The same model-visible representation is used for normal replay,
     /// protected inputs, and native-compaction context.
     pub fn user_input(&self) -> Option<String> {
@@ -783,7 +870,9 @@ impl RunEvent {
             Self::RunStarted { instruction, files } => {
                 Some(crate::format_user_input(instruction, files))
             }
-            Self::InputReceived { content, files } | Self::RunResumed { content, files, .. } => {
+            Self::InputReceived { content, files }
+            | Self::UserInputReceived { content, files, .. }
+            | Self::RunResumed { content, files, .. } => {
                 Some(crate::format_user_input(content, files))
             }
             _ => None,
@@ -793,6 +882,17 @@ impl RunEvent {
     /// Display/history projection. Canonical storage retains the opaque state.
     pub fn without_provider_state(&self) -> Self {
         let mut event = self.clone();
+        if let Self::RunStarted { files, .. }
+        | Self::InputReceived { files, .. }
+        | Self::UserInputReceived { files, .. }
+        | Self::RunResumed { files, .. } = &mut event
+        {
+            for file in files {
+                if file.image.take().is_some() {
+                    file.text = "[Image attachment omitted from text history; retrieve the original attachment to inspect it.]".into();
+                }
+            }
+        }
         // Historical text projections must not serialize image bytes into a
         // summary, search response or another model's text input.
         if let Self::ToolCallSucceeded { images, output, .. } = &mut event
@@ -802,6 +902,7 @@ impl RunEvent {
             images.clear();
         }
         if let Self::ModelResponseReceived {
+            content,
             response,
             provider_state,
             provider_continuation,
@@ -809,6 +910,11 @@ impl RunEvent {
             ..
         } = &mut event
         {
+            if response.as_ref().is_some_and(|response| {
+                response.finish_reason == crate::model_protocol::ModelFinishReason::Length
+            }) {
+                content.insert_str(0, "[Incomplete assistant output: generation reached its output limit. None of this response's tool calls executed.]\n");
+            }
             // Summary/history projections use the visible text and separate
             // execution events. Including canonical blocks here would duplicate
             // the answer/calls and expose reasoning to a second model.
@@ -837,6 +943,8 @@ impl RunEvent {
             Self::AgentMessageReceived { .. } => "AgentMessageReceived",
             Self::RunFailed { .. } => "RunFailed",
             Self::RunCancelled => "RunCancelled",
+            Self::UserInputReceived { .. } => "UserInputReceived",
+            Self::ModelResponseInterrupted { .. } => "ModelResponseInterrupted",
         }
     }
 
@@ -848,6 +956,8 @@ impl RunEvent {
             | Self::RunPaused { .. }
             | Self::AgentMessageReceived { .. }
             | Self::RunFailed { .. }
+            | Self::UserInputReceived { .. }
+            | Self::ModelResponseInterrupted { .. }
             | Self::RunCancelled => false,
 
             Self::ModelResponseReceived { .. }

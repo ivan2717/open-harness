@@ -50,7 +50,9 @@ export class AppTransport extends EventEmitter {
     });
     await chmod(socketPath, 0o600);
     if (this.closed) return this.cleanup();
-    this.launcher = launch('/usr/bin/open', ['-g', '-j', '-n', '-W', appPath, '--args', '--socket-dir', directory], { stdio: 'ignore' });
+    // Launch without activation, but do not mark the app hidden (-j): AppKit
+    // would also hide the nonactivating preview when it is later presented.
+    this.launcher = launch('/usr/bin/open', ['-g', '-n', '-W', appPath, '--args', '--socket-dir', directory], { stdio: 'ignore' });
     this.launcher.once('error', error => this.fail(`Computer Use app could not start: ${error.message}`));
     this.launcher.once('exit', (code, signal) => {
       if (!this.closed) this.fail(`Computer Use app exited (${signal ?? code ?? 'unknown'}).`);

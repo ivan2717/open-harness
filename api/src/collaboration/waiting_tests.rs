@@ -24,6 +24,8 @@ impl Fixture {
     fn member(&self, id: &str, parent: Option<(&str, &str)>, status: RunStatus) -> Arc<RunEntry> {
         let now = time::now();
         let detail = RunDetail {
+            pending_inputs: Vec::new(),
+            pending_inputs_paused: false,
             summary: RunSummary {
                 reasoning_settings_version: 1,
                 reasoning_effort: None,

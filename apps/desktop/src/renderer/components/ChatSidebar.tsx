@@ -52,7 +52,8 @@ export function ChatSidebar({ visible, pathname }: { visible: boolean; pathname:
         useUiStore.getState().project !== context.project
       )
         return
-      setProject({ path, permission: 'read_only' })
+      setProject({ path, permission: 'workspace_write' })
+      useUiStore.getState().resetFullAccessDraft()
       setSearch('')
       await navigate({ to: '/' })
       requestAnimationFrame(() =>
@@ -69,7 +70,10 @@ export function ChatSidebar({ visible, pathname }: { visible: boolean; pathname:
         aria-disabled={selecting.isPending || undefined}
         onClick={(event) => {
           if (selecting.isPending) event.preventDefault()
-          else setProject(null)
+          else {
+            setProject(null)
+            useUiStore.getState().resetFullAccessDraft()
+          }
         }}
       >
         <Plus size={16} />

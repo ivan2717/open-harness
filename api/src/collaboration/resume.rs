@@ -88,6 +88,8 @@ impl AppState {
             || detail.summary.reasoning_settings_version != settings_version;
         let binding_changed = model_changed
             || detail.summary.permission_mode != permission
+            || detail.summary.execution_policy.approval_mode
+                != parent_detail.summary.execution_policy.approval_mode
             || delegation.write_paths != next_paths;
         // Prepare the replacement without publishing a new permission or model
         // binding. A failed reservation, restore or durable resume keeps the old
@@ -97,6 +99,8 @@ impl AppState {
         next_detail.summary.reasoning_effort = selection.reasoning_effort;
         next_detail.summary.reasoning_settings_version = settings_version;
         next_detail.summary.permission_mode = permission;
+        next_detail.summary.execution_policy.approval_mode =
+            parent_detail.summary.execution_policy.approval_mode;
         next_detail.summary.delegation.as_mut().unwrap().write_paths = next_paths.clone();
         let previous_entry = entry.clone();
         if (next_detail.summary.model_id == MODEL_ID) != (detail.summary.model_id == MODEL_ID) {
@@ -207,6 +211,8 @@ impl AppState {
                     current.summary.model_history_through =
                         next_detail.summary.model_history_through;
                     current.summary.permission_mode = permission;
+                    current.summary.execution_policy.approval_mode =
+                        next_detail.summary.execution_policy.approval_mode;
                     current.summary.delegation.as_mut().unwrap().write_paths = next_paths;
                     if let Some(policy) = policy {
                         let context = current.context.get_or_insert_with(initial_context);

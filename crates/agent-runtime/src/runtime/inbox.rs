@@ -27,7 +27,11 @@ where
             let result = control
                 .until_cancelled(|| async {
                     if wait {
-                        self.tools.wait_for_messages().await
+                        tokio::select! {
+                            biased;
+                            _ = self.wait_for_steering() => Ok(Vec::new()),
+                            messages = self.tools.wait_for_messages() => messages,
+                        }
                     } else {
                         self.tools.pending_messages().await
                     }
@@ -42,7 +46,7 @@ where
                 Err(error) => return self.coordination_failed(run, error.to_string()).await,
             };
             if messages.is_empty() {
-                return Ok(false);
+                return self.receive_user_inputs(run).await;
             }
             if wait
                 && messages

@@ -28,9 +28,12 @@ For local development only:
    no store listing or silent installation.
 3. Open **Open Harness Chrome** from Chrome's toolbar. Connect, then explicitly
    enable agent-created background tabs or share the current HTTP(S) tab.
-4. Enable the Chrome plugin in Open Harness. A conversation's approved open
-   creates a background tab; an existing shared tab requires exact tab and origin
-   approval. All later operations verify that scope.
+4. Enable the Chrome plugin in Open Harness. Choose **Allow** to use Chrome for
+   this conversation and its collaborative tasks on the displayed website, or
+   **Always allow** to save that website permission for future conversations.
+   Entire Chrome capability access is a separate explicit scope choice.
+   **Cancel** leaves the request unapproved. The extension still verifies the exact selected tab and
+   document before every operation; existing user tabs must be explicitly shared.
 
 On macOS or Windows an approved `chrome_open` starts Chrome in the background
 if the extension is not connected, then waits for startup. Windows discovers
@@ -157,16 +160,30 @@ popups do not automatically gain ownership or permissions.
 
 ### Page access
 
+- Open Harness owns application-side permission independently of the extension's
+  tab ownership and selected document. By default Allow covers an exact HTTP(S)
+  origin for a conversation and its collaborative tasks, including new task tabs
+  at that origin. Always allow persists the same origin and is bound to the plugin
+  content and server configuration. Entire Chrome capability access requires an
+  explicit scope choice. Saved permissions can be revoked in settings; neither
+  website nor whole-capability permission shares an existing private user tab.
 - Existing tabs remain private unless shared from the extension's own popup.
   Websites and content scripts cannot call popup grants or native host methods.
-- Agent-created tabs belong to one MCP session. Shared tabs can have only one
-  controller. Tab IDs are checked again on each call. Grant and snapshot state
-  is intentionally not restored after disconnect or browser restart.
+- Agent-created tabs belong to their task family, with one MCP session recorded
+  as creator. A tab can have only one controller at a time; another collaborative
+  task may select it after release but cannot close a teammate's tab. Tab IDs
+  are checked again on each call. Ownership, sharing and snapshot state are
+  intentionally not restored after disconnect or browser restart, even when
+  Open Harness has a saved website or whole-capability permission.
 - The origin is rechecked before and after observations and before actions. A
-  redirect outside the authorized origin stops reading. Agent-owned tabs expose
-  only the new origin for a fresh approval and `chrome_select_tab`; existing
-  user tabs also need that new origin shared through the popup. Redirects do not
-  silently expand access.
+  redirect outside the selected origin stops reading and invalidates stale
+  observations. Agent-owned tabs expose only the new origin with
+  `selection_required`; use `chrome_select_tab` for that existing tab to obtain
+  a fresh snapshot. The host reuses an existing permission for that origin or
+  asks for the newly reached website; it never treats tab ownership as website
+  consent. Existing user tabs
+  still need the new origin shared through the popup. Do not open duplicate tabs
+  or repeat an action to recover from navigation.
 - Page operations are fixed functions in an isolated execution world. Model
   input is serialized as data; arbitrary JavaScript, selectors and CDP commands
   are not exposed. Ref revisions are consumed on actions, mutation/navigation
@@ -199,3 +216,15 @@ Official API references:
 - https://developer.chrome.com/docs/extensions/reference/api/debugger
 - https://developer.chrome.com/docs/extensions/reference/api/tabs
 - https://developer.chrome.com/docs/extensions/reference/api/tabGroups
+
+### In-app browser preview
+
+The desktop passes a host-owned `OPENHARNESS_PREVIEW_RUNTIME` module and an
+authenticated `OPENHARNESS_PREVIEW_ENDPOINT`. After a successful open/select/read,
+the plugin displays the currently selected, authorized tab in the app's draggable
+preview. Private `__openharness_preview` messages capture a bounded viewport via
+CDP without activating a tab, reading other tabs, or changing model snapshot
+revisions. They are not MCP tools or model messages. Capture pauses when the view
+is collapsed or the app is hidden; metadata checks detect released/closed tabs.
+Frames remain in memory. The browser extension must be reloaded after an unpacked
+upgrade to version 0.3.0. This path is shared by macOS and Windows/Edge.

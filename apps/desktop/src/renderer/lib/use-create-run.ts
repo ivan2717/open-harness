@@ -3,6 +3,7 @@ import { useIsMutating, useMutation, useQueryClient } from '@tanstack/react-quer
 import { useNavigate } from '@tanstack/react-router'
 import type { CreateRunInput } from '../../shared/contracts'
 import { storeSnapshot } from './queries'
+import { useUiStore } from '../state/ui-store'
 
 const createRunMutationKey = ['create-run'] as const
 
@@ -20,7 +21,9 @@ export function useCreateRun() {
   const mutation = useMutation({
     mutationKey: createRunMutationKey,
     mutationFn: (input: CreateRunInput) => window.harness.createRun(input),
-    onSuccess: (run) => {
+    onSuccess: (run, input) => {
+      if (input.execution_policy?.approval_mode === 'full_access')
+        useUiStore.getState().resetFullAccessDraft()
       storeSnapshot(client, run)
       if (mounted.current) void navigate({ to: '/runs/$runId', params: { runId: run.id } })
     },

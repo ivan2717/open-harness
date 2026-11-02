@@ -18,17 +18,37 @@ use axum::{
     routing::{delete, get, patch, post},
 };
 use std::{convert::Infallible, time::Duration};
+mod attachments;
+mod documents;
 mod health_router;
+mod permissions;
 mod plugins;
 
 pub(crate) fn router(state: AppState) -> Router {
     Router::new()
         .merge(health_router::health_router())
+        .merge(permissions::router())
+        .route(
+            "/documents/extract",
+            post(documents::extract).layer(DefaultBodyLimit::max(
+                agent_local::documents::MAX_DOCUMENT_BYTES,
+            )),
+        )
+        .route(
+            "/attachments",
+            post(attachments::upload).layer(DefaultBodyLimit::max(
+                crate::service::attachments::MAX_ATTACHMENT_BYTES,
+            )),
+        )
         .route("/config", get(config))
         .route("/models", post(configure_model))
         .route("/models/{id}/replace", post(replace_model))
         .route("/extensions", get(extension_settings).post(save_extensions))
         .route("/extensions/skills", get(skill_catalog))
+        .route(
+            "/extensions/control-permissions/{id}",
+            delete(revoke_control_permission),
+        )
         .route("/extensions/mcp/{id}/test", post(test_mcp))
         .route("/plugins/install", post(plugins::install))
         .route("/plugins/{id}/enabled", post(plugins::enable))
@@ -41,8 +61,15 @@ pub(crate) fn router(state: AppState) -> Router {
             "/runs/{id}/extensions/approvals/{approval}",
             post(approve_extension),
         )
-        .route("/runs", get(list).post(create))
+        .route(
+            "/runs",
+            get(list)
+                .post(create)
+                .layer(DefaultBodyLimit::max(32 * 1024 * 1024)),
+        )
         .route("/runs/{id}", get(detail))
+        .route("/runs/{id}/view", get(view))
+        .route("/runs/{id}/history/events", get(event_page))
         .route("/runs/{id}/model", patch(update_run_model))
         .route(
             "/runs/{id}/messages/{message_id}/images/{index}",
@@ -52,9 +79,23 @@ pub(crate) fn router(state: AppState) -> Router {
             "/runs/{id}/messages/{message_id}/files/{index}",
             get(message_file),
         )
+        .route(
+            "/runs/{id}/messages/{message_id}/files/{index}/content",
+            get(attachments::download),
+        )
+        .route(
+            "/runs/{id}/pending-inputs",
+            post(pending_input).layer(DefaultBodyLimit::max(32 * 1024 * 1024)),
+        )
         .route("/runs/{id}/cancel", post(cancel))
-        .route("/runs/{id}/input", post(input))
-        .route("/runs/{id}/resume", post(resume))
+        .route(
+            "/runs/{id}/input",
+            post(input).layer(DefaultBodyLimit::max(32 * 1024 * 1024)),
+        )
+        .route(
+            "/runs/{id}/resume",
+            post(resume).layer(DefaultBodyLimit::max(32 * 1024 * 1024)),
+        )
         .route("/runs/{id}/workspace", get(workspace))
         .route(
             "/runs/{id}/workspace/commands/{command}/stop",
@@ -163,16 +204,35 @@ async fn approve_extension(
     Path((id, approval)): Path<(String, String)>,
     Json(input): Json<ExtensionApprovalInput>,
 ) -> Result<Json<crate::extensions::RunExtensions>, ServiceError> {
-    state
-        .approve_extension_scoped(&id, &approval, input.allow, input.session)
-        .map(Json)
+    match input {
+        ExtensionApprovalInput::Decision { decision, extent } => {
+            state.decide_extension_with_extent(&id, &approval, decision, extent)
+        }
+        ExtensionApprovalInput::Legacy { allow, session } => {
+            state.approve_extension_scoped(&id, &approval, allow, session)
+        }
+    }
+    .map(Json)
 }
 #[derive(serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ExtensionApprovalInput {
-    allow: bool,
-    #[serde(default)]
-    session: bool,
+#[serde(untagged, deny_unknown_fields)]
+enum ExtensionApprovalInput {
+    Decision {
+        decision: crate::extensions::ApprovalDecision,
+        #[serde(default)]
+        extent: crate::extensions::ApprovalExtent,
+    },
+    Legacy {
+        allow: bool,
+        #[serde(default)]
+        session: bool,
+    },
+}
+async fn revoke_control_permission(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<crate::extensions::ExtensionSettings>, ServiceError> {
+    state.revoke_control_permission(&id).map(Json)
 }
 async fn revoke_control(
     State(state): State<AppState>,
@@ -182,9 +242,21 @@ async fn revoke_control(
 }
 async fn configure_model(
     State(state): State<AppState>,
-    Json(input): Json<ConfigureModel>,
+    Json(input): Json<ConfigureModelRequest>,
 ) -> Result<Json<ModelInfo>, ServiceError> {
-    state.configure_model(input).await.map(Json)
+    state
+        .configure_model_for_edit(input.configuration, input.edit_source_id.as_deref())
+        .await
+        .map(Json)
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ConfigureModelRequest {
+    #[serde(default)]
+    edit_source_id: Option<String>,
+    #[serde(flatten)]
+    configuration: ConfigureModel,
 }
 async fn replace_model(
     State(state): State<AppState>,
@@ -192,7 +264,11 @@ async fn replace_model(
     Json(input): Json<ReplaceModelInput>,
 ) -> Result<Json<ModelInfo>, ServiceError> {
     state
-        .replace_model(&id, &input.replacement_model_id)
+        .replace_model_configuration(
+            &id,
+            &input.replacement_model_id,
+            input.allow_configuration_change,
+        )
         .await
         .map(Json)
 }
@@ -223,6 +299,30 @@ async fn detail(
     Path(id): Path<String>,
 ) -> Result<Json<RunDetail>, ServiceError> {
     state.get(&id).map(Json)
+}
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ViewQuery {
+    before: Option<String>,
+}
+async fn view(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(query): Query<ViewQuery>,
+) -> Result<Json<crate::run_view::RunView>, ServiceError> {
+    state.view(&id, query.before.as_deref()).map(Json)
+}
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EventPageQuery {
+    before: u64,
+}
+async fn event_page(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(query): Query<EventPageQuery>,
+) -> Result<Json<crate::run_view::EventPage>, ServiceError> {
+    state.event_page(&id, query.before).map(Json)
 }
 async fn message_file(
     State(state): State<AppState>,
@@ -277,7 +377,7 @@ async fn approve(
     Json(input): Json<ApprovalInput>,
 ) -> Result<Json<agent_local::WorkspaceReview>, ServiceError> {
     state
-        .approve_command(&id, &approval, input.allow, input.scope)
+        .decide_command(&id, &approval, input.allow, input.scope)
         .await
         .map(Json)
 }
@@ -303,24 +403,47 @@ async fn revert(
 async fn events(
     State(state): State<AppState>,
     Path(id): Path<String>,
+    Query(query): Query<EventStreamQuery>,
 ) -> Result<impl IntoResponse, ServiceError> {
-    let receiver = state.subscribe(&id)?;
-    let stream =
-        futures_util::stream::unfold((receiver, true), |(mut receiver, first)| async move {
+    let receiver = state.subscribe_revision(&id)?;
+    let stream = futures_util::stream::unfold(
+        (receiver, true, state, id),
+        move |(mut receiver, first, state, id)| async move {
             if !first && receiver.changed().await.is_err() {
                 return None;
             }
-            let detail = receiver.borrow_and_update().clone();
+            receiver.borrow_and_update();
+            let detail = if query.recent {
+                serde_json::to_value(state.view(&id, None).ok()?).ok()?
+            } else {
+                serde_json::to_value(state.get(&id).ok()?).ok()?
+            };
             let event = Event::default()
                 .event("snapshot")
-                .id(detail.summary.revision.to_string())
+                .id(detail["revision"].to_string())
                 .json_data(detail)
                 .expect("serializable snapshot");
-            Some((Ok::<_, Infallible>(event), (receiver, false)))
-        });
+            Some((Ok::<_, Infallible>(event), (receiver, false, state, id)))
+        },
+    );
     Ok(Sse::new(stream).keep_alive(
         KeepAlive::new()
             .interval(Duration::from_secs(15))
             .text("keep-alive"),
     ))
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EventStreamQuery {
+    #[serde(default)]
+    recent: bool,
+}
+
+async fn pending_input(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(input): Json<crate::contracts::PendingInputAction>,
+) -> Result<Json<RunDetail>, ServiceError> {
+    state.update_pending_input(&id, input).await.map(Json)
 }

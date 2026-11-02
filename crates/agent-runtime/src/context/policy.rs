@@ -9,6 +9,7 @@ use std::{error::Error, fmt};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ContextPolicy {
     model_budget: ModelContextBudget,
+    use_provider_output_limit: bool,
     compaction_threshold: usize,
     compaction_target: usize,
     recent_tail_tokens: usize,
@@ -57,7 +58,11 @@ impl ContextPolicy {
     }
 
     pub fn output_token_limit(self) -> Option<usize> {
-        self.model_budget.output_token_limit()
+        if self.use_provider_output_limit {
+            None
+        } else {
+            self.model_budget.output_token_limit()
+        }
     }
 
     pub fn compaction_threshold(self) -> usize {
@@ -166,7 +171,8 @@ impl ContextPolicyBuilder {
         self
     }
 
-    /// Reserves output capacity and caps generation at this amount. A known
+    /// Reserves output capacity. Unless the adapter delegates normal output
+    /// limits to the provider, also caps generation at this amount. A known
     /// model's smaller output maximum further reduces this value at resolution.
     pub fn output_token_reserve(mut self, tokens: usize) -> Self {
         self.overrides.output_token_reserve = Some(tokens);
@@ -337,6 +343,7 @@ fn resolve_policy(
     }
     Ok(ContextPolicy {
         model_budget,
+        use_provider_output_limit: metadata.is_some_and(|model| model.use_provider_output_limit),
         compaction_threshold,
         compaction_target,
         recent_tail_tokens,

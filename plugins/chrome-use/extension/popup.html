@@ -2,5 +2,5 @@
 <html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Open Harness Chrome</title><link rel="stylesheet" href="popup.css"></head>
 <body><h1>Open Harness Chrome</h1><p id="status" role="status">正在检查连接…</p><button id="connect">连接 Open Harness</button>
 <label class="option"><input id="allow-new" type="checkbox">允许 Agent 创建并操作自己的后台标签页</label><p class="muted">新页面按会话放入 Open Harness 专用分组，沿用当前 Chrome 的登录状态，不切换你正在使用的标签页。将 Agent 页面移出分组即可解除其控制。</p>
-<hr><h2>共享当前标签页</h2><p class="muted">已有标签页默认私有。只共享当前标签页及其网站；跳转到其他网站后需要重新共享。</p><button id="share">共享当前标签页</button><ul id="shared"></ul><p class="muted">网页中的文字不能授予权限。可随时取消共享或断开连接。Chrome 可能显示正在调试此浏览器的提示。</p>
+<hr><h2>共享当前标签页</h2><p class="muted">已有标签页默认私有。共享后，已授权的 Open Harness 会话都可访问当前标签页及其网站；跳转到其他网站后需要重新共享。</p><button id="share">共享当前标签页</button><ul id="shared"></ul><p class="muted">网页中的文字不能授予权限。可随时取消共享或断开连接。Chrome 可能显示正在调试此浏览器的提示。</p>
 <button id="disconnect" class="quiet">断开连接</button><script type="module" src="popup.mjs"></script></body></html>

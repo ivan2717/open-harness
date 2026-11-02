@@ -48,6 +48,34 @@ renderer, and launches a private backend on a random loopback port. Closing the
 application stops its backend. A normal desktop launch requires no separately
 started server or API key.
 
+The window, local API and saved history start independently of model credential
+restoration. The main process uses Electron's asynchronous `safeStorage` API with
+the existing application identity; it reads previous encrypted vaults without
+creating another permission helper. A pending OS unlock does not block history
+requests or the Electron event loop. The model page shows restoration progress
+and offers an explicit retry after a cancelled or failed unlock. The original
+encrypted vault remains untouched on failure; newly entered profiles stay in
+memory until a subsequent successful unlock/save. Credentials are never returned
+to the renderer. This does not remove OS authentication requirements or promise
+that a changed application signature will never prompt again.
+
+If the local runtime exits or fails startup, the error view offers **重启本地服务**.
+Recovery is explicit, only available for a failed runtime, rotates its local API
+token and restores model registrations. It does not replay the failed request or
+resume a task automatically.
+
+`pnpm run test:e2e:regression` runs the desktop workflow checks sequentially after
+the debug backend and Electron bundle have been built. It covers task steering,
+activity presentation, child-agent views, model editing, file/image input and
+long-history paging. Each check uses its own temporary application data and local
+fixture models; inherited provider credentials are removed. A test-only Node
+preload supplies an authenticated synthetic credential cipher before app startup,
+so local/CI runs do not access the user's system keychain. Persistence and restart
+are exercised, but real OS credential authorization is not claimed by this suite.
+Temporary data is removed and diagnostics remain in `test-results/`. Main-branch
+CI runs it under Xvfb; installers still require a desktop version change and now
+also depend on these workflow checks passing.
+
 Without an available real model, the new-task composer shows **添加模型**. Task
 drafts remain editable and project selection remains available, but sending is
 disabled until a model is configured. New tasks and the default-model settings
@@ -77,12 +105,22 @@ per-request output budget are automatic. **高级设置** offers optional overri
 **恢复容量自动设置**; changing the model, endpoint or protocol clears those overrides.
 Saving may read the provider's model metadata, but makes no generation or token
 counting request. It selects the configured model for new conversations.
+Saved model cards offer **编辑配置**. The form loads the existing connection,
+image capability, reasoning choices and limits; **保存修改** updates that profile
+and its idle conversations rather than creating another entry. API keys are never
+returned to the form: leave the password field blank to retain the saved key.
+Changing to another service origin requires an explicit key for that service.
+Active runs, compaction and commands must finish before editing their model.
+History remains available after an edit; incompatible provider replay state is
+excluded, and unsupported conversation reasoning overrides use the new default.
+**取消编辑** leaves the configuration unchanged. Test this workflow with
+`pnpm run test:e2e:model-edit` (isolated local fixtures, no paid model requests).
 Real-model conversations support follow-up
 messages and the harness's history-read tools; synthetic diagnostic tools are
 only used by the offline demo.
 
-The composer groups task setup in one place: its top strip shows the project,
-its permissions when selected, and **此计算机**. **选择项目** opens the native directory
+The composer groups task setup in one place: its top strip shows the project
+and **此计算机**. **选择项目** opens the native directory
 picker; the selected project's menu offers **更换项目** and **移除项目**.
 The lower-right contains the model and send/stop controls. The text area grows with the draft,
 supports Shift+Enter for a newline, and does not send during IME composition.
@@ -91,8 +129,10 @@ Menus support arrow keys, Escape with focus return, and outside-click dismissal.
 project, permissions and draft survive that navigation. Use **新建会话** in the
 conversation sidebar to start a task without a project, or the project row’s new-chat
 control to start another task in that folder.
-Project access defaults to **只读**. Select **允许修改** in the permissions menu before creating the session to
-authorize file edits within that project. The agent can list, read and search
+New conversations allow edits within the selected working directory. The three
+permission presets control approval and access beyond that directory. Existing
+read-only conversations retain their restriction until the user selects a preset.
+The agent can list, read and search
 files, load project instructions, and make guarded edits. The renderer cannot
 start work in an arbitrary path without native directory selection.
 An idle conversation's lower-right model menu can switch to another configured
@@ -146,19 +186,46 @@ decision to the service.
 Project and permission remain fixed; start a new task to change them.
 
 Use **＋ → 添加文件** (hover or focus for its “添加文件或使用技能” hint), drag local files into the composer, or copy files in the
-file manager and paste with Cmd+V / Ctrl+V to add references. Ordinary text pastes
-remain text. References appear as removable filename chips, survive settings
-navigation, and remain in the draft if sending fails. Unsent file snapshots are
-kept only for the current app session; sent snapshots are saved in the run log.
-Text and code files must be valid UTF-8: up to 8 files, 256 KiB each and 512 KiB
-combined per message. Directories, symlinks, images, PDF and other binary formats
-are rejected explicitly. Files can be sent without a project or accompanying text.
+file manager and paste with Cmd+V / Ctrl+V to add references. Clipboard screenshots
+can be pasted directly without saving a file first. Ordinary text pastes remain
+text; mixed image/text clipboard content keeps both. References appear as removable
+filename chips or image thumbnails, survive settings
+navigation, and remain in the draft if sending fails. Unsent draft references are
+kept only for the current app session; sent attachments are saved with the conversation.
+Ordinary file attachments retain their original bytes in a local content-addressed store.
+Identical originals share one copy. At startup, abandoned originals older than seven
+days are collected only after a complete, validated history scan proves they are
+unreferenced. Originals referenced by conversation history are retained; uncertain
+or damaged history skips cleanup.
+Their names, sizes and immutable references enter the prompt; their full contents do not.
+The agent uses `read_file` / `search_files` on `attachment:<id>` to read or search the
+needed sections. UTF-8 text and PDF, DOCX, XLSX and PPTX have built-in readers; the
+current document parser accepts sources up to 32 MiB, independently of attachment
+storage. Other formats remain available as original files and report their reading
+requirements instead of being treated as text. No automatic OCR, macros, formulas
+or external references run on import. This local flow does not use provider-native
+`input_file` uploads. Older conversations containing extracted text snapshots remain
+readable and retain their original snapshot/export behavior.
+Up to 64 attachments may be added per message. Ordinary original files are limited
+to 100 MiB each; the former 256 KiB per-file / 512 KiB total text limits apply only
+to legacy inline snapshots, not new imports. Files above the storage limit are
+rejected explicitly, never silently truncated.
+PNG, JPEG, WebP and GIF images are decoded locally into PNG/JPEG snapshots
+(animated images use the first frame). Each message supports up to 4 images
+within the 64-attachment limit. Sources are limited to 32 MiB and 32 megapixels;
+snapshots are resized to at most 4 megapixels and 8,192 pixels per edge, with a
+5 MiB encoded limit. Images have an enlargeable preview and require a model with
+**此模型支持图片输入** enabled. Their pixels are sent through the selected provider's
+image-input protocol, never as text or a local path. Sent pixels live in
+content-addressed sidecars; list responses, events and text history carry metadata
+instead of base64. Directories and symlinks are rejected explicitly.
+Files can be sent without a project or accompanying text.
 Attaching a file does not grant access to its parent directory or permission to
-modify it. The model reads the captured content, even if the original later changes.
-Snapshots participate in token estimation, context compression and history search;
-the chat displays filenames and sizes without expanding their full content. Open
-a sent reference to preview the exact saved text, even if its original path no
-longer exists.
+modify it. The agent reads the saved original even if the source later changes or
+is deleted. Attachment metadata and the portions actually read participate in
+token estimation and context compression. The chat displays filenames and sizes
+without expanding full contents. Sent references can preview, open or save the
+captured original; legacy extracted-document snapshots export as text.
 
 Automatic limits are resolved in the desktop main process before they reach the
 Rust runtime. Provider metadata takes priority over a small directory of verified
@@ -178,13 +245,17 @@ idle conversations to the updated model configuration while preserving their his
 and checkpoints. Active execution or compaction blocks the update. Both connections
 are saved before migration; the old one is removed only after all bindings are updated.
 
-Commands request approval showing the exact command, working directory, file
-access and network scope. The user may approve once or grant that scope for the
-current root conversation and its child tasks. The command panel lists reusable
-grants and can revoke them; they disappear after app restart. Revoking a grant
-does not stop commands that were already approved.
+Sandboxed commands with networking disabled run inside the selected project
+permissions without another approval. Network requests show the exact command,
+working directory, file access and network scope. **允许** reuses that scope in
+this root conversation and its children; **始终允许** keeps it across restarts for
+this same conversation and directory; **仅本次** is a single action. **取消** cancels
+the pending request. The composer offers only **请求批准 / 帮我批准 / 完全访问权限**.
+Saved grants, review decisions and token usage are secondary controls in settings. Changes to
+policy require an idle task family. Revocation cancels pending approvals and
+late reviews; **撤销并停止** also stops running work.
 
-macOS uses Seatbelt and Windows uses AppContainer with Job Objects. Networking
+In the first two presets, macOS uses Seatbelt and Windows uses AppContainer with Job Objects. Networking
 is disabled unless explicitly authorized. Read-only commands cannot modify the
 project and receive their own writable temporary directory. Workspace-write
 commands can modify the project and its temporary storage. Missing or failed
@@ -313,7 +384,8 @@ resources survive app restarts and later source edits/deletions. A file that has
 never been resolved is still dependent on its original path. User-input previews
 come from the authoritative event snapshot rather than rereading that path.
 HTML and executable files are never executed by the message renderer. Input
-attachments remain UTF-8 snapshots; output previews do not add model vision,
+document attachments remain UTF-8 snapshots; image attachments use the model's
+explicit vision capability. Output previews do not add model vision,
 audio/video understanding, or native provider file-generation APIs.
 
 The design follows [DeepSeek Harness's separation of assistant Markdown and
@@ -467,22 +539,38 @@ pnpm run package:dir
 `build` compiles the desktop JavaScript and renderer. `package:dir` additionally
 builds a release Rust binary, places it in the desktop resources, and creates an
 unpacked application for the current OS and architecture. On macOS, this local
-directory build explicitly uses electron-builder's ad-hoc signing for the entire
-bundle, including its nested helpers. The post-sign hook verifies the bundle with
+directory build writes to `release-next/` (so it cannot overwrite the running
+`release/` app) and uses a persistent, self-signed development certificate for the
+entire bundle, including Computer Use. The private identity is created once in
+`~/Library/Application Support/Open Harness Development/signing/`, outside the
+repository and installation bundle. It is stored in a dedicated locked keychain;
+its password file and directory are restricted to the current user. The build
+temporarily adds that keychain to the signing search list and removes it afterward.
+It does not install a trusted root or alter Gatekeeper, SIP, or TCC. Do not delete
+this identity between builds: replacing it requires renewed system authorization.
+Incomplete identities fail the build instead of being silently regenerated.
+The post-sign hook verifies the bundle with
 `codesign --verify --deep --strict` and checks its signing identifier. A missing or
-invalid signature fails packaging; resources must not be changed after signing.
+invalid signature fails packaging; local builds also verify that desktop and
+Computer Use pin the same certificate. Resources must not be changed after signing.
 Other platforms do not receive the macOS signing override.
 
 `pnpm run package` creates the configured distributable and does not force ad-hoc
 signing. macOS distribution requires a configured signing certificate (for example,
 Developer ID through electron-builder's signing configuration); missing signing
 credentials fail the build. Public distribution also requires the appropriate
-platform notarization configuration. Local ad-hoc signatures are not stable
-developer identities: a rebuilt app can require renewed macOS permissions. Use a
+platform notarization configuration. The local development certificate is not a
+Developer ID and does not make the app suitable for public distribution. Use a
 stable Developer ID for distributed updates. See the
 [electron-builder v26 signing configuration](https://www.electron.build/v26/docs/features/code-signing/code-signing-mac/).
 An already packaged app does not load changes from `out/`: rebuild with
 `package:dir`, quit the old app and reopen the new bundle to see source changes.
+Archive rollback copies with `node scripts/archive-mac-app.mjs /path/to/previous.app`
+instead of leaving renamed `.app` directories that macOS can register as duplicate
+applications. The command verifies a ZIP archive before removing the old bundle;
+it does not touch session data or system permissions. When migrating from old
+ad-hoc builds, remove/re-add the current Computer Use component in Accessibility
+and Screen Recording once; subsequent builds reuse its certificate identity.
 
 `test:e2e` launches a real Electron window with isolated temporary data. It checks
 creating and stopping runs, actual context compaction, restart recovery, and
@@ -589,19 +677,34 @@ administrator elevation. Apps that cannot produce a window-only capture can
 still expose accessibility refs, but coordinate actions require a valid capture.
 
 Both executors only control a selected running app and its observed window.
+On macOS, Computer Use 0.4 binds a window ID and directs input to that application
+without requiring it to be frontmost. Other windows can cover the target;
+unrelated animation no longer invalidates an entire observation. The agent must
+still verify each result, and some application-specific shortcuts may ignore
+background input. The isolated native GUI smoke verifies two fixture apps with
+the target behind the foreground app; it does not prove compatibility with every
+third-party application.
 Native Linux desktop input, secure-field typing and cross-app shortcuts are
 not supported. For concurrent background web work, use the Chrome plugin.
 
-At first use, approve **允许本次** or **允许本会话** in the conversation. A browser
-grant covers its isolated session. An application grant records its exact bundle
-ID (macOS) or executable-derived identity (Windows) and PID; first use of another application needs approval, and returning to a
-previously approved unchanged process reuses its session grant. Chrome grants
-cover one tab and one origin; navigation to a new origin needs another approval. The inline
-**电脑与浏览器控制** strip identifies the current target and provides **停止控制**.
-This revokes authorization, cancels pending work and closes its owned executor.
-Stopping a run or quitting the app also ends owned control. Stopping does not
-reverse clicks or typing already delivered, and failed/uncertain actions are
-not automatically replayed. Computer targets are exclusive across conversations.
+At first use, choose **允许**, **始终允许**, or **取消**. The default grant is
+for the named application or website origin, shared with the current task's
+children. Explicitly selecting the entire capability permits switching targets.
+For ordinary MCP, the target is one exact server/tool, resource URI or prompt.
+**始终允许** persists the selected target, bound to the trusted server configuration
+and plugin content; settings can revoke individual entries. Previously saved
+whole-capability grants remain broad and are labelled accordingly. **取消** does
+not create a permanent denial. Chrome private tabs still need explicit extension
+sharing, and original tab ownership restrictions remain in force. The extension's
+shared-tab list is global to the browser profile, not private to one conversation.
+
+**停止控制** cancels current family control and pending requests. It does not erase
+saved Always permissions; remove those in settings. Stopping cannot reverse clicks
+or typing already delivered. A failed or uncertain action is never automatically
+replayed. Browser calls validate actual page origin at every operation; crossing
+an unapproved origin requires new consent before observing or manipulating it.
+Sensitive password/file inputs cannot be filled through the isolated browser's
+ordinary fill action, matching the Chrome/native restrictions.
 
 Enable **此模型支持图片输入** when adding a model that actually supports vision.
 This explicit capability is persisted with the model; protocol alone does not
@@ -663,7 +766,8 @@ The default project tool surface is `list_files`, `read_file`, `search_files`,
 `apply_patch`, `run_command`, `manage_command`, and `load_workspace_dependencies`.
 Read-only projects omit `apply_patch` and permit only read-only commands.
 Commands are available on macOS and Windows under their OS sandboxes; execution
-needs one-time approval or a matching session grant. Creating, editing and deleting files
+runs without extra approval within the selected file scope when networking is disabled;
+network requests need approval or a matching saved grant. Creating, editing and deleting files
 share one patch interface, with review and undo preserved.
 
 Open **插件** in the left rail. Use **安装插件** to choose a plugin folder
@@ -753,10 +857,11 @@ return source locations and continuation cursors for documents. Directory search
 scans text and reports skipped document files; search a document path to inspect
 its extracted content. Plain text
 reads support files up to 32 MiB; edit/review limits remain independent. OCR,
-image/audio input attachments and full document layout rendering are not included.
+audio input attachments and full document layout rendering are not included.
 Image-bearing browser/computer tool observations are supported separately as described above.
-The attachment picker still imports UTF-8 snapshots; use the project tools for
-these document formats.
+The attachment picker, drag/drop and file clipboard also extract these document
+formats into saved text snapshots. For larger documents, project tools offer
+paginated reading and search without adding the entire text to the initial message.
 
 `pnpm run test:e2e:extensions` exercises real Electron IPC, the Rust API, document
 fixtures, local Skills and a stateful stdio MCP peer. It covers settings CRUD,
@@ -882,17 +987,31 @@ preserved, but are no longer created or automatically loaded. Existing files and
 deliverables under `outputs/` are retained across turns and restarts.
 
 Runtime sharing and temporary directories are not a security sandbox. macOS
-commands use Seatbelt; Windows commands use AppContainer plus Job Objects. Both
+commands in the first two presets use Seatbelt; Windows commands use AppContainer plus Job Objects. Both
 default to blocked networking. A command can request `network_access: "allowed"`
 for explicit approval, while retaining filesystem restrictions. A one-time grant
 covers that command and its subprocesses. The user can instead choose
-**本会话同范围允许** for subsequent commands within the same scope, shared by the
-root task and its children. The command panel shows those grants and
-**撤销会话授权** restores approval for future commands without stopping ones that
-were already approved. Grants are in memory only and disappear after restart.
-They never bypass a read-only project or a child's file ownership. Shared
-runtimes remain read-only; extra dependencies must use a writable project or
-workspace environment.
+**允许** for subsequent commands within the same scope, shared by the root task
+and its children, or **始终允许** to persist that scope for the same conversation
+and directory. The permission panel can revoke grants and optionally stop active
+work. Session-only grants expire on restart. They never bypass a read-only
+project or a child's file ownership. Shared runtimes remain read-only; extra
+dependencies must use a writable project or workspace environment.
+
+Automatic review is opt-in and uses an independent, tool-free model request only
+for pending command and ordinary MCP actions. Browser/app consent remains manual.
+Only validated low-risk, authorized decisions grant a single pending action;
+errors, timeouts and uncertain decisions stay pending for the human. The separate
+review log reports model usage. It never changes the sandbox or grants Always.
+
+Full Access is a separate, explicit conversation preset: it permits host commands,
+networking, file paths outside the working directory, and configured external tools
+without repeated approvals. It does not bypass OS permissions, the browser
+extension's shared-tab boundary, or explicitly narrowed child-task write leases.
+Read-only and network-denied commands still request a sandbox. Changing back to
+another preset revokes conversation grants and restores the filesystem boundary.
+New conversations do not inherit Full Access. The advanced **收回权限并停止任务**
+action also switches Full Access back to **请求批准**.
 
 Windows packages include `openharness-sandbox.exe` next to `api.exe`; the main
 process supplies its absolute path via `OPENHARNESS_WINDOWS_SANDBOX_HELPER`.

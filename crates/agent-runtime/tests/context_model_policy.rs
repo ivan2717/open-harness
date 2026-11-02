@@ -169,6 +169,31 @@ fn output_cap_and_reservations_apply_without_double_counting_headroom() {
 }
 
 #[test]
+fn provider_default_generation_keeps_context_reservations_and_survives_model_switches() {
+    let mut metadata = model(1_000_000);
+    metadata.max_output_tokens = Some(128_000);
+    metadata.use_provider_output_limit = true;
+    let policy = ContextPolicy::builder()
+        .output_token_reserve(128_000)
+        .build_for_model(&metadata)
+        .unwrap();
+    assert_eq!(policy.output_token_limit(), None);
+    assert_eq!(policy.model_budget().output_token_reserve(), 128_000);
+    assert_eq!(policy.input_token_limit(), 869_952);
+    assert_eq!(policy.compaction_threshold(), 869_952);
+
+    // The resolved flag must not become an override when choosing another model.
+    metadata.use_provider_output_limit = false;
+    assert_eq!(
+        policy
+            .resolve(Some(&metadata))
+            .unwrap()
+            .output_token_limit(),
+        Some(128_000)
+    );
+}
+
+#[test]
 fn unknown_models_use_a_million_token_fallback_and_retain_input_only_compatibility() {
     let fallback = ContextPolicy::default().resolve(None).unwrap();
     assert_eq!(fallback.model_budget().context_window(), 1_000_000);

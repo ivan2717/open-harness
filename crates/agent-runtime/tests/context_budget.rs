@@ -182,6 +182,29 @@ async fn summary_model_resolves_its_own_metadata_and_caps_explicit_overrides() {
 }
 
 #[tokio::test]
+async fn provider_default_main_output_does_not_remove_summary_caps() {
+    let mut model = RecordingModel::new(ContextSummary {
+        objective: "Keep an explicit summary budget".into(),
+        ..ContextSummary::default()
+    });
+    let mut metadata = ModelContextMetadata::new("test", "automatic", 1_000_000).unwrap();
+    metadata.max_output_tokens = Some(128_000);
+    metadata.use_provider_output_limit = true;
+    model.metadata = Some(metadata);
+    let compactor = ModelContextCompactor::new(model)
+        .with_budget(ModelContextBudget::new(1_000_000, 2_000, 2_048).unwrap());
+    let run = AgentRun::new("automatic-summary", "agent", "Summarize");
+    compactor
+        .compact(None, run.events().to_vec())
+        .await
+        .unwrap();
+    assert_eq!(
+        compactor.model().requests.lock().unwrap()[0].max_output_tokens,
+        Some(2_000)
+    );
+}
+
+#[tokio::test]
 async fn invalid_summary_model_metadata_fails_before_a_model_call() {
     let mut model = RecordingModel::new(ContextSummary::default());
     let mut metadata = ModelContextMetadata::new("test", "summary", 32_000).unwrap();

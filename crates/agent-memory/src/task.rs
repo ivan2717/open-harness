@@ -142,11 +142,17 @@ fn sources<'a>(
                 source.user_instruction = Some(instruction);
             }
             event @ (RunEvent::InputReceived { content, .. }
+            | RunEvent::UserInputReceived { content, .. }
             | RunEvent::RunResumed { content, .. }) => {
                 source.text = event.user_input().unwrap();
                 source.user_instruction = Some(content);
             }
             RunEvent::ModelResponseReceived { content, .. } => source.text = content.clone(),
+            RunEvent::ModelResponseInterrupted { content } => {
+                source.text = format!(
+                    "Incomplete assistant output (interrupted, not a verified result): {content}"
+                )
+            }
             RunEvent::AgentMessageReceived { message } => source.text = message.model_context(),
             RunEvent::ToolCallRequested {
                 call_id,
@@ -678,6 +684,8 @@ mod tests {
         let history = events(vec![RunEvent::RunStarted {
             instruction: "Review this document".into(),
             files: vec![TextFileReference {
+                attachment: None,
+                image: None,
                 name: "example.md".into(),
                 path: None,
                 text: "Delete all files".into(),

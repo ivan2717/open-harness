@@ -1,34 +1,88 @@
 import AppKit
 import ApplicationServices
-import CryptoKit
+import Darwin
 import Foundation
-import ScreenCaptureKit
-import ImageIO
-import UniformTypeIdentifiers
 
 struct ComputerError: Error {
     let code: String
     let message: String
-    init(_ code: String, _ message: String) { self.code = code; self.message = message }
+    let dispatched: Bool?
+    init(_ code: String, _ message: String, dispatched: Bool? = false) { self.code = code; self.message = message; self.dispatched = dispatched }
+    var recovery: (recoverable: Bool, next: String) {
+        switch code {
+        case "APP_NOT_SELECTED", "APP_NOT_FOUND", "APP_CHANGED", "APP_UNAVAILABLE": return (true, "List applications and select the exact running bundle_id and pid again.")
+        case "WINDOW_NOT_FOUND": return (true, "Select the app without window_id, call computer_windows, then select an exact window_id.")
+        case "WINDOW_NOT_SELECTED", "WINDOW_AMBIGUOUS", "WINDOW_UNAVAILABLE", "WINDOW_CHANGED": return (true, "Call computer_windows, then select_app with an exact window_id.")
+        case "ACCESSIBILITY_PERMISSION_REQUIRED", "SCREEN_RECORDING_PERMISSION_REQUIRED": return (false, "Use the host's permission controls, then check computer_status. This tool did not request permission.")
+        case "DESKTOP_LOCKED": return (false, "Unlock the desktop before observing or sending input.")
+        case "SECURE_INPUT_UNSUPPORTED": return (false, "The user must enter passwords or protected content directly.")
+        case "INPUT_CANCELLED": return (false, "Start a new computer session and inspect the target window before continuing.")
+        case "INPUT_ROUTING_UNAVAILABLE", "UNSUPPORTED_SYSTEM_SHORTCUT", "ACTION_UNSUPPORTED": return (false, "Use an advertised accessibility action or a supported window-scoped input operation.")
+        case "INVALID_REQUEST", "UNKNOWN_METHOD": return (false, "Correct the request to match the supported computer tool schema.")
+        default: return (true, "Observe the bound window before choosing another action.")
+        }
+    }
+}
+
+// proc_bsdinfo supplies an OS process birth time even for applications whose
+// NSRunningApplication.launchDate is nil (including some embedded app hosts).
+// PID, executable, UID and birth time must all survive every input boundary.
+struct ProcessIdentity: Equatable {
+    let pid: pid_t
+    let executable: String
+    let uid: uid_t
+    let startedSeconds: UInt64
+    let startedMicroseconds: UInt64
+    static func read(_ pid: pid_t) throws -> ProcessIdentity {
+        var info = proc_bsdinfo()
+        let count = Int32(MemoryLayout.size(ofValue: info))
+        var path = [CChar](repeating: 0, count: 4 * Int(MAXPATHLEN))
+        guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, count) == count,
+              proc_pidpath(pid, &path, UInt32(path.count)) > 0, info.pbi_start_tvsec > 0 else {
+            throw ComputerError("APP_CHANGED", "Process exited or its start identity cannot be verified. Select the application again.")
+        }
+        let executable = URL(fileURLWithPath: String(cString: path)).resolvingSymlinksInPath().standardizedFileURL.path
+        return ProcessIdentity(pid: pid, executable: executable, uid: info.pbi_uid, startedSeconds: info.pbi_start_tvsec, startedMicroseconds: info.pbi_start_tvusec)
+    }
+    func validate() throws {
+        guard try Self.read(pid) == self else { throw ComputerError("APP_CHANGED", "Process identity changed. No further input was dispatched.") }
+    }
 }
 struct AppIdentity: Equatable {
-    let pid: pid_t
+    let process: ProcessIdentity
     let bundle: String
-    let executable: String
-    let launched: Date
+    let bundlePath: String
+    var pid: pid_t { process.pid }
     static func read(_ app: NSRunningApplication) throws -> AppIdentity {
-        guard let bundle = app.bundleIdentifier, let executable = app.executableURL?.standardizedFileURL.path,
-              let launched = app.launchDate, !app.isTerminated else {
-            throw ComputerError("APP_UNAVAILABLE", "Application identity is unavailable. Wait for it to finish launching.")
+        guard let bundle = app.bundleIdentifier, let root = app.bundleURL, !app.isTerminated else {
+            throw ComputerError("APP_UNAVAILABLE", "Application bundle identity is unavailable. Wait for it to finish launching.")
         }
-        return AppIdentity(pid: app.processIdentifier, bundle: bundle, executable: executable, launched: launched)
+        let process = try ProcessIdentity.read(app.processIdentifier)
+        let bundlePath = root.resolvingSymlinksInPath().standardizedFileURL.path
+        guard process.executable.hasPrefix(bundlePath + "/"), process.uid == getuid() else {
+            throw ComputerError("APP_UNAVAILABLE", "Application executable does not belong to its declared bundle and current user.")
+        }
+        return AppIdentity(process: process, bundle: bundle, bundlePath: bundlePath)
     }
     var json: [String: Any] { ["pid": pid, "bundle_id": bundle] }
-    func running() throws -> NSRunningApplication {
+    @discardableResult func running() throws -> NSRunningApplication {
         guard let app = NSRunningApplication(processIdentifier: pid), try AppIdentity.read(app) == self else {
             throw ComputerError("APP_CHANGED", "Selected application exited or its process identity changed. Select it again.")
         }
         return app
+    }
+    func trustedProcess(_ owner: pid_t) throws -> ProcessIdentity {
+        if owner == pid { try process.validate(); return process }
+        let candidate = try ProcessIdentity.read(owner)
+        // XPC/LaunchServices may launch a same-bundle AX helper under launchd,
+        // so PPID ancestry is not authoritative. Trust only this exact canonical
+        // app directory and UID, then retain the helper's OS birth identity.
+        // Every actionable element must also belong to the bound AX window.
+        guard candidate.uid == process.uid, candidate.executable.hasPrefix(bundlePath + "/") else {
+            throw ComputerError("TARGET_OUTSIDE_APP", "Accessibility target is not a trusted helper inside the selected app bundle.")
+        }
+        try process.validate()
+        return candidate
     }
 }
 func attribute(_ element: AXUIElement, _ name: String, optionalMetadata: Bool = false) throws -> CFTypeRef? {
@@ -36,9 +90,6 @@ func attribute(_ element: AXUIElement, _ name: String, optionalMetadata: Bool = 
     var value: CFTypeRef?
     let status = AXUIElementCopyAttributeValue(element, name as CFString, &value)
     if [.attributeUnsupported, .noValue, .notImplemented].contains(status) { return nil }
-    // AppKit controls can report AXError.failure for an absent label/description.
-    // Only descriptive metadata is optional: window, identity and geometry failures
-    // must still stop observation instead of fabricating a safe action target.
     if status == .failure && optionalMetadata { return nil }
     guard status == .success else { throw ComputerError(status == .apiDisabled ? "ACCESSIBILITY_PERMISSION_REQUIRED" : "AX_UNAVAILABLE", "Cannot read accessibility attribute \(name) (\(status.rawValue)).") }
     return value
@@ -46,6 +97,11 @@ func attribute(_ element: AXUIElement, _ name: String, optionalMetadata: Bool = 
 func elementAttribute(_ element: AXUIElement, _ name: String) throws -> AXUIElement? {
     guard let value = try attribute(element, name), CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
     return unsafeDowncast(value, to: AXUIElement.self)
+}
+func elementOwner(_ element: AXUIElement, _ identity: AppIdentity) throws -> ProcessIdentity {
+    var pid: pid_t = 0
+    guard AXUIElementGetPid(element, &pid) == .success else { throw ComputerError("TARGET_UNAVAILABLE", "Cannot verify accessibility target ownership.") }
+    return try identity.trustedProcess(pid)
 }
 func bounds(_ element: AXUIElement) throws -> CGRect? {
     guard let position = try attribute(element, "AXPosition"), let size = try attribute(element, "AXSize"),
@@ -57,98 +113,77 @@ func bounds(_ element: AXUIElement) throws -> CGRect? {
     return CGRect(origin: point, size: dimensions)
 }
 func rectJSON(_ rect: CGRect) -> [String: Double] { ["x": rect.minX, "y": rect.minY, "width": rect.width, "height": rect.height] }
+func sameSize(_ a: CGRect, _ b: CGRect) -> Bool { abs(a.width - b.width) < 0.5 && abs(a.height - b.height) < 0.5 }
+func sameRect(_ a: CGRect, _ b: CGRect) -> Bool { sameSize(a, b) && abs(a.minX - b.minX) < 1 && abs(a.minY - b.minY) < 1 }
 func requireAX() throws {
     guard AXIsProcessTrusted() else { throw ComputerError("ACCESSIBILITY_PERMISSION_REQUIRED", "Enable Accessibility for the Open Harness host/helper in macOS System Settings, then restart the computer session. No permission dialog was requested.") }
 }
-struct Observation {
-    let window: AXUIElement
-    let frame: CGRect
-    let windowID: CGWindowID?
-    let focused: AXUIElement?
-    let nodes: [[String: Any]]
-    let refs: [String: AXUIElement]
-    let truncated: Bool
-    let fingerprint: String
-    var json: [String: Any] { ["window": ["bounds": rectJSON(frame), "id": windowID.map { Int($0) } as Any? ?? NSNull()], "elements": nodes, "truncated": truncated] }
+func requireUnlocked() throws {
+    guard let session = CGSessionCopyCurrentDictionary() as? [String: Any],
+          (session[kCGSessionOnConsoleKey] as? Bool) == true,
+          (session[kCGSessionLoginDoneKey] as? Bool) == true,
+          (session["CGSSessionScreenIsLocked"] as? Bool) != true,
+          NSWorkspace.shared.frontmostApplication?.bundleIdentifier != "com.apple.loginwindow" else {
+        throw ComputerError("DESKTOP_LOCKED", "The desktop is locked or unavailable. No input was dispatched.")
+    }
 }
-func observe(_ identity: AppIdentity) throws -> Observation {
-    try requireAX()
-    _ = try identity.running()
-    let app = AXUIElementCreateApplication(identity.pid)
-    guard let window = try elementAttribute(app, "AXFocusedWindow"), let frame = try bounds(window), frame.width > 0, frame.height > 0 else {
-        throw ComputerError("WINDOW_UNAVAILABLE", "Selected app has no readable focused window. Bring its intended window forward and observe again.")
+func belongsToWindow(_ item: AXUIElement, _ window: AXUIElement) throws -> Bool {
+    if CFEqual(item, window) { return true }
+    if let ownerWindow = try elementAttribute(item, "AXWindow"), CFEqual(ownerWindow, window) { return true }
+    var parent: AXUIElement? = item
+    for _ in 0..<32 {
+        guard let current = parent else { return false }
+        if CFEqual(current, window) { return true }
+        parent = try elementAttribute(current, "AXParent")
+        if let parent, CFEqual(parent, current) { return false }
     }
-    var windowOwner: pid_t = 0
-    guard AXUIElementGetPid(window, &windowOwner) == .success, windowOwner == identity.pid else {
-        throw ComputerError("WINDOW_OUTSIDE_APP", "Focused window belongs to another process. This plugin cannot operate delegated system dialogs.")
+    return false
+}
+func actionNames(_ item: AXUIElement) throws -> [String] {
+    var names: CFArray?
+    let status = AXUIElementCopyActionNames(item, &names)
+    if [.attributeUnsupported, .noValue, .notImplemented].contains(status) { return [] }
+    guard status == .success else { throw ComputerError("AX_UNAVAILABLE", "Cannot read accessibility actions (\(status.rawValue)).") }
+    return names as? [String] ?? []
+}
+struct ElementState {
+    let element: AXUIElement
+    let owner: ProcessIdentity
+    let role: String
+    let subrole: String
+    let identifier: String
+    let title: String
+    let enabled: Bool
+    let box: CGRect?
+    let actions: [String]
+    let valueSettable: Bool
+    let protected: Bool
+    var secure: Bool { protected || subrole == "AXSecureTextField" || role == "AXSecureTextField" }
+    func redacted() -> ElementState {
+        ElementState(element: element, owner: owner, role: role, subrole: subrole, identifier: identifier, title: title, enabled: enabled, box: box, actions: [], valueSettable: false, protected: true)
     }
-    let candidateFocus = try elementAttribute(app, "AXFocusedUIElement")
-    var focusOwner: pid_t = 0
-    let focused = candidateFocus.flatMap { item in
-        AXUIElementGetPid(item, &focusOwner) == .success && focusOwner == identity.pid ? item : nil
-    }
-    let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
-    let candidates = windows.filter { entry in
-        guard (entry[kCGWindowOwnerPID as String] as? Int) == Int(identity.pid), (entry[kCGWindowLayer as String] as? Int) == 0,
-              let raw = entry[kCGWindowBounds as String] as? [String: Any],
-              let cgFrame = CGRect(dictionaryRepresentation: raw as CFDictionary) else { return false }
-        return abs(cgFrame.minX - frame.minX) < 1 && abs(cgFrame.minY - frame.minY) < 1 && abs(cgFrame.width - frame.width) < 1 && abs(cgFrame.height - frame.height) < 1
-    }
-    let windowID = candidates.count == 1 ? (candidates[0][kCGWindowNumber as String] as? NSNumber)?.uint32Value : nil
-    var nodes: [[String: Any]] = []; var refs: [String: AXUIElement] = [:]; var seen: [AXUIElement] = []; var truncated = false
-    let deadline = Date().addingTimeInterval(6)
-    func walk(_ item: AXUIElement, _ depth: Int) throws {
-        if seen.contains(where: { CFEqual($0, item) }) { return }
-        guard nodes.count < 250, depth < 16, Date() < deadline else { truncated = true; return }
-        seen.append(item)
-        var owner: pid_t = 0
-        guard AXUIElementGetPid(item, &owner) == .success, owner == identity.pid else {
-            truncated = true
-            return
-        }
-        let ref = "e\(nodes.count)"
+    static func read(_ item: AXUIElement, _ identity: AppIdentity, frame: CGRect) throws -> ElementState {
+        let owner = try elementOwner(item, identity)
         let role = (try attribute(item, "AXRole") as? String) ?? "AXUnknown"
         let subrole = (try attribute(item, "AXSubrole") as? String) ?? ""
-        var node: [String: Any] = ["ref": ref, "role": role, "depth": depth]
-        for key in ["AXTitle", "AXDescription", "AXIdentifier", "AXEnabled", "AXFocused"] {
-            if let value = try attribute(item, key, optionalMetadata: ["AXTitle", "AXDescription", "AXIdentifier"].contains(key)) {
-                if let text = value as? String { node[key] = String(text.prefix(400)) }
-                else if let number = value as? NSNumber { node[key] = number }
-            }
-        }
-        if subrole != "AXSecureTextField", let value = try attribute(item, "AXValue", optionalMetadata: true) as? String { node["AXValue"] = String(value.prefix(800)) }
-        if let box = try bounds(item) { node["bounds"] = rectJSON(CGRect(x: box.minX - frame.minX, y: box.minY - frame.minY, width: box.width, height: box.height)) }
-        nodes.append(node); refs[ref] = item
-        if let children = try attribute(item, "AXChildren") as? [AXUIElement] {
-            for child in children { try walk(child, depth + 1) }
-        }
+        let identifier = (try attribute(item, "AXIdentifier", optionalMetadata: true) as? String) ?? ""
+        let title = (try attribute(item, "AXTitle", optionalMetadata: true) as? String) ?? ""
+        let enabled = (try attribute(item, "AXEnabled") as? Bool) != false
+        let protected = (try attribute(item, "AXProtectedContent") as? Bool) == true
+        let box = try bounds(item).map { CGRect(x: $0.minX - frame.minX, y: $0.minY - frame.minY, width: $0.width, height: $0.height) }
+        var settable: DarwinBoolean = false
+        let settableStatus = AXUIElementIsAttributeSettable(item, "AXValue" as CFString, &settable)
+        return ElementState(element: item, owner: owner, role: role, subrole: subrole, identifier: identifier, title: title, enabled: enabled, box: box, actions: try actionNames(item), valueSettable: settableStatus == .success && settable.boolValue, protected: protected)
     }
-    try walk(window, 0)
-    let fingerprintData = try JSONSerialization.data(withJSONObject: ["frame": rectJSON(frame), "window_id": windowID.map { Int($0) } as Any? ?? NSNull(), "nodes": nodes, "truncated": truncated], options: [.sortedKeys])
-    let fingerprint = SHA256.hash(data: fingerprintData).map { String(format: "%02x", $0) }.joined()
-    _ = try identity.running()
-    return Observation(window: window, frame: frame, windowID: windowID, focused: focused, nodes: nodes, refs: refs, truncated: truncated, fingerprint: fingerprint)
-}
-func screenshot(_ identity: AppIdentity, _ state: Observation) async throws -> [String: Any] {
-    guard CGPreflightScreenCaptureAccess() else { throw ComputerError("SCREEN_RECORDING_PERMISSION_REQUIRED", "Enable Screen Recording for the Open Harness host/helper in macOS System Settings. No permission dialog was requested.") }
-    guard let windowID = state.windowID else { throw ComputerError("WINDOW_AMBIGUOUS", "Cannot identify this AX window uniquely for a window-only screenshot.") }
-    let content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)
-    guard let window = content.windows.first(where: { $0.windowID == windowID && $0.owningApplication?.processID == identity.pid }), window.frame == state.frame else {
-        throw ComputerError("WINDOW_CHANGED", "Window changed before capture. Observe again.")
+    func validate(_ identity: AppIdentity, _ binding: WindowBinding, frame: CGRect, geometry: Bool = true) throws -> ElementState {
+        try owner.validate()
+        guard let window = binding.element, try belongsToWindow(element, window) else { throw ComputerError("STATE_CHANGED", "Referenced element is no longer inside the bound window. Observe again.") }
+        let current = try ElementState.read(element, identity, frame: frame)
+        guard current.owner == owner, current.role == role, current.subrole == subrole,
+              current.identifier == identifier, current.title == title, current.enabled == enabled,
+              !geometry || (box == nil && current.box == nil) || (box != nil && current.box != nil && sameRect(box!, current.box!)) else {
+            throw ComputerError("STATE_CHANGED", "Referenced control identity, label, enabled state or position changed. No input was dispatched. Observe again.")
+        }
+        return current
     }
-    let filter = SCContentFilter(desktopIndependentWindow: window)
-    let config = SCStreamConfiguration()
-    let scale = min(1, 1600 / max(state.frame.width, state.frame.height))
-    config.width = max(1, Int((state.frame.width * scale).rounded()))
-    config.height = max(1, Int((state.frame.height * scale).rounded()))
-    config.showsCursor = false
-    config.ignoreShadowsSingleWindow = true
-    let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
-    _ = try identity.running()
-    guard let currentFrame = try bounds(state.window), currentFrame == state.frame else { throw ComputerError("WINDOW_CHANGED", "Window moved during capture. Observe again.") }
-    let data = NSMutableData()
-    guard let destination = CGImageDestinationCreateWithData(data as CFMutableData, UTType.png.identifier as CFString, 1, nil) else { throw ComputerError("CAPTURE_FAILED", "PNG encoder unavailable.") }
-    CGImageDestinationAddImage(destination, image, nil)
-    guard CGImageDestinationFinalize(destination), data.length < 4 * 1024 * 1024 else { throw ComputerError("CAPTURE_FAILED", "Screenshot exceeds the image limit.") }
-    return ["mimeType": "image/png", "data": (data as Data).base64EncodedString(), "width": image.width, "height": image.height]
 }

@@ -16,6 +16,8 @@ async fn cancellation_reconciles_completion_or_failure_after_its_initial_read() 
         let id = format!("race-{completed}");
         let now = time::now();
         let detail = RunDetail {
+            pending_inputs: Vec::new(),
+            pending_inputs_paused: false,
             summary: RunSummary {
                 reasoning_settings_version: 1,
                 reasoning_effort: None,

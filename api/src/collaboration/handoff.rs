@@ -128,6 +128,7 @@ mod tests {
         let source = "原始用户要求🦀：保持原文。";
         let mut original = ChatMessage::complete("saved-input-17".into(), "user", source.into());
         original.files.push(FileReferenceInfo {
+            mime_type: None,
             name: "evidence.md".into(),
             path: Some("/unreadable/evidence.md".into()),
             size: 123,
@@ -165,6 +166,7 @@ mod tests {
 
         parent.messages[0].text.clear();
         parent.messages[0].files.push(FileReferenceInfo {
+            mime_type: None,
             name: "source.csv".into(),
             path: None,
             size: 256,

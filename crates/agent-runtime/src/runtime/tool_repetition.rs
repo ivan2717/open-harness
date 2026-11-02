@@ -35,6 +35,7 @@ impl ToolRepetitionMonitor {
             match &entry.event {
                 RunEvent::RunStarted { .. }
                 | RunEvent::InputReceived { .. }
+                | RunEvent::UserInputReceived { .. }
                 | RunEvent::RunResumed { .. } => {
                     self.previous = None;
                     self.count = 0;

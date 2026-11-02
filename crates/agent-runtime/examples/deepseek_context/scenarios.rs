@@ -345,6 +345,7 @@ fn request_contains(request: &ModelRequest, needle: &str) -> bool {
             ContentBlock::Text { text } | ContentBlock::Reasoning { text } => text.contains(needle),
             ContentBlock::ToolResult { content, .. } => content.contains(needle),
             ContentBlock::ToolCall { arguments, .. } => arguments.contains(needle),
+            ContentBlock::Image { .. } => false,
         })
 }
 

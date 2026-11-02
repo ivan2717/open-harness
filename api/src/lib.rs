@@ -8,11 +8,12 @@ mod memory;
 mod model;
 mod projection;
 mod routes;
+pub mod run_view;
 mod service;
 mod snapshot;
 mod time;
 use axum::Router;
-pub use service::AppState;
+pub use service::{AppState, RecoveryIssue, RecoveryStage};
 
 pub fn app(state: AppState) -> Router {
     Router::new().nest("/api", routes::router(state))

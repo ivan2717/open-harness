@@ -184,6 +184,7 @@ pub(super) fn model_key(metadata: &ModelContextMetadata) -> Option<String> {
         metadata.auto_compact_token_limit,
         metadata.effective_context_window_percent,
         metadata.max_output_tokens,
+        metadata.use_provider_output_limit,
     ))
     .ok()
 }

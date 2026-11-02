@@ -8,6 +8,7 @@ const BYTE_LIMIT: u64 = 64 * 1024 * 1024;
 
 #[derive(Default)]
 struct Scan {
+    unrestricted: bool,
     matches: Vec<Value>,
     match_bytes: usize,
     skipped_bytes: usize,
@@ -81,7 +82,9 @@ impl Scan {
                     break;
                 }
                 let name = entry.file_name().to_string_lossy().into_owned();
-                if paths::skipped_directory(&name) {
+                if paths::skipped_directory(&name)
+                    && !(self.unrestricted && paths::denied_component(&name))
+                {
                     self.skip(
                         &entry
                             .path()
@@ -140,11 +143,16 @@ impl Scan {
     }
 }
 
-pub(crate) fn search(root: &Path, path: &str, query: &str, offset: usize) -> io::Result<Value> {
+pub(crate) fn search(
+    scope: paths::Scope<'_>,
+    path: &str,
+    query: &str,
+    offset: usize,
+) -> io::Result<Value> {
     if query.is_empty() || query.len() > 1024 {
         return Err(io::Error::other("query must contain 1 to 1024 bytes"));
     }
-    let target = paths::resolve(root, path)?;
+    let target = scope.resolve(path)?;
     if !target.exists() {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
@@ -152,10 +160,11 @@ pub(crate) fn search(root: &Path, path: &str, query: &str, offset: usize) -> io:
         ));
     }
     let mut scan = Scan {
+        unrestricted: scope.unrestricted,
         offset,
         ..Scan::default()
     };
-    scan.walk(root, &target, query, 0)?;
+    scan.walk(scope.root, &target, query, 0)?;
     Ok(
         json!({"matches":scan.matches,"next_offset":scan.has_more.then(|| offset + scan.matches.len()),"limit_reached":scan.limit_reached || scan.has_more,"coverage":{"complete":!scan.limit_reached && !scan.has_more && scan.skipped_count == 0,"scanned_files":scan.scanned,"scanned_bytes":scan.bytes,"skipped_count":scan.skipped_count,"skipped":scan.skipped},"hint":"Text search excludes binary documents. Search a PDF, DOCX, XLSX or PPTX file individually with search_files."}),
     )

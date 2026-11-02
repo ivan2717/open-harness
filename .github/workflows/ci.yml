@@ -63,6 +63,53 @@ jobs:
       - run: pnpm test
       - run: pnpm run build
 
+  desktop-e2e:
+    name: Desktop workflow regressions
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: apps/desktop
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6
+        with:
+          package_json_file: apps/desktop/package.json
+          run_install: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - name: Set up Rust
+        run: rustup toolchain install stable --profile minimal
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+            apps/desktop/.pnpm-store
+          key: ubuntu-desktop-e2e-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/desktop/pnpm-lock.yaml') }}
+          restore-keys: ubuntu-desktop-e2e-
+      - run: pnpm install --frozen-lockfile
+      - name: Install Electron display dependencies
+        run: pnpm exec playwright install --with-deps chromium
+      - name: Build local runtime
+        run: node scripts/backend.mjs debug
+      - name: Build Electron application
+        run: pnpm run build
+      - name: Check regression process cleanup
+        run: node --test tests/e2e/process-cleanup-check.mjs
+      - name: Check desktop workflows with local fixture models
+        run: xvfb-run -a pnpm run test:e2e:regression
+      - name: Upload desktop regression evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: desktop-workflow-regressions
+          path: apps/desktop/test-results/
+          if-no-files-found: ignore
+          retention-days: 7
+
   plugins:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -92,7 +139,7 @@ jobs:
   windows-checks:
     name: Windows checks
     runs-on: windows-2022
-    timeout-minutes: 30
+    timeout-minutes: 45
     env:
       ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
       OPENHARNESS_WINDOWS_SANDBOX_HELPER: ${{ github.workspace }}\target\debug\openharness-sandbox.exe
@@ -148,13 +195,44 @@ jobs:
           src/main/run-workspace.windows.test.ts
           src/main/chrome-connection.windows.test.ts
           src/main/chrome-windows.test.ts
+          src/main/computer-preview.test.ts
       - name: Check Windows Chrome transport
         if: ${{ !cancelled() && steps.sandbox-helper.outcome == 'success' }}
         run: node --test ../../plugins/chrome-use/tests/bridge.test.mjs ../../plugins/chrome-use/tests/launch.test.mjs ../../plugins/chrome-use/tests/controller.test.mjs
 
+      - name: Build and check Windows computer helper
+        run: node ../../plugins/computer-use/windows/build.mjs
+      - name: Check Windows visual target validation
+        run: node --test ../../plugins/computer-use/tests/visual-guard.test.mjs
+      - name: Check Windows live preview and cursor lifecycle
+        run: node --test ../../plugins/computer-use/tests/feedback.test.mjs
+
+      - name: Install Electron for permission workflow checks
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: ""
+        run: node node_modules/electron/install.js
+      - name: Build debug backend for permission workflow checks
+        run: node scripts/backend.mjs debug
+      - name: Build desktop for permission workflow checks
+        run: pnpm build
+      - name: Check Windows permission workflow in Electron
+        timeout-minutes: 10
+        run: pnpm test:e2e:permissions
+      - name: Check Windows in-app computer preview
+        timeout-minutes: 5
+        run: node tests/e2e/computer-preview.mjs
+      - name: Upload Windows permission workflow evidence
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-permissions-e2e
+          path: apps/desktop/test-results/permissions/
+          if-no-files-found: ignore
+          retention-days: 7
+
   windows:
     name: Windows x64 installer
-    needs: [check, desktop, plugins, windows-checks]
+    needs: [check, desktop, desktop-e2e, plugins, windows-checks]
     if: needs.desktop.outputs.package_windows == 'true'
     runs-on: windows-2022
     timeout-minutes: 45

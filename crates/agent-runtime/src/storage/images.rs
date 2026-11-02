@@ -1,10 +1,7 @@
 //! Content-addressed sidecars keep screenshots out of append-only event logs.
 //! Only hexadecimal content IDs are read; logs cannot nominate arbitrary paths.
 use super::EventStoreError;
-use agent_core::{
-    MAX_IMAGE_BYTES, ModelImage,
-    agent::{RunEvent, RunEventEnvelope},
-};
+use agent_core::{MAX_IMAGE_BYTES, ModelImage, agent::RunEventEnvelope};
 use sha2::{Digest, Sha256};
 use std::{
     fs::{self, File, OpenOptions},
@@ -110,12 +107,13 @@ pub(super) fn externalize(
     event: &RunEventEnvelope,
 ) -> Result<RunEventEnvelope, EventStoreError> {
     let mut stored = event.clone();
-    if let RunEvent::ToolCallSucceeded { images, .. } = &mut stored.event {
+    {
+        let images = stored.event.images_mut();
         if images.is_empty() {
             return Ok(stored);
         }
         if images.len() > agent_core::MAX_TOOL_IMAGES {
-            return Err(invalid("too many tool images"));
+            return Err(invalid("too many event images"));
         }
         let directory = image_directory(log)?;
         fs::create_dir_all(&directory)
@@ -148,9 +146,10 @@ pub(super) fn retain_reference(
     log: &Path,
     event: RunEventEnvelope,
 ) -> Result<RunEventEnvelope, EventStoreError> {
-    if let RunEvent::ToolCallSucceeded { images, .. } = &event.event {
+    {
+        let images = event.event.images();
         if images.len() > agent_core::MAX_TOOL_IMAGES {
-            return Err(invalid("too many tool images"));
+            return Err(invalid("too many event images"));
         }
         for image in images {
             if let Some(hash) = image.data_base64.strip_prefix(PREFIX) {
@@ -169,9 +168,10 @@ pub(super) fn hydrate(
     log: &Path,
     mut event: RunEventEnvelope,
 ) -> Result<RunEventEnvelope, EventStoreError> {
-    if let RunEvent::ToolCallSucceeded { images, .. } = &mut event.event {
+    {
+        let images = event.event.images_mut();
         if images.len() > agent_core::MAX_TOOL_IMAGES {
-            return Err(invalid("too many tool images"));
+            return Err(invalid("too many event images"));
         }
         for image in images {
             if let Some(hash) = image.data_base64.strip_prefix(PREFIX) {

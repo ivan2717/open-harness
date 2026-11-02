@@ -363,3 +363,20 @@
   width: auto;
   margin-right: 8px;
 }
+
+.control-approval-actions > .extension-text-button {
+  margin-right: auto;
+  padding: 8px 4px;
+}
+.plugin-control-permissions {
+  margin: 14px 0 0 29px;
+  color: var(--color-muted);
+  font-size: 12px;
+}
+.plugin-control-permission {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+}

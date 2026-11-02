@@ -351,8 +351,6 @@ fn command_host_for_crash_test() {
         let tools = LocalTools::open(base.join("project"), base.join("state"), PermissionMode::WorkspaceWrite).unwrap();
         let worker = tools.clone();
         let task = tokio::spawn(async move { worker.execute(call("run_command", json!({"command":"printf started > started.txt; sleep 2; printf escaped > late.txt"}))).await });
-        let id = pending(&tools).await;
-        tools.approve(&id, true).unwrap();
         let _ = task.await;
     });
 }
@@ -418,7 +416,7 @@ async fn command_approval_is_single_use_and_cancellation_clears_it() {
         worker
             .execute(call(
                 "run_command",
-                json!({"command":"touch should-not-exist"}),
+                json!({"command":"touch should-not-exist", "network_access":"allowed"}),
             ))
             .await
     });
@@ -435,7 +433,7 @@ async fn command_approval_is_single_use_and_cancellation_clears_it() {
         worker
             .execute(call(
                 "run_command",
-                json!({"command":"touch should-not-exist"}),
+                json!({"command":"touch should-not-exist", "network_access":"allowed"}),
             ))
             .await
     });
@@ -465,8 +463,6 @@ async fn approved_command_is_sandboxed_and_changes_are_reviewed() {
             ))
             .await
     });
-    let id = pending(&tools).await;
-    tools.approve(&id, true).unwrap();
     let result = task.await.unwrap().unwrap();
     let value: Value = serde_json::from_str(&result).unwrap();
     assert_eq!(value["status"], "completed", "{result}");
@@ -484,8 +480,6 @@ async fn approved_command_is_sandboxed_and_changes_are_reviewed() {
             .execute(call("run_command", json!({"command":command})))
             .await
     });
-    let id = pending(&tools).await;
-    tools.approve(&id, true).unwrap();
     let result: Value = serde_json::from_str(&task.await.unwrap().unwrap()).unwrap();
     assert_eq!(result["status"], "failed");
     assert!(!outside.exists());
@@ -586,8 +580,6 @@ async fn timeout_kills_the_shells_child_process() {
             ))
             .await
     });
-    let id = pending(&tools).await;
-    tools.approve(&id, true).unwrap();
     let result: Value = serde_json::from_str(&task.await.unwrap().unwrap()).unwrap();
     assert_eq!(result["status"], "timed_out");
     tokio::time::sleep(Duration::from_secs(3)).await;
@@ -607,8 +599,6 @@ async fn dropping_execution_stops_command_descendants() {
     let task = tokio::spawn(async move {
         worker.execute(call("run_command", json!({"command":"printf started > started.txt; sleep 2; printf escaped > late.txt"}))).await
     });
-    let id = pending(&tools).await;
-    tools.approve(&id, true).unwrap();
     tokio::time::timeout(Duration::from_secs(5), async {
         while !fixture.root.join("started.txt").exists() {
             tokio::time::sleep(Duration::from_millis(10)).await;
@@ -618,6 +608,13 @@ async fn dropping_execution_stops_command_descendants() {
     .unwrap();
     task.abort();
     let _ = task.await;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while tools.commands_running() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("cancelled command did not finish teardown");
     tokio::time::sleep(Duration::from_secs(2)).await;
     assert!(!fixture.root.join("late.txt").exists());
     let review = tools.review().unwrap();
@@ -651,8 +648,6 @@ async fn command_sandbox_denies_secrets_and_network() {
             ))
             .await
     });
-    let id = pending(&tools).await;
-    tools.approve(&id, true).unwrap();
     let result = task.await.unwrap().unwrap();
     assert!(!result.contains("SECRET_MUST_NOT_BE_RETURNED"));
     let result: Value = serde_json::from_str(&result).unwrap();
@@ -670,8 +665,6 @@ async fn command_sandbox_denies_secrets_and_network() {
             .execute(call("run_command", json!({"command":command})))
             .await
     });
-    let id = pending(&tools).await;
-    tools.approve(&id, true).unwrap();
     let result: Value = serde_json::from_str(&task.await.unwrap().unwrap()).unwrap();
     assert_eq!(result["status"], "failed");
     assert_eq!(
@@ -693,8 +686,6 @@ async fn incomplete_command_scan_recovers_without_losing_original_changes() {
     let task = tokio::spawn(async move {
         worker.execute(call("run_command", json!({"command":"printf changed > original.txt; mkdir generated; i=0; while [ $i -lt 4100 ]; do : > generated/file-$i; i=$((i+1)); done"}))).await
     });
-    let id = pending(&tools).await;
-    tools.approve(&id, true).unwrap();
     task.await.unwrap().unwrap();
     assert!(tools.review().unwrap().review_incomplete);
     drop(tools);
@@ -725,8 +716,6 @@ async fn approved_session(tools: &LocalTools, command: &str, yield_ms: u64) -> V
             ))
             .await
     });
-    let id = pending(tools).await;
-    tools.approve(&id, true).unwrap();
     serde_json::from_str(&task.await.unwrap().unwrap()).unwrap()
 }
 

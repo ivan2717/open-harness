@@ -2,6 +2,7 @@ import { createRequire } from "node:module";
 import { homedir, tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
 import { validateArguments } from "./schema.mjs";
+import { fillTextField } from "./input.mjs";
 
 const MAX_REFS = 128;
 const MAX_TEXT = 24_000;
@@ -111,8 +112,11 @@ export class BrowserSession {
     headless,
     platform = process.platform,
     environment = process.env,
+    requireHostPermission = false,
   } = {}) {
     this.chromium = chromium;
+    this.requireHostPermission = requireHostPermission;
+    this.authorizedOrigins = new Set();
     this.headless =
       headless ??
       (platform === "linux" &&
@@ -132,10 +136,11 @@ export class BrowserSession {
     this.initializing = null;
     this.closing = null;
     this.browserClosures = new WeakMap();
+    this.previewNavigations = new WeakMap();
   }
 
   // Preserve operation ordering even when a caller sends concurrent MCP calls.
-  call(name, args = {}) {
+  call(name, args = {}, authorization) {
     const generation = this.closedGeneration;
     const operation = this.queue.then(async () => {
       if (generation !== this.closedGeneration)
@@ -143,7 +148,18 @@ export class BrowserSession {
           "session_cancelled",
           "The browser session was closed; observe a new session before continuing.",
         );
+      if (name === "__openharness_browser_target" && this.requireHostPermission) {
+        const page = args.tab_id ? this.tabs.get(args.tab_id) : this.page;
+        let origin = null;
+        try { const url = new URL(page?.url()); if (["http:", "https:"].includes(url.protocol)) origin = url.origin; } catch {}
+        return { content: [textBlock({ origin })] };
+      }
       validateArguments(name, args);
+      if (this.requireHostPermission) {
+        if (!authorization || !Array.isArray(authorization.origins) || authorization.origins.some(origin => typeof origin !== "string"))
+          throw new BrowserError("permission_required", "The host must approve this website before browser use.");
+        this.authorizedOrigins = new Set(authorization.origins);
+      }
       if (name === "browser_open") return this.open(args);
       if (name === "browser_snapshot") {
         if (args.tab_id) {
@@ -163,6 +179,16 @@ export class BrowserSession {
     });
     this.queue = operation.catch(() => {});
     return operation;
+  }
+
+  assertOrigin(page) {
+    if (!this.requireHostPermission) return;
+    let origin;
+    try { origin = new URL(page.url()).origin; } catch {}
+    if (!origin || (!this.authorizedOrigins.has("*") && !this.authorizedOrigins.has(origin))) {
+      this.invalidate();
+      throw new BrowserError("website_permission_required", `The page is now at ${origin || "an unavailable origin"}. Request a new browser_snapshot so the host can ask for this website's permission. No page content was returned.`);
+    }
   }
 
   async ensureBrowser() {
@@ -289,6 +315,7 @@ export class BrowserSession {
     // The user or the site can navigate outside a model action. Its old refs
     // cannot be used again, even when a later document has the same DOM shape.
     page.on("framenavigated", (frame) => {
+      if (frame === page.mainFrame()) this.previewNavigations.set(page, (this.previewNavigations.get(page) ?? 0) + 1);
       if (this.page === page && frame === page.mainFrame()) this.invalidate();
     });
   }
@@ -362,9 +389,11 @@ export class BrowserSession {
 
   async snapshot(textOffset = 0) {
     const page = this.requirePage();
+    this.assertOrigin(page);
     this.invalidate();
     await this.releaseRefs();
     for (let attempt = 0; attempt < 2; attempt += 1) {
+      this.assertOrigin(page);
       const start = await this.state(page);
       const handles = await this.controls(page);
       const selected = handles.slice(0, MAX_REFS);
@@ -447,6 +476,7 @@ export class BrowserSession {
       // character and report the adjusted cursor rather than dropping it.
       textOffset = textBoundary(body, textOffset);
       const end = await this.state(page);
+      this.assertOrigin(page);
       if (!sameState(start, end)) {
         await Promise.allSettled(handles.map((handle) => handle.dispose()));
         if (attempt === 0) continue;
@@ -528,6 +558,7 @@ export class BrowserSession {
       }
       const nextOffset = textOffset + snapshot.text.length;
       snapshot.next_text_offset = nextOffset < body.length ? nextOffset : null;
+      this.assertOrigin(page);
       return snapshot;
     }
   }
@@ -548,6 +579,8 @@ export class BrowserSession {
         "invalid_url",
         "Only HTTP(S) URLs without embedded credentials are supported.",
       );
+    if (this.requireHostPermission && !this.authorizedOrigins.has("*") && !this.authorizedOrigins.has(target.origin))
+      throw new BrowserError("website_permission_required", "The host has not approved the navigation target.");
     await this.ensureBrowser();
     if (newTab || !this.page || this.page.isClosed())
       this.page = await this.context.newPage();
@@ -565,6 +598,7 @@ export class BrowserSession {
 
   async action(args) {
     const page = this.requirePage();
+    this.assertOrigin(page);
     if (
       args.revision !== this.revision ||
       !this.observedState ||
@@ -604,9 +638,15 @@ export class BrowserSession {
           if (ref) await ref.click();
           else await page.mouse.click(args.x, args.y);
           break;
-        case "fill":
-          await ref.fill(args.text);
+        case "fill": {
+          const origin = new URL(page.url()).origin;
+          await ref.waitForElementState("visible");
+          this.assertOrigin(page);
+          const result = await ref.evaluate(fillTextField, { text: args.text, origin });
+          if (result.blocked === "sensitive_input") throw new BrowserError("sensitive_input", "File and password inputs must be completed by the user.");
+          if (result.blocked) throw new BrowserError(result.blocked, "The field changed or cannot accept text; observe before deciding again.");
           break;
+        }
         case "select":
           await ref.selectOption(args.text);
           break;
@@ -623,7 +663,8 @@ export class BrowserSession {
           await page.goForward({ waitUntil: "domcontentloaded" });
           break;
       }
-    } catch {
+    } catch (error) {
+      if (error instanceof BrowserError && error.code === "sensitive_input") throw error;
       return this.uncertainResult(
         "action_failed",
         "The action failed or timed out. Its effect is uncertain; observe before deciding whether another action is needed.",
@@ -678,6 +719,34 @@ export class BrowserSession {
     };
   }
 
+  // Private display path: never consumes snapshot refs or exposes frames to
+  // MCP/model history. Uses the same queue so preview cannot race tool actions.
+  preview(capture) {
+    const generation = this.closedGeneration;
+    const operation = this.queue.then(async () => {
+      const page = this.page;
+      if (generation !== this.closedGeneration || !page || page.isClosed()) return { active: false };
+      const unavailable = { active: true, title: '独立浏览器', unavailable: true };
+      try {
+        this.assertOrigin(page);
+        const url = page.url();
+        const navigation = this.previewNavigations.get(page);
+        const metadata = { active: true, title: `独立浏览器 · ${new URL(url).hostname}`.slice(0, 256) };
+        if (!capture) return metadata;
+        const size = page.viewportSize();
+        const image = await page.screenshot({ type: 'jpeg', quality: 55, scale: 'css', fullPage: false, animations: 'allow', caret: 'initial', timeout: 1500 });
+        if (generation !== this.closedGeneration || page !== this.page || page.isClosed()) return { active: false };
+        this.assertOrigin(page);
+        if (!size || url !== page.url() || navigation !== this.previewNavigations.get(page) || image.length > 600_000) return unavailable;
+        return { ...metadata, ...size, jpeg: image.toString('base64') };
+      } catch {
+        return generation !== this.closedGeneration || page.isClosed() ? { active: false } : unavailable;
+      }
+    });
+    this.queue = operation.catch(() => {});
+    return operation;
+  }
+
   async screenshot() {
     const snapshot = await this.snapshot();
     // Do not inject temporary CSS to hide carets or stop animations: those DOM
@@ -696,6 +765,7 @@ export class BrowserSession {
         "Page changed while taking the screenshot. Capture another screenshot before using coordinates.",
       );
     }
+    this.assertOrigin(this.requirePage());
     if (image.length > 2 * 1024 * 1024)
       throw new BrowserError("screenshot_too_large");
     this.screenshotRevision = snapshot.revision;

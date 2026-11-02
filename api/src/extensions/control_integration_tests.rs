@@ -59,7 +59,7 @@ fn grant(host: &ExtensionHost, run: &str, server_id: &str, scope: ControlScope) 
             run,
             server_id,
             server_id,
-            &serde_json::to_string(&server).unwrap(),
+            &host.control_binding(&server).unwrap(),
             scope,
             true,
         )
@@ -162,6 +162,8 @@ async fn approval_cannot_cross_runs_or_upgrade_an_unscoped_operation() {
                     source_run_id: None,
                     task_title: None,
                     session_scope: None,
+                    permission_target: None,
+                    can_allow_capability: false,
                 },
             )
             .await
@@ -233,8 +235,10 @@ fn control_package(root: &Path, id: &str, mode: &str, marker: &Path) -> PathBuf 
     let server = if mode == "missing" {
         json!({"command":"control-test-must-never-be-started","args":[]})
     } else {
-        fs::write(source.join("fixture.py"), r#"import json,sys,time,pathlib
+        fs::write(source.join("fixture.py"), r#"import json,sys,time,pathlib,urllib.parse
 mode,marker=sys.argv[1:3]
+next_tab=42
+browser_origin=None
 for line in sys.stdin:
     req=json.loads(line)
     if 'id' not in req: continue
@@ -243,17 +247,34 @@ for line in sys.stdin:
         result={'protocolVersion':req['params']['protocolVersion'],'serverInfo':{'name':'control-fixture','version':'1'},'capabilities':{'tools':{}}}
     elif method=='tools/list':
         result={'tools':[{'name':'computer_select_app','description':'Fixture selection','inputSchema':{'type':'object'}}]}
+    elif method=='resources/read':
+        result={'contents':[{'uri':req['params']['uri'],'text':'fixture resource'}]}
+    elif method=='prompts/get':
+        result={'messages':[{'role':'user','content':{'type':'text','text':'fixture prompt'}}]}
     elif method=='tools/call':
+        if req['params']['name']=='__openharness_browser_target':
+            result={'content':[{'type':'text','text':json.dumps({'origin':browser_origin})}]}
+            print(json.dumps({'jsonrpc':'2.0','id':req['id'],'result':result}),flush=True)
+            continue
+        if req['params']['name']=='browser_open':
+            parsed=urllib.parse.urlsplit(req['params']['arguments']['url'])
+            browser_origin='https://redirect.example' if mode=='browser_redirect' else parsed.scheme+'://'+parsed.netloc
         if mode=='serialized':
             with open(marker,'a',newline='\n') as output: output.write('start\n')
             time.sleep(0.1)
             with open(marker,'a',newline='\n') as output: output.write('end\n')
-        else: pathlib.Path(marker).write_text('called')
+        else: pathlib.Path(marker).write_text(json.dumps(req['params']['arguments']) if mode=='record_args' else 'called')
         if mode=='hang': time.sleep(30)
+        if mode=='open_pause' and req['params']['arguments'].get('url','').endswith('/pending'):
+            time.sleep(30)
         result={'isError': mode=='error','content':[{'type':'text','text':'fixture app selection refused' if mode=='error' else 'selected'}]}
         if req['params']['name']=='chrome_open' and mode.startswith('open_'):
             origin='https://redirect.example' if mode=='open_redirect' else 'https://example.com'
-            meta={'created':True,'selected':True,'tab_id':0 if mode=='open_invalid' else 42,'origin':origin,'url':origin+'/task'}
+            if mode in ('open_dynamic','open_pause'):
+                parsed=urllib.parse.urlsplit(req['params']['arguments']['url'])
+                origin=parsed.scheme+'://'+parsed.netloc
+            meta={'created':True,'selected':True,'tab_id':0 if mode=='open_invalid' else next_tab,'origin':origin,'url':origin+'/task'}
+            next_tab+=1
             result={'content':[{'type':'text','text':json.dumps(meta)}]}
     else: result={}
     print(json.dumps({'jsonrpc':'2.0','id':req['id'],'result':result}),flush=True)
@@ -466,6 +487,61 @@ async fn application_switching_reuses_only_previously_approved_processes() {
         host.approvals.decide("r", &pending.id, false).unwrap();
         assert!(complete_control(task).await.is_err());
     }
+    host.shutdown().await;
+}
+
+#[tokio::test]
+async fn short_handles_preserve_application_grants_and_revocation_for_new_actions() {
+    use agent_runtime::{ToolCall, ToolExecutor};
+    let fixture = Fixture::new();
+    let bundled = fixture.0.join("bundled");
+    let source = control_package(&bundled, "computer-use", "ok", &fixture.0.join("called"));
+    let host = ExtensionHost::open_with_bundled(&fixture.0.join("state"), Some(bundled)).unwrap();
+    let installed = host.install_plugin(&source, None).unwrap();
+    let canonical = &installed.plugins[0].mcp_servers[0].id;
+    let tools = ExtensionTools::new(host.clone(), "r".into(), None, None);
+    let listed = tools
+        .execute(ToolCall {
+            id: "list".into(),
+            name: "list_mcp_servers".into(),
+            arguments: "{}".into(),
+        })
+        .await
+        .unwrap();
+    let listed: serde_json::Value = serde_json::from_str(&listed).unwrap();
+    let handle = listed["servers"][0]["id"].as_str().unwrap();
+    assert!(handle.len() < canonical.len());
+    let selection = select_task(host.clone(), "r", handle);
+    let approval = pending_control(&host, "r").await;
+    assert_eq!(&approval.server_id, canonical);
+    host.approvals
+        .decide_scoped("r", &approval.id, true, true)
+        .unwrap();
+    assert!(complete_control(selection).await.is_ok());
+    assert_eq!(
+        &host.controls.lock().unwrap().list("r")[0].server_id,
+        canonical
+    );
+    // Each new operation must use the existing app grant, not generic MCP approval.
+    for name in [
+        "computer_windows",
+        "computer_drag",
+        "computer_set_value",
+        "computer_action",
+    ] {
+        assert!(
+            complete_control(control_task(host.clone(), "r", handle, name, json!({})))
+                .await
+                .is_ok()
+        );
+        assert!(host.approvals.list("r").is_empty());
+    }
+    host.revoke_run("r");
+    let selection = select_task(host.clone(), "r", handle);
+    let approval = pending_control(&host, "r").await;
+    assert_eq!(&approval.server_id, canonical);
+    host.approvals.decide("r", &approval.id, false).unwrap();
+    assert!(complete_control(selection).await.is_err());
     host.shutdown().await;
 }
 
@@ -896,7 +972,7 @@ async fn abandoned_selection_cannot_revoke_a_replacement_grant() {
     let fixture = Fixture::new();
     let host = fixture.host();
     let config = host.server("desktop").unwrap();
-    let binding = serde_json::to_string(&config).unwrap();
+    let binding = host.control_binding(&config).unwrap();
     let old_grant = host
         .controls
         .lock()
@@ -982,7 +1058,7 @@ async fn children_inherit_only_successful_session_grants_and_keep_independent_cl
     }
     assert_eq!(host.clients.read().unwrap().len(), 3);
     let config = host.server(server).unwrap();
-    let binding = serde_json::to_string(&config).unwrap();
+    let binding = host.control_binding(&config).unwrap();
     let child_client = host.client("child-a", &config).unwrap();
     host.revoke_run("child-a");
     assert!(
@@ -1080,7 +1156,7 @@ async fn failed_child_selection_never_leaks_a_family_session_grant() {
         .unwrap();
     let error = complete_control(child).await.unwrap_err();
     assert!(error.to_string().contains("fixture app selection refused"));
-    let binding = serde_json::to_string(&host.server(server).unwrap()).unwrap();
+    let binding = host.control_binding(&host.server(server).unwrap()).unwrap();
     assert!(
         !host
             .controls
@@ -1090,3 +1166,12 @@ async fn failed_child_selection_never_leaks_a_family_session_grant() {
     );
     host.shutdown().await;
 }
+
+#[path = "capability_integration_tests.rs"]
+mod capability_tests;
+
+#[path = "target_permission_tests.rs"]
+mod target_permission_tests;
+
+#[path = "full_access_tests.rs"]
+mod full_access_tests;

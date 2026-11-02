@@ -2,6 +2,9 @@ import type { ModelCapacity, ResolvedModelLimits } from './model-limits'
 import type { ReasoningCapability } from './model-reasoning'
 export type { ReasoningCapability, ReasoningOption } from './model-reasoning'
 import type {
+  ControlApprovalDecision,
+  ApprovalExtent,
+  ControlPermission,
   ExtensionConfig,
   ExtensionSettings,
   McpCatalog,
@@ -24,9 +27,12 @@ export interface RunDelegation {
   model_override?: UpdateRunModelInput | null
 }
 
+export type ApprovalMode = 'ask' | 'auto_review' | 'full_access'
+
 export interface ExecutionPolicy {
+  approval_mode?: ApprovalMode
   max_steps?: number | null
-  max_agents?: number
+  max_agents?: number | null
 }
 
 export type PermissionMode = 'read_only' | 'workspace_write'
@@ -37,6 +43,7 @@ export interface ModelInfo {
   description: string
   available: boolean
   context_window: number
+  supports_images?: boolean
   reasoning?: {
     default_effort: string | null
     supported_efforts: string[]
@@ -44,12 +51,27 @@ export interface ModelInfo {
   }
 }
 
+export interface ModelRestoreState {
+  status: 'loading' | 'ready' | 'error'
+  message?: string
+}
+
+export interface RecoveryIssue {
+  run_id: string | null
+  source_path: string
+  stage: string
+  message: string
+  related_run_id: string | null
+}
+
 export interface AppConfig {
   version: string
   models: ModelInfo[]
   default_model: string
   storage_path: string
+  recovery_issues?: RecoveryIssue[]
   model_config_error?: string
+  model_restore_status?: ModelRestoreState['status']
 }
 
 export interface ConfigureModelInput {
@@ -61,6 +83,8 @@ export interface ConfigureModelInput {
   context_window?: number
   /** Per-request output budget, not the provider's physical maximum. */
   max_output_tokens?: number
+  /** Automatic profiles retain a numeric planning reserve without imposing it on optional-cap APIs. */
+  output_limit_mode?: 'auto' | 'custom'
   reasoning_mode: 'off' | 'standard' | 'deepseek'
   reasoning_effort: string
   /** Omitted for legacy profiles; resolved independently of the default selection. */
@@ -77,6 +101,15 @@ export type ResolvedModelConfiguration = Omit<
   context_window: number
   max_output_tokens: number
 }
+
+/** Editable settings without returning the saved credential to the renderer. */
+export type ModelConfiguration = Omit<ResolvedModelConfiguration, 'api_key'> & {
+  id: string
+  has_api_key: boolean
+}
+
+/** An omitted or blank key keeps the credential for the same service origin. */
+export type UpdateModelInput = Omit<ConfigureModelInput, 'api_key'> & { api_key?: string }
 
 export interface ConfigureModelResult {
   model: ModelInfo
@@ -116,8 +149,11 @@ export interface ChatMessage {
   images?: { sequence: number; mime_type: string }[]
   reasoning?: string
   tool_name?: string
+  tool_arguments?: string
+  started_at?: string
+  completed_at?: string
   is_error?: boolean
-  status: 'pending' | 'streaming' | 'complete'
+  status: 'pending' | 'streaming' | 'complete' | 'interrupted'
 }
 
 export interface TimelineEvent {
@@ -127,6 +163,11 @@ export interface TimelineEvent {
   label: string
   detail: string
   timestamp: string
+}
+
+export interface RunEventPage {
+  events: TimelineEvent[]
+  before: number | null
 }
 
 export interface CompactionRecord {
@@ -177,7 +218,29 @@ export interface ContextSnapshot {
   checkpoints: CompactionRecord[]
 }
 
+export interface PendingInput {
+  id: string
+  content: string
+  files: FileReference[]
+  steer: boolean
+  delivering: boolean
+  revision: number
+}
+export type PendingInputAction =
+  | { action: 'enqueue'; content: string; files?: FileReference[] }
+  | { action: 'edit'; id: string; revision: number; content: string }
+  | { action: 'steer' | 'remove'; id: string; revision: number }
+
 export interface RunDetail extends RunSummary {
+  /** UI paging metadata only; the runtime always retains the complete history. */
+  history?: {
+    before: string | null
+    total_messages: number
+    total_events: number
+    events_before: number | null
+  }
+  pending_inputs?: PendingInput[]
+  pending_inputs_paused?: boolean
   messages: ChatMessage[]
   events: TimelineEvent[]
   context: ContextSnapshot | null
@@ -185,10 +248,11 @@ export interface RunDetail extends RunSummary {
 }
 
 export interface CreateRunInput {
+  execution_policy?: ExecutionPolicy
   prompt: string
   model_id: string
   reasoning_effort?: string
-  files?: TextFileReference[]
+  files?: FileReference[]
   workspace_path?: string
   permission_mode?: PermissionMode
 }
@@ -204,16 +268,39 @@ export interface TextFileReference {
   name: string
   path?: string
   text: string
+  image?: never
+  attachment?: never
 }
+
+/** A captured image, independent of the clipboard or original file. */
+export interface ImageFileReference {
+  name: string
+  path?: string
+  image: { mime_type: string; data_base64: string }
+  text?: never
+  attachment?: never
+}
+
+/** Original bytes retained locally; the model reads selected portions through file tools. */
+export interface StoredFileReference {
+  name: string
+  path?: string
+  attachment: { id: string; size: number }
+  text?: never
+  image?: never
+}
+
+export type FileReference = TextFileReference | ImageFileReference | StoredFileReference
 
 export interface FileReferenceInfo {
   name: string
   path?: string
   size: number
+  mime_type?: string
 }
 
 export interface FileImportResult {
-  files: TextFileReference[]
+  files: FileReference[]
   errors: string[]
 }
 
@@ -228,7 +315,7 @@ export interface FileChange {
 export type CommandExecutionMode = 'sandboxed' | 'unrestricted' | 'unavailable'
 export type CommandNetworkAccess = 'denied' | 'allowed'
 export type CommandAccess = 'read_only' | 'workspace_write'
-export type CommandApprovalScope = 'once' | 'session'
+export type CommandApprovalScope = 'once' | 'session' | 'always'
 
 export interface CommandGrant {
   access: CommandAccess
@@ -236,6 +323,8 @@ export interface CommandGrant {
 }
 
 export interface PendingApproval {
+  review_mode?: ApprovalMode
+  epoch?: number
   id: string
   task_title?: string
   command: string
@@ -254,9 +343,11 @@ export interface CommandRecord {
   exit_code: number | null
   access?: CommandAccess
   network_access?: CommandNetworkAccess
+  execution_mode?: CommandExecutionMode | ''
 }
 
 export interface WorkspaceReview {
+  approval_mode?: ApprovalMode
   root: string
   permission_mode: PermissionMode
   busy: boolean
@@ -269,7 +360,38 @@ export interface WorkspaceReview {
   command_grants?: CommandGrant[]
 }
 
+export interface UpdateRunPermissionsInput {
+  approval_mode: ApprovalMode
+  permission_mode?: PermissionMode
+}
+export interface PermissionReview {
+  id: string
+  run_id: string
+  operation: string
+  status: 'reviewing' | 'approved' | 'manual' | 'cancelled'
+  reason: string
+  model_id: string
+  created_at: string
+  usage: { input_tokens: number; output_tokens: number } | null
+}
+export interface RunPermissions extends UpdateRunPermissionsInput {
+  permission_mode: PermissionMode
+  root_run_id: string
+  editable: boolean
+  persistent_command_grants: CommandGrant[]
+  reviews: PermissionReview[]
+}
+
 export interface DesktopBridge {
+  watchComputerPreview(
+    listener: (preview: import('./computer-preview').ComputerPreview) => void,
+  ): () => void
+  collapseComputerPreview(id: string, collapsed: boolean): Promise<void>
+  runPermissions(id: string): Promise<RunPermissions>
+  updateRunPermissions(id: string, input: UpdateRunPermissionsInput): Promise<RunPermissions>
+  revokeRunPermissions(id: string, stop: boolean): Promise<RunPermissions>
+  permissions(): Promise<ControlPermission[]>
+  revokePermission(permission: ControlPermission, runId?: string): Promise<void>
   bundledPlugins(): Promise<BundledPlugin[]>
   installBundledPlugin(id: BundledPlugin['id']): Promise<ExtensionSettings>
   prepareBrowser(): Promise<void>
@@ -292,23 +414,28 @@ export interface DesktopBridge {
   approveExtension(
     id: string,
     approvalId: string,
-    allow: boolean,
-    session?: boolean,
+    decision: ControlApprovalDecision,
+    extent?: ApprovalExtent,
   ): Promise<RunExtensions>
   revokeControl(id: string): Promise<RunExtensions>
+  revokeControlPermission(serverId: string): Promise<ExtensionSettings>
   openSkillsDirectory(): Promise<void>
   resolveResource(reference: ResourceReference): Promise<ResolvedResource>
   resourceAction(id: string, action: ResourceAction): Promise<void>
   openExternal(url: string): Promise<void>
   copyText(text: string): Promise<void>
   config(): Promise<AppConfig>
+  retryModelRestore(): Promise<void>
+  restartRuntime(): Promise<void>
   listRuns(): Promise<RunSummary[]>
   getRun(id: string): Promise<RunDetail>
+  getRunPage(id: string, before: string): Promise<RunDetail>
+  getRunEventsPage(id: string, before: number): Promise<RunEventPage>
   createRun(input: CreateRunInput): Promise<RunDetail>
   updateRunModel(id: string, input: UpdateRunModelInput): Promise<RunDetail>
   chooseFiles(): Promise<FileImportResult>
   importFiles(files: File[]): Promise<FileImportResult>
-  pasteFiles(): Promise<FileImportResult>
+  pasteFiles(files?: File[]): Promise<FileImportResult>
   chooseWorkspace(): Promise<string | null>
   openWorkspace(path: string): Promise<string>
   revealWorkspace(id: string): Promise<void>
@@ -322,13 +449,16 @@ export interface DesktopBridge {
   revokeCommandGrants(id: string): Promise<WorkspaceReview>
   stopCommand(id: string, commandId: string): Promise<WorkspaceReview>
   revertFile(id: string, path: string): Promise<WorkspaceReview>
-  resumeRun(id: string, message?: string, files?: TextFileReference[]): Promise<RunDetail>
+  resumeRun(id: string, message?: string, files?: FileReference[]): Promise<RunDetail>
+  updatePendingInput(id: string, input: PendingInputAction): Promise<RunDetail>
   cancelRun(id: string): Promise<RunDetail>
   compactRun(id: string): Promise<RunDetail>
   cancelCompaction(id: string): Promise<RunDetail>
   configureModel(input: ConfigureModelInput): Promise<ConfigureModelResult>
+  getModelConfiguration(id: string): Promise<ModelConfiguration>
+  updateModelConfiguration(id: string, input: UpdateModelInput): Promise<ConfigureModelResult>
   refreshModelContext(id: string): Promise<ConfigureModelResult>
-  submitInput(id: string, message: string, files?: TextFileReference[]): Promise<RunDetail>
+  submitInput(id: string, message: string, files?: FileReference[]): Promise<RunDetail>
   watchRun(
     id: string,
     listener: (snapshot: RunDetail) => void,

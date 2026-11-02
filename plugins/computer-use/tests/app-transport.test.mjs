@@ -37,7 +37,7 @@ test('independent app launch authenticates a private channel and preserves JSON 
   assert.equal(response.result.method, 'status');
   assert.deepEqual(response.result.modes, [0o700, 0o600, 0o600]);
   assert.equal(launched().command, '/usr/bin/open');
-  assert.deepEqual(launched().args.slice(0, -1), ['-g', '-j', '-n', '-W', '/fixture/Open Harness Computer Use.app', '--args', '--socket-dir']);
+  assert.deepEqual(launched().args.slice(0, -1), ['-g', '-n', '-W', '/fixture/Open Harness Computer Use.app', '--args', '--socket-dir']);
   assert.equal(errors.length, 0);
   const directory = transport.directory;
   transport.kill();

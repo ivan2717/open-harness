@@ -150,12 +150,14 @@ export function LocalResourceLink({
   enabled = true,
   className = 'message-file-link',
   ariaLabel,
+  imagePreview = false,
 }: {
   reference: ResourceReference
   children: ReactNode
   enabled?: boolean
   className?: string
   ariaLabel?: string
+  imagePreview?: boolean
 }) {
   const { resource, error, retry } = useResource(reference, enabled)
   const [show, setShow] = useState(false)
@@ -172,6 +174,9 @@ export function LocalResourceLink({
           else setShow(true)
         }}
       >
+        {imagePreview && resource?.kind === 'image' && (
+          <img className="file-reference-thumbnail" src={resource.url} alt={resource.name} />
+        )}
         {children}
       </button>
       {error && (

@@ -4,7 +4,7 @@ export function pageOperation(operation, args) {
   // Navigation can replace the document after tabs.get / Page.getFrameTree.
   // Check again inside the exact isolated world before reading or dispatching.
   if (!location.href || location.href === 'about:blank') throw new Error('page_loading: wait for navigation, then retry chrome_snapshot only.');
-  if (location.origin !== args.expected_origin) throw new Error('origin_changed: document access requires authorization again.');
+  if (location.origin !== args.expected_origin) throw new Error('origin_changed: the document changed; refresh chrome_tabs and select this existing tab with its current origin.');
   const key = '__openHarnessPageState';
   let state = globalThis[key];
   if (!state) {

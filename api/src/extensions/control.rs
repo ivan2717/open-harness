@@ -1,4 +1,8 @@
 //! Ephemeral UI-control grants. Never restored from conversation history.
+use super::control_permissions::{
+    CapabilityPermissions, ControlCapability, ControlPermission, PermissionLifetime,
+    PermissionTarget,
+};
 use serde::Serialize;
 use std::{collections::HashMap, io};
 
@@ -6,6 +10,9 @@ use std::{collections::HashMap, io};
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ControlScope {
     Browser,
+    BrowserOrigin {
+        origin: String,
+    },
     Application {
         bundle_id: String,
         pid: u32,
@@ -18,6 +25,22 @@ pub enum ControlScope {
     ChromeNewTab {
         origin: String,
     },
+}
+
+impl ControlScope {
+    pub fn permission_target(&self) -> Option<PermissionTarget> {
+        match self {
+            Self::Browser => None,
+            Self::BrowserOrigin { origin }
+            | Self::ChromeTab { origin, .. }
+            | Self::ChromeNewTab { origin } => Some(PermissionTarget::Origin {
+                origin: origin.clone(),
+            }),
+            Self::Application { bundle_id, .. } => Some(PermissionTarget::Application {
+                bundle_id: bundle_id.clone(),
+            }),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -38,9 +61,14 @@ pub struct ControlAccess {
 
 #[derive(Default)]
 pub struct ControlRegistry {
+    permissions: CapabilityPermissions,
+    /// Live host policy. This is restored from the root conversation, never
+    /// from tool parameters or persistent MCP grants.
+    approval_modes: HashMap<String, agent_local::ApprovalMode>,
     /// Host-owned delegation binding. A model can never choose its approval family.
     families: HashMap<String, String>,
     epochs: HashMap<String, u64>,
+    server_runs: HashMap<String, std::collections::HashSet<String>>,
     access: HashMap<(String, String), ControlAccess>,
     // Active selection and remembered permissions are separate. Returning to
     // an explicitly approved application/tab must not erase other approvals.
@@ -50,6 +78,124 @@ pub struct ControlRegistry {
 }
 
 impl ControlRegistry {
+    pub fn approval_mode(&self, run: &str) -> agent_local::ApprovalMode {
+        self.approval_modes
+            .get(self.authorization_scope(run))
+            .copied()
+            .unwrap_or_default()
+    }
+    pub fn set_approval_mode(&mut self, run: &str, mode: agent_local::ApprovalMode) -> bool {
+        // A restored child's older snapshot must never overwrite its parent's
+        // current policy. Children always read the live root value above.
+        if self.authorization_scope(run) != run {
+            return false;
+        }
+        // First injection restores the saved root policy. It must not suppress
+        // existing Always permissions merely because the process restarted.
+        self.approval_modes
+            .insert(run.into(), mode)
+            .is_some_and(|previous| previous != mode)
+    }
+    pub fn open(path: &std::path::Path) -> io::Result<Self> {
+        Ok(Self {
+            permissions: CapabilityPermissions::open(path)?,
+            ..Default::default()
+        })
+    }
+    pub fn persistent_permissions(&self) -> Vec<ControlPermission> {
+        self.permissions.list()
+    }
+    pub fn persistent_permission_matches(
+        &self,
+        permission: &ControlPermission,
+        binding: &str,
+    ) -> bool {
+        self.permissions.persistent_matches(permission, binding)
+    }
+    pub fn session_permissions(&self, run: &str) -> Vec<ControlPermission> {
+        self.permissions.session_list(self.authorization_scope(run))
+    }
+    pub fn revoke_permission(&mut self, server: &str) -> io::Result<()> {
+        self.permissions.revoke(server)?;
+        self.invalidate_servers(&std::collections::HashSet::from([server.into()]));
+        Ok(())
+    }
+    pub fn capability_permits(
+        &self,
+        run: &str,
+        server: &str,
+        binding: &str,
+        capability: ControlCapability,
+    ) -> bool {
+        self.permissions.permits(
+            self.authorization_scope(run),
+            server,
+            binding,
+            capability,
+            None,
+        )
+    }
+    pub fn target_permits(
+        &self,
+        run: &str,
+        server: &str,
+        binding: &str,
+        capability: ControlCapability,
+        target: Option<&PermissionTarget>,
+    ) -> bool {
+        self.permissions.permits(
+            self.authorization_scope(run),
+            server,
+            binding,
+            capability,
+            target,
+        )
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub fn remember_permission(
+        &mut self,
+        run: &str,
+        server: &str,
+        name: &str,
+        binding: &str,
+        capability: ControlCapability,
+        target: Option<PermissionTarget>,
+        always: bool,
+    ) -> io::Result<()> {
+        let root = self.authorization_scope(run).to_owned();
+        self.permissions
+            .remember(&root, server, name, binding, capability, target, always)
+    }
+    pub fn revoke_target(
+        &mut self,
+        run: Option<&str>,
+        permission: &ControlPermission,
+    ) -> io::Result<()> {
+        let root = run.map(|run| self.authorization_scope(run).to_owned());
+        self.permissions
+            .revoke_target(root.as_deref(), permission)?;
+        // Invalidate handles without discarding unrelated saved permissions.
+        let runs: Vec<String> = if permission.lifetime == PermissionLifetime::Always {
+            self.server_runs
+                .get(&permission.server_id)
+                .into_iter()
+                .flatten()
+                .cloned()
+                .collect()
+        } else {
+            self.family_members(root.as_deref().unwrap())
+        };
+        for run in runs {
+            *self.epochs.entry(run.clone()).or_default() += 1;
+            self.release_server(&run, &permission.server_id);
+            self.remembered.remove(&(
+                self.authorization_scope(&run).to_owned(),
+                permission.server_id.clone(),
+            ));
+        }
+        Ok(())
+    }
+
     pub fn bind_scope(&mut self, run: &str, root: &str) {
         self.families.insert(run.into(), root.into());
     }
@@ -68,6 +214,13 @@ impl ControlRegistry {
         }
         members
     }
+    pub fn operation_epoch(&mut self, run: &str, server: &str) -> u64 {
+        self.server_runs
+            .entry(server.into())
+            .or_default()
+            .insert(run.into());
+        self.epoch(run)
+    }
     pub fn epoch(&self, run: &str) -> u64 {
         self.epochs.get(run).copied().unwrap_or_default()
     }
@@ -85,6 +238,24 @@ impl ControlRegistry {
         scope: Option<&ControlScope>,
     ) -> bool {
         if let Some(scope) = scope {
+            let capability = match scope {
+                ControlScope::Browser | ControlScope::BrowserOrigin { .. } => {
+                    ControlCapability::Browser
+                }
+                ControlScope::Application { .. } => ControlCapability::Computer,
+                ControlScope::ChromeTab { .. } | ControlScope::ChromeNewTab { .. } => {
+                    ControlCapability::Chrome
+                }
+            };
+            if self.target_permits(
+                run,
+                server,
+                binding,
+                capability,
+                scope.permission_target().as_ref(),
+            ) {
+                return true;
+            }
             return self
                 .remembered
                 .get(&(self.authorization_scope(run).into(), server.into()))
@@ -302,6 +473,12 @@ impl ControlRegistry {
         }
     }
     pub fn revoke_run(&mut self, run: &str) {
+        self.release_run(run, true);
+    }
+    pub fn interrupt_run(&mut self, run: &str) {
+        self.release_run(run, false);
+    }
+    fn release_run(&mut self, run: &str, revoke: bool) {
         let scope = self.authorization_scope(run).to_owned();
         let members = if scope == run {
             self.family_members(run)
@@ -312,8 +489,9 @@ impl ControlRegistry {
             *self.epochs.entry(member.clone()).or_default() += 1;
         }
         self.access.retain(|(owner, _), _| !members.contains(owner));
-        if scope == run {
+        if revoke && scope == run {
             self.remembered.retain(|(owner, _), _| owner != run);
+            self.permissions.stop(run);
         }
         if self.desktop_owner.as_deref() == Some(scope.as_str())
             && !self.access.iter().any(|((owner, _), item)| {
@@ -325,12 +503,18 @@ impl ControlRegistry {
         }
     }
     pub fn invalidate_servers(&mut self, changed: &std::collections::HashSet<String>) {
+        self.permissions.invalidate(changed);
         let runs: std::collections::HashSet<_> = self
             .access
             .keys()
             .chain(self.remembered.keys())
             .filter(|(_, server)| changed.contains(server))
             .map(|(run, _)| run.clone())
+            .chain(
+                changed
+                    .iter()
+                    .flat_map(|server| self.server_runs.get(server).into_iter().flatten().cloned()),
+            )
             .collect();
         for run in runs {
             *self.epochs.entry(run.clone()).or_default() += 1;
@@ -344,6 +528,34 @@ impl ControlRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn interrupt_invalidates_live_handles_but_preserves_family_permissions() {
+        let mut registry = ControlRegistry::default();
+        registry.bind_scope("child", "root");
+        registry
+            .remember_permission(
+                "root",
+                "s",
+                "Browser",
+                "v1",
+                ControlCapability::Browser,
+                None,
+                false,
+            )
+            .unwrap();
+        registry
+            .grant("child", "s", "Browser", "v1", ControlScope::Browser, true)
+            .unwrap();
+        let epoch = registry.operation_epoch("child", "s");
+        registry.interrupt_run("root");
+        assert!(registry.check_epoch("child", epoch).is_err());
+        assert!(registry.current_scope("child", "s", "v1").is_none());
+        assert!(registry.capability_permits("child", "s", "v1", ControlCapability::Browser));
+        assert!(registry.permits("child", "s", "v1", Some(&ControlScope::Browser)));
+        registry.revoke_run("root");
+        assert!(!registry.capability_permits("child", "s", "v1", ControlCapability::Browser));
+        assert!(!registry.permits("child", "s", "v1", Some(&ControlScope::Browser)));
+    }
     #[test]
     fn reusable_child_grants_remain_visible_and_revocable_after_child_stops() {
         let mut registry = ControlRegistry::default();

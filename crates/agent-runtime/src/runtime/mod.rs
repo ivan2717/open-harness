@@ -3,6 +3,7 @@ mod execution;
 mod inbox;
 mod maintenance;
 mod tool_repetition;
+mod user_input;
 
 use std::{error::Error, fmt};
 
@@ -30,6 +31,7 @@ pub struct AgentRuntime<M, T, C, S = InMemoryEventStore, H = NoHistoryAccess> {
     max_steps: Option<u32>,
     continue_after_response: bool,
     executions: ExecutionRegistry,
+    user_inputs: Option<std::sync::Arc<dyn crate::UserInputQueue>>,
 }
 
 impl<M, T, C> AgentRuntime<M, T, C, InMemoryEventStore, NoHistoryAccess> {
@@ -62,6 +64,7 @@ impl<M, T, C, S> AgentRuntime<M, T, C, S, NoHistoryAccess> {
             max_steps,
             continue_after_response: false,
             executions: ExecutionRegistry::default(),
+            user_inputs: None,
         }
     }
 }
@@ -78,7 +81,13 @@ impl<M, T, C, S, H> AgentRuntime<M, T, C, S, H> {
             max_steps: self.max_steps,
             continue_after_response: self.continue_after_response,
             executions: self.executions,
+            user_inputs: self.user_inputs,
         }
+    }
+
+    pub fn with_user_inputs(mut self, inputs: std::sync::Arc<dyn crate::UserInputQueue>) -> Self {
+        self.user_inputs = Some(inputs);
+        self
     }
 
     pub fn model(&self) -> &M {
@@ -558,7 +567,7 @@ where
                 write!(formatter, "invalid model capabilities: {error}")
             }
             Self::OutputTruncated => {
-                formatter.write_str("model output was truncated before completion")
+                formatter.write_str("model output was truncated after 2 automatic recovery attempts; increase the model's output limit or request smaller parts, then continue the task")
             }
             Self::Context(error) => write!(formatter, "context management failed: {error}"),
             Self::ContextRecovery { overflow, recovery } => write!(

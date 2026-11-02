@@ -21,13 +21,14 @@ pub enum ModelBlockKind {
 }
 
 impl ModelBlockKind {
-    fn of(block: &ContentBlock) -> Self {
-        match block {
+    fn of(block: &ContentBlock) -> Option<Self> {
+        Some(match block {
+            ContentBlock::Image { .. } => return None,
             ContentBlock::Text { .. } => Self::Text,
             ContentBlock::Reasoning { .. } => Self::Reasoning,
             ContentBlock::ToolCall { .. } => Self::ToolCall,
             ContentBlock::ToolResult { .. } => Self::ToolResult,
-        }
+        })
     }
 }
 
@@ -113,6 +114,19 @@ impl ModelStreamAssembler {
         self.output.ok_or(ModelStreamError::MissingFinish)
     }
 
+    /// Salvage display text only. Tool arguments, reasoning and provider state
+    /// from an incomplete response must never enter a later executable request.
+    pub fn interrupted_text(&self) -> String {
+        self.blocks
+            .iter()
+            .filter(|block| block.kind == ModelBlockKind::Text)
+            .map(|block| match &block.settled {
+                Some(ContentBlock::Text { text }) => text.as_str(),
+                _ => block.text.as_str(),
+            })
+            .collect()
+    }
+
     fn open_block(&mut self, index: usize) -> Result<&mut StreamBlock, ModelStreamError> {
         let block = self
             .blocks
@@ -171,7 +185,7 @@ impl ModelStreamAssembler {
                 block: settled,
             } => {
                 let block = self.open_block(index)?;
-                if block.kind != ModelBlockKind::of(&settled) {
+                if Some(block.kind) != ModelBlockKind::of(&settled) {
                     return Err(ModelStreamError::BlockKindMismatch { index });
                 }
                 match &settled {
@@ -196,6 +210,9 @@ impl ModelStreamAssembler {
                         }
                     }
                     ContentBlock::ToolResult { .. } => {}
+                    ContentBlock::Image { .. } => {
+                        return Err(ModelStreamError::BlockKindMismatch { index });
+                    }
                 }
                 block.settled = Some(settled);
             }
@@ -280,10 +297,12 @@ impl ModelOutput {
     /// no fabricated incremental chunks; complete blocks are still observable.
     pub fn emit_stream(self, sink: &mut dyn ModelStreamSink) {
         for (index, block) in self.response.content.into_iter().enumerate() {
-            sink.emit(ModelStreamEvent::BlockStart {
-                index,
-                kind: ModelBlockKind::of(&block),
-            });
+            let Some(kind) = ModelBlockKind::of(&block) else {
+                // Input-only image blocks cannot settle as model output. An
+                // invalid adapter response ends without Finish and is rejected.
+                return;
+            };
+            sink.emit(ModelStreamEvent::BlockStart { index, kind });
             sink.emit(ModelStreamEvent::BlockEnd { index, block });
         }
         if let Some(usage) = self.usage {

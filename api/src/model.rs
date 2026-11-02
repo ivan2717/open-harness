@@ -1,6 +1,6 @@
 use crate::{
     context::DemoCompactor,
-    contracts::{ConfigureModel, ModelInfo, ModelReasoning},
+    contracts::{ConfigureModel, ModelInfo, ModelReasoning, OutputLimitMode},
     demo::{DemoModel, DemoTools},
 };
 use agent_core::agent::RunEventEnvelope;
@@ -212,6 +212,10 @@ pub struct ConfiguredModel {
     pub info: ModelInfo,
     pub model: HttpModel,
 }
+
+#[cfg(test)]
+#[path = "model_output_tests.rs"]
+mod output_tests;
 pub fn configure(input: ConfigureModel) -> Result<ConfiguredModel, ProviderError> {
     if input.reasoning_capability.is_some() && input.reasoning_mode != "off" {
         return Err(ProviderError::InvalidConfig(
@@ -260,6 +264,11 @@ pub fn configure(input: ConfigureModel) -> Result<ConfiguredModel, ProviderError
         &reasoning,
     ))
     .map_err(|_| ProviderError::InvalidConfig("invalid model configuration"))?;
+    // Preserve legacy identifiers, while keeping automatic profiles distinct
+    // from an explicit cap of the same size.
+    if input.output_limit_mode == OutputLimitMode::Auto {
+        identity.extend_from_slice(b".output-limit.auto.v1");
+    }
     // Old profiles retain their identifiers. New declarations are connection
     // specific and cannot accidentally reuse a profile with a different mapping.
     if input.reasoning_capability.is_some() || input.reasoning_default.is_some() {
@@ -283,6 +292,7 @@ pub fn configure(input: ConfigureModel) -> Result<ConfiguredModel, ProviderError
         ),
         available: true,
         context_window: input.context_window,
+        supports_images: input.supports_images,
         reasoning: None,
     };
     let mut model = HttpModel::new(ProviderConfig {
@@ -294,7 +304,8 @@ pub fn configure(input: ConfigureModel) -> Result<ConfiguredModel, ProviderError
         max_output_tokens: input.max_output_tokens,
         supports_images: input.supports_images,
         reasoning,
-    })?;
+    })?
+    .with_provider_output_limit(input.output_limit_mode == OutputLimitMode::Auto);
     if let Some(capability) = input.reasoning_capability {
         model = model.with_reasoning_capability(capability)?;
     }
@@ -327,6 +338,7 @@ mod tests {
             model: "fixture-model".into(),
             context_window: 32000,
             max_output_tokens: 4096,
+            output_limit_mode: Default::default(),
             reasoning_mode: "off".into(),
             reasoning_effort: "high".into(),
             reasoning_capability: None,

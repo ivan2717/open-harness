@@ -1,4 +1,5 @@
 import { useIsMutating, useMutation, useQueryClient } from '@tanstack/react-query'
+import { Link } from '@tanstack/react-router'
 import { BookOpen, LoaderCircle } from 'lucide-react'
 import type {
   BuiltinPluginInfo,
@@ -51,6 +52,10 @@ export function PluginSettings({
   const bundled = catalog.data ?? []
   function card(plugin: PluginInfo | undefined, bundle?: BundledPlugin) {
     const id = plugin?.id ?? bundle!.id
+    const permissions = (settings?.control_permissions ?? []).filter((permission) =>
+      plugin?.mcp_servers.some((server) => server.id === permission.server_id),
+    )
+    const hasControl = ['chrome-use', 'browser-use', 'computer-use'].includes(id)
     return (
       <PluginCard
         key={id}
@@ -69,6 +74,16 @@ export function PluginSettings({
       >
         {bundle && (
           <BundledPluginSetup plugin={bundle} installed={plugin} disabled={busy || !settings} />
+        )}
+        {plugin && (hasControl || permissions.length > 0) && (
+          <div className="plugin-control-permissions">
+            <span>
+              {permissions.length ? `已保存 ${permissions.length} 项访问授权` : '尚未保存长期授权'}
+            </span>
+            <Link to="/settings" className="extension-text-button">
+              管理访问授权
+            </Link>
+          </div>
         )}
       </PluginCard>
     )
@@ -129,7 +144,7 @@ export function PluginSettings({
       {install.isError && <InlineError message={pluginErrorMessage(install.error)} />}
       {save.isError && <InlineError message={errorMessage(save.error)} />}
       <p className="settings-footnote">
-        安装外部插件不会连接服务或运行脚本。启用后，Agent 可按需发现工具；外部操作仍需单独批准。
+        安装外部插件不会连接服务或运行脚本。启用后，Agent 可按需发现工具，工具使用遵循你授予的权限。
       </p>
     </section>
   )

@@ -37,6 +37,23 @@ afterEach(async () => {
 })
 
 describe('refresh saved model context', () => {
+  it('refreshes automatic output metadata without changing it to a custom limit', async () => {
+    const { vault } = await setup()
+    await vault.save('old-model', { ...saved, output_limit_mode: 'auto' })
+    const request = vi.fn(async (request: ApiRequest) =>
+      request.path === '/api/runs' ? [] : { id: 'new-model' },
+    )
+    await refreshModelContext('old-model', { request }, vault, async (input) => {
+      expect(input.max_output_tokens).toBeUndefined()
+      return { context_window: 1_000_000, max_output_tokens: 128000 }
+    })
+    expect(vault.get('new-model')).toMatchObject({
+      context_window: 1_000_000,
+      max_output_tokens: 128000,
+      output_limit_mode: 'auto',
+    })
+  })
+
   it('accepts only an identifier over IPC, with no credential or capacity input', () => {
     expect(apiRequest({ operation: 'refreshModelContext', id: 'old-model' })).toEqual({
       path: '/api/models/old-model/context/refresh',
@@ -61,7 +78,11 @@ describe('refresh saved model context', () => {
           requests.push(request)
           if (request.path === '/api/runs') return []
           if (request.path === '/api/models') {
-            expect(request.body).toEqual({ ...saved, context_window: 1_000_000 })
+            expect(request.body).toEqual({
+              ...saved,
+              context_window: 1_000_000,
+              output_limit_mode: 'custom',
+            })
             return model
           }
           expect(request.path).toBe('/api/models/old-model/replace')
@@ -86,7 +107,7 @@ describe('refresh saved model context', () => {
     expect(result.persisted).toBe(true)
     expect(JSON.stringify(result)).not.toContain(saved.api_key)
     expect(await new ModelVault(path, cipher).load()).toEqual([
-      { ...saved, context_window: 1_000_000 },
+      { ...saved, context_window: 1_000_000, output_limit_mode: 'custom' },
     ])
     expect(requests).toHaveLength(3)
   })
@@ -131,7 +152,10 @@ describe('refresh saved model context', () => {
       ),
     ).rejects.toThrow('migration failed')
     const restored = await new ModelVault(path, cipher).load()
-    expect(restored).toEqual([saved, { ...saved, context_window: 262144 }])
+    expect(restored).toEqual([
+      saved,
+      { ...saved, context_window: 262144, output_limit_mode: 'custom' },
+    ])
   })
 
   it('reports the new configuration as persisted even when old-profile cleanup fails', async () => {

@@ -9,6 +9,17 @@ pub enum PermissionMode {
     WorkspaceWrite,
 }
 
+/// Host-selected authority. Ask and AutoReview keep the OS sandbox; FullAccess
+/// explicitly admits host execution only for tasks without narrower file scope.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApprovalMode {
+    #[default]
+    Ask,
+    AutoReview,
+    FullAccess,
+}
+
 /// A grant applies only to the approved command and its child processes.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -30,6 +41,11 @@ pub struct FileChange {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PendingApproval {
     pub id: String,
+    #[serde(default)]
+    pub review_mode: ApprovalMode,
+    /// Host-generated revision, checked before applying asynchronous reviews.
+    #[serde(default)]
+    pub epoch: u64,
     /// API projection only: identifies delegated work in its parent's UI.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task_title: Option<String>,
@@ -46,6 +62,9 @@ pub struct PendingApproval {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CommandRecord {
     pub id: String,
+    /// Actual execution authority when admitted; empty for legacy records.
+    #[serde(default)]
+    pub execution_mode: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task_title: Option<String>,
     pub command: String,
@@ -61,6 +80,8 @@ pub struct CommandRecord {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkspaceReview {
     pub root: String,
+    #[serde(default)]
+    pub approval_mode: ApprovalMode,
     pub permission_mode: PermissionMode,
     pub changes: Vec<FileChange>,
     pub approvals: Vec<PendingApproval>,

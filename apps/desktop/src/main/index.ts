@@ -14,11 +14,12 @@ import { isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { mkdir } from 'node:fs/promises'
 import { Backend } from './backend'
-import { initializeRuntime, watchInitializedRuntime } from './runtime-startup'
+import { ModelRestoration } from './runtime-startup'
 import { prepareWorkspaceRuntime } from './workspace-runtime'
 import { BundledPlugins } from './bundled-plugins'
 import { ChromeConnection } from './chrome-connection'
 import { COMPUTER_APP_NAME, installComputerApp } from './computer-app'
+import { ComputerPreviewHost } from './computer-preview'
 import { execFile, spawn } from 'node:child_process'
 import { promisify } from 'node:util'
 import { createRequire } from 'node:module'
@@ -37,13 +38,21 @@ import { ModelVault } from './model-vault'
 import { fetchModelMetadata } from './model-metadata'
 import { resolveReasoningCapability } from '../shared/model-reasoning'
 import { refreshModelContext } from './model-context'
+import { getModelConfiguration, updateModelConfiguration } from './model-edit'
 import { resolveModelLimits } from '../shared/model-limits'
 import { importClipboardFiles, importFilePaths } from './file-references'
+import { importImages } from './image-references'
 import {
   installMessageResourceBridge,
   registerMessageResourceScheme,
 } from './message-resource-bridge'
-import type { AppConfig, ConfigureModelInput, ModelInfo, RunSummary } from '../shared/contracts'
+import type {
+  AppConfig,
+  ConfigureModelInput,
+  ModelInfo,
+  RunSummary,
+  UpdateModelInput,
+} from '../shared/contracts'
 
 const dataDirectory = process.env.OPENHARNESS_DESKTOP_DATA_DIR
 if (dataDirectory) {
@@ -59,10 +68,25 @@ let window: BrowserWindow | undefined
 let backend: Backend | undefined
 let bundledPlugins: BundledPlugins | undefined
 let chromeConnection: ChromeConnection | undefined
+let previewWatching = false
+const computerPreview = new ComputerPreviewHost((state) => {
+  if (previewWatching && window && !window.isDestroyed())
+    window.webContents.send(channels.computerPreview, state)
+})
+function updatePreviewVisibility() {
+  computerPreview.setVisible(
+    Boolean(
+      previewWatching &&
+      window &&
+      !window.isDestroyed() &&
+      window.isVisible() &&
+      !window.isMinimized(),
+    ),
+  )
+}
 let quitting = false
 let modelVault: ModelVault | undefined
-let modelsReady: Promise<void> = Promise.resolve()
-let modelConfigError: string | undefined
+let modelRestoration: ModelRestoration | undefined
 const workspaces = new WorkspaceSelection(
   join(app.getPath('userData'), 'workspaces.json'),
   async () => {
@@ -96,6 +120,35 @@ function assertSender(event: IpcMainInvokeEvent | IpcMainEvent): void {
 }
 
 function installBridge(): void {
+  ipcMain.handle(channels.retryModelRestore, (event) => {
+    assertSender(event)
+    if (!modelRestoration) throw new Error('模型配置尚未就绪')
+    // Return immediately so a system unlock dialog cannot hold up the renderer.
+    void modelRestoration.restore()
+  })
+  ipcMain.handle(channels.restartRuntime, async (event) => {
+    assertSender(event)
+    if (!backend) throw new Error('本地服务正在启动')
+    await backend.restartAfterFailure()
+    void modelRestoration?.restore()
+  })
+  ipcMain.on(channels.computerPreviewWatch, (event, watching: unknown) => {
+    assertSender(event)
+    if (typeof watching !== 'boolean') return
+    previewWatching = watching
+    updatePreviewVisibility()
+    if (watching)
+      for (const state of computerPreview.snapshot())
+        event.sender.send(channels.computerPreview, state)
+  })
+  ipcMain.handle(channels.computerPreviewCollapse, (event, id: unknown, collapsed: unknown) => {
+    assertSender(event)
+    computerPreview.setCollapsed(id, collapsed)
+  })
+  const importAttachment = (name: string, bytes: Buffer) => {
+    if (!backend) throw new Error('本地服务正在启动，请稍后添加。')
+    return backend.importAttachment(name, bytes)
+  }
   ipcMain.handle(channels.bundledPlugins, async (event) => {
     assertSender(event)
     return bundledPlugins!.list()
@@ -207,15 +260,19 @@ function installBridge(): void {
       buttonLabel: '添加引用',
       properties: ['openFile', 'multiSelections'],
     })
-    return importFilePaths(result.canceled ? [] : result.filePaths)
+    return importFilePaths(result.canceled ? [] : result.filePaths, importAttachment)
   })
   ipcMain.handle(channels.importFiles, async (event, paths: unknown) => {
     assertSender(event)
-    return importFilePaths(paths)
+    return importFilePaths(paths, importAttachment)
   })
-  ipcMain.handle(channels.pasteFiles, async (event) => {
+  ipcMain.handle(channels.importImages, (event, images: unknown) => {
     assertSender(event)
-    return importClipboardFiles(() => clipboard.read())
+    return importImages(images)
+  })
+  ipcMain.handle(channels.pasteFiles, async (event, selection: unknown) => {
+    assertSender(event)
+    return importClipboardFiles(() => clipboard.read(), importAttachment, selection)
   })
   ipcMain.handle(channels.chooseWorkspace, async (event) => {
     assertSender(event)
@@ -247,7 +304,22 @@ function installBridge(): void {
     ) {
       await workspaces.verify(mapped.body.workspace_path)
     }
-    await modelsReady
+    if (mapped.path.startsWith('/api/models') && modelRestoration?.snapshot().status === 'loading')
+      throw new Error('模型配置正在解锁，请先完成系统确认；本地历史仍可查看。')
+    const modelConfigurationRoute = /^\/api\/models\/([a-zA-Z0-9_-]+)\/configuration$/.exec(
+      mapped.path,
+    )
+    if (modelConfigurationRoute) {
+      if (!modelVault) throw new Error('模型配置尚未就绪')
+      return mapped.method === 'GET'
+        ? getModelConfiguration(modelConfigurationRoute[1], modelVault)
+        : updateModelConfiguration(
+            modelConfigurationRoute[1],
+            mapped.body as UpdateModelInput,
+            backend,
+            modelVault,
+          )
+    }
     const refreshContext = /^\/api\/models\/([a-zA-Z0-9_-]+)\/context\/refresh$/.exec(mapped.path)
     if (refreshContext) {
       if (!modelVault) throw new Error('模型配置尚未就绪')
@@ -262,6 +334,7 @@ function installBridge(): void {
         ...input,
         context_window: limits.context_window,
         max_output_tokens: limits.max_output_tokens,
+        output_limit_mode: limits.output_limit_mode,
         ...(input.reasoning_mode === 'off'
           ? { reasoning_capability: resolveReasoningCapability(input, metadata?.reasoning) }
           : {}),
@@ -271,8 +344,14 @@ function installBridge(): void {
       return { model, persisted, limits, capacity }
     }
     const result = await backend.request(mapped)
-    if (mapped.path === '/api/config')
-      return { ...(result as AppConfig), model_config_error: modelConfigError }
+    if (mapped.path === '/api/config') {
+      const restoration = modelRestoration?.snapshot()
+      return {
+        ...(result as AppConfig),
+        model_restore_status: restoration?.status,
+        model_config_error: restoration?.message,
+      }
+    }
     return result
   })
   ipcMain.on(channels.watchStart, (event, request: unknown) => {
@@ -290,14 +369,14 @@ function installBridge(): void {
         return
       }
       const runtime = backend
-      void watchInitializedRuntime(modelsReady, controller.signal, () =>
-        runtime.watch(
+      void runtime
+        .watch(
           id,
           controller.signal,
           (snapshot) => send({ snapshot }),
           (error) => send({ error }),
-        ),
-      ).catch(() => send({ error: '本地服务初始化失败。请重新启动 Open Harness。' }))
+        )
+        .catch(() => send({ error: '本地服务初始化失败。请重新启动 Open Harness。' }))
     } catch {
       /* Invalid or unauthorized subscriptions have no side effects. */
     }
@@ -335,12 +414,22 @@ function createWindow(): void {
   contents.on('will-navigate', (event) => event.preventDefault())
   contents.on('will-attach-webview', (event) => event.preventDefault())
   contents.on('render-process-gone', () => subscriptions.stopOwner(contents.id))
+  contents.on('render-process-gone', () => {
+    previewWatching = false
+    updatePreviewVisibility()
+  })
+  window.on('show', updatePreviewVisibility)
+  window.on('hide', updatePreviewVisibility)
+  window.on('minimize', updatePreviewVisibility)
+  window.on('restore', updatePreviewVisibility)
   contents.on('did-start-navigation', (_event, _url, isInPlace, isMainFrame) => {
     if (isMainFrame && !isInPlace) subscriptions.stopOwner(contents.id)
   })
   contents.once('destroyed', () => subscriptions.stopOwner(contents.id))
   window.on('closed', () => {
     window = undefined
+    previewWatching = false
+    updatePreviewVisibility()
   })
   if (devUrl) void window.loadURL(devUrl)
   else void window.loadFile(rendererPath)
@@ -400,6 +489,7 @@ if (!app.requestSingleInstanceLock()) {
       console.warn('Chrome 连接组件更新失败；可在扩展页重新配置，不影响应用启动。')
     })
     bundledPlugins = new BundledPlugins({
+      previewEndpoint: await computerPreview.start(),
       root: pluginRoot,
       runtime: app.isPackaged
         ? join(process.resourcesPath, 'browser-runtime', 'index.js')
@@ -428,21 +518,19 @@ if (!app.requestSingleInstanceLock()) {
       assertSender,
     })
     modelVault = new ModelVault(join(app.getPath('userData'), 'models.encrypted'), {
-      isEncryptionAvailable: () =>
-        safeStorage.isEncryptionAvailable() &&
+      isEncryptionAvailable: async () =>
+        (await safeStorage.isAsyncEncryptionAvailable()) &&
         (process.platform !== 'linux' || safeStorage.getSelectedStorageBackend() !== 'basic_text'),
-      encryptString: (value) => safeStorage.encryptString(value),
-      decryptString: (value) => safeStorage.decryptString(value),
+      encryptString: (value) => safeStorage.encryptStringAsync(value),
+      decryptString: async (value) => (await safeStorage.decryptStringAsync(value)).result,
     })
-    modelsReady = initializeRuntime(
-      backend,
-      () => modelVault!.load(),
-      (message) => {
-        modelConfigError = message
-      },
-    ).catch(() => undefined) // Bridge calls surface the original startup failure.
+    modelRestoration = new ModelRestoration(backend, () => modelVault!.load())
     installBridge()
     createWindow()
+    // Start history and subscriptions without waiting for OS credential access.
+    // Electron's async safeStorage API preserves this app's existing OS identity.
+    void backend.start().catch(() => undefined) // Bridge calls surface startup failure.
+    void modelRestoration.restore()
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow()
     })
@@ -455,6 +543,7 @@ if (!app.requestSingleInstanceLock()) {
     event.preventDefault()
     quitting = true
     bundledPlugins?.stop()
+    computerPreview.stop()
     subscriptions.stopAll()
     void (backend?.stop() ?? Promise.resolve()).finally(() => app.quit())
   })

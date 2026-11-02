@@ -10,18 +10,21 @@ export type ModelLimitSource = 'metadata' | 'catalog' | 'fallback' | 'override'
 export interface ResolvedModelLimits {
   context_window: number
   max_output_tokens: number
+  output_limit_mode: 'auto' | 'custom'
   context_source: ModelLimitSource
   output_source: ModelLimitSource
 }
 
 type ModelLimitInput = Pick<
   ConfigureModelInput,
-  'protocol' | 'base_url' | 'model' | 'context_window' | 'max_output_tokens'
+  'protocol' | 'base_url' | 'model' | 'context_window' | 'max_output_tokens' | 'output_limit_mode'
 >
 
 export const MODEL_TOKEN_LIMIT = 8_000_000
 // Assumed capacity only when neither the caller nor the provider supplies a limit.
 export const DEFAULT_MODEL_CONTEXT_WINDOW = 1_000_000
+// Required-cap protocols need a concrete value when the provider publishes no capacity.
+export const DEFAULT_MODEL_OUTPUT_TOKENS = 32_768
 
 function tokenLimit(value: unknown, minimum: number): number | undefined {
   return typeof value === 'number' &&
@@ -90,6 +93,12 @@ export function resolveModelLimits(
   const catalog = catalogCapacity(input)
   const metadataContext = tokenLimit(metadata?.context_window, 1024)
   const metadataOutput = tokenLimit(metadata?.max_output_tokens, 64)
+  const output_limit_mode =
+    input.output_limit_mode ?? (input.max_output_tokens === undefined ? 'auto' : 'custom')
+  if (output_limit_mode !== 'auto' && output_limit_mode !== 'custom')
+    throw new Error('无效的输出上限设置。')
+  if (output_limit_mode === 'custom' && input.max_output_tokens === undefined)
+    throw new Error('请填写单次输出上限，或恢复自动设置。')
   if (input.context_window !== undefined && tokenLimit(input.context_window, 1024) === undefined)
     throw new Error('上下文窗口须为 1,024 至 8,000,000 的整数。')
   if (
@@ -102,19 +111,23 @@ export function resolveModelLimits(
     metadataContext ??
     catalog?.context_window ??
     DEFAULT_MODEL_CONTEXT_WINDOW
-  const max_output_tokens =
-    input.max_output_tokens ??
-    Math.min(
-      8192,
-      metadataOutput ?? catalog?.max_output_tokens ?? 8192,
-      Math.floor(context_window / 4),
-    )
   const safetyMargin = Math.min(2048, Math.max(64, Math.floor(context_window / 100)))
+  const knownOutput = metadataOutput ?? catalog?.max_output_tokens
+  const max_output_tokens =
+    output_limit_mode === 'custom'
+      ? input.max_output_tokens!
+      : Math.min(
+          knownOutput ?? Math.min(DEFAULT_MODEL_OUTPUT_TOKENS, Math.floor(context_window / 4)),
+          // This is a planning budget, not a claim about the physical model limit.
+          // A narrower configured window must still leave useful space for input.
+          context_window - safetyMargin - Math.max(1, Math.floor(context_window / 4)),
+        )
   if (max_output_tokens + safetyMargin >= context_window)
     throw new Error('单次输出上限过大，请给输入和安全余量保留空间。')
   return {
     context_window,
     max_output_tokens,
+    output_limit_mode,
     context_source:
       input.context_window !== undefined
         ? 'override'
@@ -124,7 +137,7 @@ export function resolveModelLimits(
             ? 'catalog'
             : 'fallback',
     output_source:
-      input.max_output_tokens !== undefined
+      output_limit_mode === 'custom'
         ? 'override'
         : metadataOutput !== undefined
           ? 'metadata'

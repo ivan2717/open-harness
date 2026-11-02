@@ -13,6 +13,9 @@ use axum::{
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
+#[path = "model_profile_edit_tests.rs"]
+mod configuration_edits;
+
 struct Fixture {
     directory: PathBuf,
     state: AppState,
@@ -29,6 +32,7 @@ fn input(window: usize) -> ConfigureModel {
         model: "fixture-model".into(),
         context_window: window,
         max_output_tokens: 2048,
+        output_limit_mode: Default::default(),
         reasoning_mode: "off".into(),
         reasoning_effort: "medium".into(),
         reasoning_capability: None,
@@ -67,6 +71,8 @@ impl Fixture {
 
     async fn conversation(&self, id: &str) -> Arc<RunEntry> {
         let detail = RunDetail {
+            pending_inputs: Vec::new(),
+            pending_inputs_paused: false,
             summary: RunSummary {
                 reasoning_settings_version: 1,
                 reasoning_effort: None,

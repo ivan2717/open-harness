@@ -111,7 +111,8 @@ async fn completed(tools: &LocalTools, mut state: CommandStatus) -> CommandStatu
     .expect("command did not finish")
 }
 
-async fn deny_requested(tools: &LocalTools, arguments: Value) {
+async fn deny_requested(tools: &LocalTools, mut arguments: Value) {
+    arguments["network_access"] = "allowed".into();
     let task = submit(tools, arguments);
     let approval = pending(tools).await;
     tools.approve(&approval.id, false).unwrap();
@@ -127,7 +128,10 @@ async fn inherited_write_commands_share_root_approval_and_obey_leases_locks_and_
         .tools("inheriting-child", false)
         .with_command_approval_scope("parent")
         .unwrap();
-    let first = submit(&parent, json!({"command":"printf parent > parent.txt"}));
+    let first = submit(
+        &parent,
+        json!({"command":"printf parent > parent.txt", "network_access":"allowed"}),
+    );
     let approval = pending(&parent).await;
     assert_eq!(approval.access, CommandAccess::WorkspaceWrite);
     parent
@@ -142,7 +146,7 @@ async fn inherited_write_commands_share_root_approval_and_obey_leases_locks_and_
         &child,
         result(submit(
             &child,
-            json!({"command":"printf child > child.txt"}),
+            json!({"command":"printf child > child.txt", "network_access":"allowed"}),
         ))
         .await,
     )
@@ -238,11 +242,7 @@ async fn read_only_commands_and_delegated_tests_share_live_workspace_but_not_scr
             "access":"read_only", "yield_time_ms":0, "timeout_seconds":25
         }),
     );
-    let approval = pending(&parent).await;
-    assert_eq!(approval.access, CommandAccess::ReadOnly);
-    parent
-        .approve_with_scope(&approval.id, true, CommandApprovalScope::Session)
-        .unwrap();
+    assert!(parent.review().unwrap().approvals.is_empty());
     let first = result(first).await;
     assert_eq!(first.status, "running");
     let mut ready = first.clone();
@@ -349,7 +349,7 @@ async fn read_only_commands_and_delegated_tests_share_live_workspace_but_not_scr
 async fn reusable_approval_is_explicit_scoped_revocable_and_cannot_escalate_a_child() {
     let fixture = Fixture::new();
     let parent = fixture.tools("parent", false);
-    let input = json!({"command":"printf OK", "access":"read_only", "timeout_seconds":5});
+    let input = json!({"command":"printf OK", "access":"read_only", "network_access":"allowed", "timeout_seconds":5});
     let first = submit(&parent, input.clone());
     let approval = pending(&parent).await;
     parent.approve(&approval.id, true).unwrap();
@@ -368,16 +368,11 @@ async fn reusable_approval_is_explicit_scoped_revocable_and_cannot_escalate_a_ch
     assert!(parent.review().unwrap().approvals.is_empty());
     assert_eq!(
         parent.review().unwrap().command_grants[0].network_access,
-        NetworkAccess::Denied
+        NetworkAccess::Allowed
     );
     deny_requested(
         &parent,
-        json!({"command":"printf OK", "access":"read_only", "network_access":"allowed"}),
-    )
-    .await;
-    deny_requested(
-        &parent,
-        json!({"command":"printf OK", "access":"workspace_write"}),
+        json!({"command":"printf OK", "access":"workspace_write", "network_access":"allowed"}),
     )
     .await;
     let unrelated = fixture.tools("unrelated", false);
@@ -385,7 +380,7 @@ async fn reusable_approval_is_explicit_scoped_revocable_and_cannot_escalate_a_ch
     // Even a broad root grant never changes the child's filesystem ceiling.
     let broad = submit(
         &parent,
-        json!({"command":"printf OK", "access":"workspace_write"}),
+        json!({"command":"printf OK", "access":"workspace_write", "network_access":"allowed"}),
     );
     let approval = pending(&parent).await;
     parent
@@ -428,7 +423,7 @@ async fn command_rechecks_delegated_file_leases_after_user_approval() {
     let task = submit(
         &parent,
         json!({
-            "command":"printf raced > reserved.txt", "access":"workspace_write"
+            "command":"printf raced > reserved.txt", "access":"workspace_write", "network_access":"allowed"
         }),
     );
     let approval = pending(&parent).await;
@@ -442,4 +437,92 @@ async fn command_rechecks_delegated_file_leases_after_user_approval() {
     assert!(!fixture.root.join("reserved.txt").exists());
     fixture.access.release("child").await;
     assert!(!parent.review().unwrap().busy);
+}
+
+#[tokio::test]
+async fn sandboxed_offline_commands_need_no_approval_in_either_reviewer_mode() {
+    let fixture = Fixture::new();
+    let parent = fixture.tools("parent", false);
+    for mode in [
+        agent_local::ApprovalMode::Ask,
+        agent_local::ApprovalMode::AutoReview,
+    ] {
+        parent.set_approval_mode(mode).unwrap();
+        let status = completed(
+            &parent,
+            result(submit(
+                &parent,
+                json!({
+                    "command":"printf SAFE > offline.txt; cat offline.txt", "timeout_seconds":5
+                }),
+            ))
+            .await,
+        )
+        .await;
+        assert_eq!(status.status, "completed", "{}", status.output);
+        assert_eq!(status.output, "SAFE");
+        assert!(parent.review().unwrap().approvals.is_empty());
+        assert!(parent.review().unwrap().command_grants.is_empty());
+    }
+    let child = fixture
+        .tools("child", true)
+        .with_command_approval_scope("parent")
+        .unwrap();
+    assert_eq!(
+        child.approval_mode().unwrap(),
+        agent_local::ApprovalMode::AutoReview
+    );
+    let status = result(submit(&child, json!({
+        "command":"cat offline.txt; if printf FAIL > offline.txt 2>/dev/null; then exit 87; fi", "timeout_seconds":5
+    }))).await;
+    assert_eq!(status.status, "completed", "{}", status.output);
+    assert_eq!(
+        fs::read_to_string(fixture.root.join("offline.txt")).unwrap(),
+        "SAFE"
+    );
+}
+
+#[tokio::test]
+async fn one_session_approval_releases_existing_sibling_requests_and_revoke_blocks_stale_review() {
+    let fixture = Fixture::new();
+    let parent = fixture.tools("parent", false);
+    let child = fixture
+        .tools("child", true)
+        .with_command_approval_scope("parent")
+        .unwrap();
+    parent
+        .set_approval_mode(agent_local::ApprovalMode::AutoReview)
+        .unwrap();
+    let input = json!({"command":"printf APPROVED", "access":"read_only", "network_access":"allowed", "timeout_seconds":5});
+    let parent_task = submit(&parent, input.clone());
+    let child_task = submit(&child, input.clone());
+    let approval = pending(&parent).await;
+    pending(&child).await;
+    parent
+        .approve_if_current(
+            &approval.id,
+            true,
+            CommandApprovalScope::Session,
+            approval.epoch,
+        )
+        .unwrap();
+    assert_eq!(result(parent_task).await.status, "completed");
+    assert_eq!(result(child_task).await.status, "completed");
+    assert!(child.review().unwrap().approvals.is_empty());
+    parent.revoke_command_grants().unwrap();
+    let pending_task = submit(&child, input);
+    let approval = pending(&child).await;
+    parent.revoke_command_grants().unwrap();
+    assert!(
+        child
+            .approve_if_current(
+                &approval.id,
+                true,
+                CommandApprovalScope::Session,
+                approval.epoch
+            )
+            .is_err()
+    );
+    assert!(pending_task.await.unwrap().is_err());
+    assert!(parent.review().unwrap().command_grants.is_empty());
 }

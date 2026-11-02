@@ -8,6 +8,11 @@ export async function stagePluginResources({ source, destination, platform, wind
     await access(resolve(source, 'computer-use/windows/bin/OpenHarnessComputerUse.exe'))
   }
   await mkdir(destination, { recursive: true })
+  // Host-owned preview runtime is shared by installed browser plugins.
+  await copyFile(
+    resolve(source, 'computer-use/preview-relay.mjs'),
+    resolve(destination, 'preview-runtime.mjs'),
+  )
   for (const [name, server] of [
     ['browser-use', 'browser'],
     ['chrome-use', 'chrome'],

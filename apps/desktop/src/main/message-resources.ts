@@ -5,9 +5,11 @@ import { basename, extname, isAbsolute, join, relative, resolve, sep } from 'nod
 import { fileURLToPath } from 'node:url'
 import { fromMarkdown } from 'mdast-util-from-markdown'
 import type { Nodes } from 'mdast'
-import type { RunDetail, TextFileReference } from '../shared/contracts'
+import type { RunDetail, FileReference } from '../shared/contracts'
 import type { ResolvedResource, ResourceKind, ResourceReference } from '../shared/message-resources'
 import { isFileLocation } from '../shared/message-resources'
+import { MAX_REFERENCE_FILES } from '../shared/file-references'
+import { imageDimensions, imageSnapshotBytes } from './image-validation'
 
 export const RESOURCE_SCHEME = 'openharness-resource'
 export const MAX_RESOURCE_BYTES = 100 * 1024 * 1024
@@ -17,10 +19,12 @@ const idPattern = /^[a-f0-9]{64}$/
 
 interface ResourceBackend {
   request(request: { path: string; method: 'GET' }): Promise<unknown>
+  attachmentContent?(runId: string, messageId: string, fileIndex: number): Promise<Buffer>
 }
 
 interface ResourceRecord extends Omit<ResolvedResource, 'url' | 'text'> {
   reference: ResourceReference
+  attachmentId?: string
 }
 
 const mediaTypes: Record<string, [ResourceKind, string]> = {
@@ -110,7 +114,7 @@ export function resourceReference(value: unknown): ResourceReference {
   if (
     !Number.isSafeInteger(item.fileIndex) ||
     Number(item.fileIndex) < 0 ||
-    Number(item.fileIndex) > 7
+    Number(item.fileIndex) >= MAX_REFERENCE_FILES
   )
     throw new Error('引用文件序号无效。')
   return { runId, messageId, fileIndex: Number(item.fileIndex) }
@@ -200,15 +204,65 @@ function markdownDestinations(text: string): Set<string> {
 function describe(
   name: string,
   bytes: Uint8Array,
+  reference: ResourceReference,
+  original = false,
 ): Pick<ResourceRecord, 'kind' | 'mimeType' | 'canOpen'> {
   const extension = extname(name).toLowerCase()
+  if (reference.fileIndex !== undefined && !original) {
+    // Attachment bytes determine the cached type, never a mutable filename or
+    // cached MIME label. Text imports cannot contain PNG/JPEG binary signatures.
+    let mimeType: string | undefined
+    try {
+      mimeType = imageDimensions(bytes).mimeType
+    } catch {
+      /* Text snapshot below. */
+    }
+    if (mimeType) {
+      const image = imageSnapshotBytes({
+        mime_type: mimeType,
+        data_base64: Buffer.from(bytes).toString('base64'),
+      })
+      return { kind: 'image', mimeType: image.mimeType, canOpen: true }
+    }
+    if (textPreview(bytes) === undefined) throw new Error('引用文件文字快照无效。')
+    return {
+      kind: 'text',
+      mimeType: 'text/plain',
+      canOpen: safeOpenText.has(extname(exportName(name, reference)).toLowerCase()),
+    }
+  }
   const media = mediaTypes[extension]
   if (media) return { kind: media[0], mimeType: media[1], canOpen: extension !== '.svg' }
   if (documentTypes[extension])
     return { kind: 'file', mimeType: documentTypes[extension], canOpen: true }
   if (textPreview(bytes) !== undefined)
     return { kind: 'text', mimeType: 'text/plain', canOpen: safeOpenText.has(extension) }
+  if (safeOpenText.has(extension)) return { kind: 'file', mimeType: 'text/plain', canOpen: true }
   return { kind: 'file', mimeType: 'application/octet-stream', canOpen: false }
+}
+
+function exportName(
+  name: string,
+  reference: ResourceReference,
+  mimeType?: string,
+  original = false,
+): string {
+  const extension = extname(name)
+  if (reference.fileIndex === undefined || original) return name
+  const imageExtension =
+    mimeType === 'image/png' ? '.png' : mimeType === 'image/jpeg' ? '.jpg' : undefined
+  if (imageExtension && extension.toLowerCase() === imageExtension) return name
+  if (!imageExtension && !documentTypes[extension.toLowerCase()]) return name
+  // The message retains the source name, but the saved bytes are extracted text.
+  // Keep the document extension visible and leave room for .txt on filesystems
+  // that limit each filename to 255 UTF-8 bytes.
+  const suffix = imageExtension ? `${extension}${imageExtension}` : `${extension}.txt`
+  let stem = ''
+  for (const character of name.slice(0, -extension.length)) {
+    if (Buffer.byteLength(stem + character + suffix, 'utf8') > 255) break
+    stem += character
+  }
+  return stem + suffix
 }
 
 async function readBounded(path: string, maximum: number): Promise<Buffer> {
@@ -321,7 +375,25 @@ export class MessageResourceStore {
     } else if (message.role !== 'user' || !message.files?.[reference.fileIndex!]) {
       throw new Error('引用文件不存在。')
     }
-    const cached = await this.load(id, reference)
+    const attachedFile =
+      reference.fileIndex !== undefined
+        ? ((await this.backend.request({
+            path: `/api/runs/${reference.runId}/messages/${reference.messageId}/files/${reference.fileIndex}`,
+            method: 'GET',
+          })) as FileReference)
+        : undefined
+    const original = attachedFile?.attachment
+    if (
+      original &&
+      (!idPattern.test(original.id) ||
+        !Number.isSafeInteger(original.size) ||
+        original.size < 0 ||
+        original.size > MAX_RESOURCE_BYTES ||
+        attachedFile?.image !== undefined ||
+        attachedFile?.text !== undefined)
+    )
+      throw new Error('原文件附件引用无效。')
+    const cached = await this.load(id, reference, original)
     if (cached) return this.present(cached)
 
     let name: string
@@ -364,21 +436,37 @@ export class MessageResourceStore {
         throw new Error('截图编码无效。')
       if (bytes.length > 5 * 1024 * 1024) throw new Error('截图过大。')
     } else {
-      const file = (await this.backend.request({
-        path: `/api/runs/${reference.runId}/messages/${reference.messageId}/files/${reference.fileIndex}`,
-        method: 'GET',
-      })) as TextFileReference
+      const file = attachedFile!
       name = file.name
-      bytes = Buffer.from(file.text, 'utf8')
       path = file.path
-      if (bytes.length > MAX_TEXT_PREVIEW_BYTES) throw new Error('引用文件过大。')
+      if (original) {
+        if (!this.backend.attachmentContent) throw new Error('原文件读取服务不可用。')
+        bytes = await this.backend.attachmentContent(
+          reference.runId,
+          reference.messageId,
+          reference.fileIndex!,
+        )
+        if (
+          bytes.length !== original.size ||
+          createHash('sha256').update(bytes).digest('hex') !== original.id
+        )
+          throw new Error('原文件校验失败，请重新添加。')
+      } else if ('image' in file && file.image !== undefined) {
+        if (file.text !== undefined) throw new Error('图片附件快照无效。')
+        bytes = imageSnapshotBytes(file.image).bytes
+      } else {
+        if (typeof file.text !== 'string') throw new Error('引用文件文字快照无效。')
+        bytes = Buffer.from(file.text, 'utf8')
+        if (bytes.length > MAX_TEXT_PREVIEW_BYTES) throw new Error('引用文件过大。')
+      }
     }
     if (!validName(name)) throw new Error('文件名无效。')
     const record: ResourceRecord = {
       id,
       name,
       size: bytes.length,
-      ...describe(name, bytes),
+      ...describe(name, bytes, reference, Boolean(original)),
+      ...(original ? { attachmentId: original.id } : {}),
       reference,
       ...(path ? { sourcePath: path } : {}),
     }
@@ -401,9 +489,14 @@ export class MessageResourceStore {
   private async load(
     id: string,
     reference: ResourceReference,
+    original?: { id: string; size: number },
   ): Promise<ResourceRecord | undefined> {
     const active = this.records.get(id)
-    if (active) return active
+    if (active) {
+      if (active.attachmentId !== original?.id || (original && active.size !== original.size))
+        throw new Error('文件快照记录无效。')
+      return active
+    }
     let metadata: Buffer
     try {
       metadata = await readBounded(join(this.directory, id, 'metadata.json'), 32 * 1024)
@@ -415,7 +508,9 @@ export class MessageResourceStore {
     if (
       record.id !== id ||
       JSON.stringify(record.reference) !== JSON.stringify(reference) ||
-      !validName(record.name)
+      !validName(record.name) ||
+      record.attachmentId !== original?.id ||
+      (original && record.size !== original.size)
     )
       throw new Error('文件快照记录无效。')
     // A committed snapshot with missing bytes must not silently change to the current source.
@@ -424,7 +519,9 @@ export class MessageResourceStore {
       MAX_RESOURCE_BYTES,
     )
     if (bytes.length !== record.size) throw new Error('文件快照不完整。')
-    Object.assign(record, describe(record.name, bytes))
+    if (original && createHash('sha256').update(bytes).digest('hex') !== original.id)
+      throw new Error('原文件校验失败。')
+    Object.assign(record, describe(record.name, bytes, reference, Boolean(original)))
     this.records.set(id, record)
     return record
   }
@@ -451,6 +548,11 @@ export class MessageResourceStore {
   archivePath(id: unknown): string {
     const record = this.resource(id)
     return join(this.directory, record.id, 'file', record.name)
+  }
+
+  exportName(id: unknown): string {
+    const record = this.resource(id)
+    return exportName(record.name, record.reference, record.mimeType, Boolean(record.attachmentId))
   }
 
   async response(request: Request): Promise<Response> {

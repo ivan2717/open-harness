@@ -385,3 +385,150 @@ async fn long_screenshot_runs_release_old_rasters_and_restore_without_losing_evi
     assert!(reopened.load_for_runtime(run.id()).await.is_err());
     std::fs::remove_dir_all(directory).unwrap();
 }
+
+#[tokio::test]
+async fn user_images_survive_sidecars_restart_followups_and_model_changes() {
+    let directory = std::env::temp_dir().join(format!(
+        "openharness-user-images-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let agent = Agent::new("a", "a", "", "");
+    let runtime = AgentRuntime::with_event_store(
+        InspectModel {
+            requests: Mutex::new(vec![]),
+            vision: true,
+            screenshot_count: 0,
+        },
+        ScreenshotTools(vec![], 0),
+        support::test_context_manager(),
+        JsonlEventStore::new(&directory),
+        Some(4),
+    );
+    let mut run = runtime
+        .start_run_with_files(
+            &agent,
+            "user-image",
+            "",
+            vec![agent_core::FileReference {
+                attachment: None,
+                name: "screenshot.png".into(),
+                path: None,
+                text: String::new(),
+                image: Some(image()),
+            }],
+        )
+        .await
+        .unwrap();
+    runtime.run_until_blocked(&agent, &mut run).await.unwrap();
+    let events = run.events().to_vec();
+    let log = std::fs::read_dir(&directory)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .find(|p| p.extension().is_some_and(|e| e == "jsonl"))
+        .unwrap();
+    let serialized = std::fs::read_to_string(log).unwrap();
+    assert!(serialized.contains("sha256:"));
+    assert!(!serialized.contains(&image().data_base64));
+    let store = JsonlEventStore::new(&directory);
+    let loaded = store.load_for_runtime("user-image").await.unwrap().unwrap();
+    assert_eq!(loaded.events, events);
+    assert_eq!(loaded.events[0].event.images()[0].reference_id(), None);
+    assert_eq!(
+        store.append("user-image", "a", &events[0]).await.unwrap(),
+        AppendOutcome::AlreadyPresent
+    );
+    let mut restored = runtime.restore_run("user-image").await.unwrap().unwrap();
+    runtime
+        .resume_run(&mut restored, "What did the screenshot show?")
+        .await
+        .unwrap();
+    runtime
+        .run_until_blocked(&agent, &mut restored)
+        .await
+        .unwrap();
+    {
+        let requests = runtime.model().requests.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        for request in requests.iter() {
+            let images = request
+                .messages
+                .iter()
+                .flat_map(|m| &m.content)
+                .filter(|b| matches!(b, ContentBlock::Image { .. }))
+                .count();
+            assert_eq!(images, 1);
+            assert!(
+                !request
+                    .messages
+                    .iter()
+                    .any(|m| m.text().contains(&image().data_base64))
+            );
+        }
+    }
+    let mut metadata = ModelContextMetadata::new("test", "text-model", 4096).unwrap();
+    metadata.max_output_tokens = Some(256);
+    let prepared = support::test_context_manager()
+        .prepare_owned(
+            ContextInput::new("user-image", "", restored.events().to_vec(), vec![])
+                .with_image_input(false)
+                .with_model_metadata(metadata),
+        )
+        .await
+        .unwrap();
+    assert!(
+        !prepared
+            .request
+            .messages
+            .iter()
+            .flat_map(|m| &m.content)
+            .any(|b| matches!(b, ContentBlock::Image { .. }))
+    );
+    assert!(
+        prepared
+            .request
+            .messages
+            .iter()
+            .any(|m| m.text().contains("Do not infer"))
+    );
+    assert!(
+        store.load("user-image").await.unwrap().unwrap().events[0]
+            .event
+            .images()[0]
+            .validate()
+            .is_ok()
+    );
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn user_image_token_cost_is_independent_of_base64_text_length() {
+    let mut request = ModelRequest {
+        instructions: String::new(),
+        messages: vec![ModelMessage::user("inspect".into())],
+        tools: vec![],
+        max_output_tokens: None,
+        provider_context: None,
+    };
+    let counter = ApproximateTokenCounter::default();
+    let baseline = counter.count_tokens(&request);
+    request.messages[0]
+        .content
+        .push(ContentBlock::Image { image: image() });
+    assert_eq!(
+        counter.count_tokens(&request) - baseline,
+        agent_core::IMAGE_TOKEN_ALLOWANCE
+    );
+    let mut pixels = image().decoded_bytes().unwrap();
+    pixels.resize(1024 * 1024, 0);
+    request.messages[0].content[1] = ContentBlock::Image {
+        image: ModelImage::from_bytes("image/png", &pixels).unwrap(),
+    };
+    assert_eq!(
+        counter.count_tokens(&request) - baseline,
+        agent_core::IMAGE_TOKEN_ALLOWANCE
+    );
+}

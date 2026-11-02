@@ -44,8 +44,13 @@ const context = {
   },
 }
 
-test('only the local macOS directory build requests ad-hoc signing', async () => {
-  assert.deepEqual(directoryBuildArguments('darwin'), ['--dir', '-c.mac.identity=-'])
+test('local macOS directory builds use a persistent signer in a staging directory', async () => {
+  assert.deepEqual(directoryBuildArguments('darwin'), [
+    '--dir',
+    '-c.mac.identity=-',
+    '-c.mac.sign=./scripts/sign-local-mac.mjs',
+    '-c.directories.output=release-next',
+  ])
   assert.deepEqual(directoryBuildArguments('linux'), ['--dir'])
   assert.deepEqual(directoryBuildArguments('win32'), ['--dir'])
   const { scripts } = JSON.parse(
@@ -57,6 +62,28 @@ test('only the local macOS directory build requests ad-hoc signing', async () =>
   assert.match(config, /^afterSign: \.\/scripts\/verify-signature\.mjs$/m)
   assert.match(config, /^mac:\n  forceCodeSigning: true$/m)
   assert.doesNotMatch(config, /identity:/)
+})
+
+test('local packaging rejects ad-hoc or mismatched helper certificate identities', () => {
+  const local = {
+    ...context,
+    packager: {
+      ...context.packager,
+      platformSpecificBuildOptions: { sign: './scripts/sign-local-mac.mjs' },
+    },
+  }
+  for (const helper of ['cdhash H"abc"', `certificate leaf = H"${'2'.repeat(40)}"`]) {
+    assert.throws(
+      () =>
+        verifyMacSignature(local, (_command, args) => ({
+          status: 0,
+          stderr: args.includes('-r-')
+            ? `designated => identifier "test" and ${args.at(-1).endsWith('Open Harness Computer Use.app') ? helper : `certificate leaf = H"${'1'.repeat(40)}"`}`
+            : `Identifier=${args.at(-1).endsWith('Open Harness Computer Use.app') ? 'dev.openharness.computeruse' : 'dev.openharness.desktop'}\n`,
+        })),
+      /stable certificate-backed/,
+    )
+  }
 })
 
 test('the post-sign hook verifies nested code and the actual bundle identity', () => {
@@ -144,6 +171,7 @@ async function withPluginSources(test) {
       manifests[name] = manifest
       await writeFile(join(source, name, 'mcp.json'), JSON.stringify(manifest))
     }
+    await writeFile(join(source, 'computer-use', 'preview-relay.mjs'), 'preview runtime fixture')
     await mkdir(join(source, 'computer-use', 'windows', 'bin'), { recursive: true })
     await writeFile(join(source, 'computer-use', 'windows', 'Fixture.cs'), 'test window source')
     for (const file of [
@@ -164,6 +192,10 @@ async function withPluginSources(test) {
 test('Windows packages all control plugins with native MCP launchers and only the production desktop helper', async () => {
   await withPluginSources(async (options) => {
     await stagePluginResources({ ...options, platform: 'win32' })
+    assert.equal(
+      await readFile(join(options.destination, 'preview-runtime.mjs'), 'utf8'),
+      'preview runtime fixture',
+    )
     for (const [name, manifest] of Object.entries(options.manifests)) {
       const target = join(options.destination, name)
       assert.equal(await readFile(join(target, 'launch.exe'), 'utf8'), 'native launcher fixture')

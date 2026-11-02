@@ -19,6 +19,11 @@ export class ChromeController {
   async perform(sessionId, method, args, taskKey) {
     if (!/^[\da-f-]{36}$/.test(sessionId)) throw new Error('Invalid browser session.');
     if (method === 'disconnect') { await this.releaseSession(sessionId); return { released: true }; }
+    // Private host display operation, deliberately absent from tools/list.
+    if (method === '__openharness_preview') {
+      if (typeof args.frame !== 'boolean' || Object.keys(args).some(key => key !== 'frame')) throw new Error('Invalid preview request.');
+      return this.preview(sessionId, args.frame);
+    }
     validate(method, args);
     if (method === 'chrome_status') return { connected: true, allow_new_tabs: this.allowNewTabs, shared_tabs: this.shared.size, background_tabs: true, task_tab_groups: true };
     if (method === 'chrome_tabs') {
@@ -34,9 +39,10 @@ export class ChromeController {
             tabs.push({ tab_id: tab.id, origin: owned.origin, owned: owned?.sessionId === sessionId, loading: true });
           continue;
         }
-        // Do not leak titles or URLs after the user navigates outside a grant.
+        // Navigation invalidates the selected document; expose only the origin
+        // needed to select this task-owned tab again with a fresh snapshot.
         if (taskOwned && origin !== owned.origin) {
-          tabs.push({ tab_id: tab.id, origin, owned: owned?.sessionId === sessionId, reauthorization_required: true }); continue;
+          tabs.push({ tab_id: tab.id, origin, owned: owned?.sessionId === sessionId, selection_required: true }); continue;
         }
         if (origin !== (taskOwned ? owned.origin : sharedOrigin)) continue;
         tabs.push({ tab_id: tab.id, origin, url: tab.url, title: String(tab.title ?? '').slice(0, 500), owned: owned?.sessionId === sessionId, busy: this.attached.has(tab.id) && this.attached.get(tab.id) !== sessionId });
@@ -58,7 +64,7 @@ export class ChromeController {
       const tab = await this.api.tabs.get(args.tab_id); const origin = committedOrigin(tab);
       await this.checkOwnership(tab);
       const owned = this.owned.get(tab.id);
-      if (origin !== args.origin) throw new Error('origin_changed: use the actual current origin and request a new grant.');
+      if (origin !== args.origin) throw new Error('origin_changed: refresh chrome_tabs and select this existing tab with its current origin.');
       if (!belongsToTask(owned, sessionId, taskKey) && this.shared.get(tab.id) !== origin) throw new Error('Share this exact tab and origin from the Open Harness Chrome extension popup first.');
       const owner = this.attached.get(tab.id);
       if (owner && owner !== sessionId) throw new Error('Tab is already controlled by another session.');
@@ -121,14 +127,44 @@ export class ChromeController {
     let origin;
     try { origin = committedOrigin(tab); }
     catch (error) { session.revision = null; throw error; }
-    if (origin !== session.origin) { session.revision = null; throw new Error(`origin_changed: current origin is ${origin}; request authorization and select again. Existing shared tabs also require a new popup share.`); }
+    if (origin !== session.origin) { session.revision = null; throw new Error(`origin_changed: current origin is ${origin}; refresh chrome_tabs and select this existing tab with its current origin. Task-owned tabs reuse the host capability permission; existing shared user tabs require the new origin shared in the popup.`); }
     return session;
   }
   command(tabId, method, params = {}) { return this.api.debugger.sendCommand({ tabId }, method, params); }
+  async preview(sessionId, capture) {
+    const selected = this.sessions.get(sessionId);
+    if (!selected) return { active: false };
+    const unavailable = { active: true, title: 'Chrome', unavailable: true };
+    try {
+      await this.selected(sessionId);
+      const tab = await this.api.tabs.get(selected.tabId);
+      const metadata = { active: true, title: `Chrome · ${tab.title || selected.origin}`.slice(0, 256) };
+      if (!capture) return metadata;
+      const before = (await this.command(selected.tabId, 'Page.getFrameTree')).frameTree.frame;
+      if (committedOrigin(before) !== selected.origin) return unavailable;
+      const metrics = await this.command(selected.tabId, 'Page.getLayoutMetrics');
+      const view = metrics.cssVisualViewport;
+      if (!view || !(view.clientWidth > 0 && view.clientHeight > 0)) return unavailable;
+      const scale = Math.min(1, 960 / Math.max(view.clientWidth, view.clientHeight));
+      const { data } = await this.command(selected.tabId, 'Page.captureScreenshot', {
+        format: 'jpeg', quality: 55, fromSurface: true, captureBeyondViewport: false,
+        clip: { x: view.pageX, y: view.pageY, width: view.clientWidth, height: view.clientHeight, scale },
+      });
+      // A navigation/revocation during capture must never display the new page
+      // under the old grant. This read does not consume the action revision.
+      await this.selected(sessionId);
+      const after = (await this.command(selected.tabId, 'Page.getFrameTree')).frameTree.frame;
+      if (this.sessions.get(sessionId) !== selected || after.loaderId !== before.loaderId || after.url !== before.url || committedOrigin(after) !== selected.origin) return unavailable;
+      if (typeof data !== 'string' || !data.startsWith('/9j/') || data.length > 800_000) return unavailable;
+      return { ...metadata, width: Math.round(view.clientWidth * scale), height: Math.round(view.clientHeight * scale), jpeg: data };
+    } catch {
+      return this.sessions.has(sessionId) ? unavailable : { active: false };
+    }
+  }
   async runPage(session, operation, args) {
     const tree = await this.command(session.tabId, 'Page.getFrameTree');
     const frame = tree.frameTree.frame;
-    if (committedOrigin(frame) !== session.origin) throw new Error('origin_changed: the current document requires authorization again.');
+    if (committedOrigin(frame) !== session.origin) throw new Error('origin_changed: the document changed; refresh chrome_tabs and select this existing tab with its current origin.');
     const frameId = frame.id;
     const world = await this.command(session.tabId, 'Page.createIsolatedWorld', { frameId, worldName: 'open-harness-chrome', grantUniveralAccess: false });
     if (operation !== 'snapshot' && session.contextId !== world.executionContextId) throw new Error('stale_snapshot: navigation changed the document.');

@@ -32,6 +32,26 @@ afterEach(async () => {
 })
 
 describe('model credential storage', () => {
+  it('retries asynchronous OS unlock after cancellation without losing transient profiles', async () => {
+    const file = await location()
+    await new ModelVault(file, cipher).save('saved', input)
+    let available = false
+    const vault = new ModelVault(file, {
+      isEncryptionAvailable: async () => available,
+      decryptString: async (value) => cipher.decryptString(value),
+      encryptString: async (value) => cipher.encryptString(value),
+    })
+    await expect(vault.load()).rejects.toThrow('无法解密')
+    const before = await readFile(file)
+    const temporary = { ...input, model: 'temporary', api_key: 'temporary-secret' }
+    expect(await vault.save('temporary', temporary)).toBe(false)
+    expect(await readFile(file)).toEqual(before)
+    available = true
+    expect(await vault.load()).toEqual([input, temporary])
+    expect(await vault.save('temporary', temporary)).toBe(true)
+    expect(await new ModelVault(file, cipher).load()).toEqual([input, temporary])
+  })
+
   it('preserves independent capability mapping and default across restart', async () => {
     const file = await location()
     const configured: ResolvedModelConfiguration = {
@@ -68,6 +88,36 @@ describe('model credential storage', () => {
     expect(await vault.save('model', input)).toBe(false)
     await expect(readFile(file)).rejects.toMatchObject({ code: 'ENOENT' })
   })
+  it('keeps the old in-memory and durable credential when strict update persistence fails', async () => {
+    const file = await location()
+    let available = true
+    const vault = new ModelVault(file, { ...cipher, isEncryptionAvailable: () => available })
+    await vault.save('model', input)
+    available = false
+    expect(
+      await vault.save('model', { ...input, api_key: 'new-key' }, { requirePersistence: true }),
+    ).toBe(false)
+    expect(vault.get('model')).toEqual(input)
+    expect(await new ModelVault(file, cipher).load()).toEqual([input])
+  })
+  it('only reuses exact, persisted profiles and never a transient or different credential', async () => {
+    const file = await location()
+    let available = true
+    const vault = new ModelVault(file, { ...cipher, isEncryptionAvailable: () => available })
+    await vault.save('replacement', input)
+    expect(vault.findEquivalent(input, 'source')).toBe('replacement')
+    expect(vault.findEquivalent(input, 'replacement')).toBeUndefined()
+    expect(vault.findEquivalent({ ...input, api_key: 'other-key' }, 'source')).toBeUndefined()
+    available = false
+    await vault.save('temporary', { ...input, model: 'temporary' })
+    expect(vault.findEquivalent({ ...input, model: 'temporary' }, 'source')).toBeUndefined()
+    await vault.save('replacement', { ...input, api_key: 'transient-key' })
+    expect(vault.findEquivalent(input, 'source')).toBeUndefined()
+    expect(vault.findEquivalent({ ...input, api_key: 'transient-key' }, 'source')).toBeUndefined()
+    const reopened = new ModelVault(file, cipher)
+    await reopened.load()
+    expect(reopened.findEquivalent(input, 'source')).toBe('replacement')
+  })
   it('keeps credentials internal and removes superseded profiles durably', async () => {
     const file = await location()
     const vault = new ModelVault(file, cipher)
@@ -99,9 +149,23 @@ describe('model credential storage', () => {
     const unresolved = { ...input, context_window: undefined }
     await writeFile(
       file,
-      cipher.encryptString(JSON.stringify([{ id: 'model', input: unresolved }])),
+      await cipher.encryptString(JSON.stringify([{ id: 'model', input: unresolved }])),
     )
     await expect(new ModelVault(file, cipher).load()).rejects.toThrow('无法解密')
+  })
+  it('round-trips automatic reserves without turning them into explicit limits', async () => {
+    const file = await location()
+    const automatic = {
+      ...input,
+      context_window: 1_000_000,
+      max_output_tokens: 128000,
+      output_limit_mode: 'auto' as const,
+    }
+    await new ModelVault(file, cipher).save('automatic', automatic)
+    expect(await new ModelVault(file, cipher).load()).toEqual([automatic])
+    expect(() =>
+      resolvedModelConfiguration({ ...automatic, max_output_tokens: 1_000_000 }),
+    ).toThrow('输出上限过大')
   })
 })
 

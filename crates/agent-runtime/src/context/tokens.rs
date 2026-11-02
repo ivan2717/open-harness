@@ -90,6 +90,11 @@ impl ApproximateTokenCounter {
             for block in &message.content {
                 let cost = match block {
                     ContentBlock::Text { text } => self.text_units(text),
+                    ContentBlock::Image { .. } => {
+                        image_tokens =
+                            image_tokens.saturating_add(agent_core::IMAGE_TOKEN_ALLOWANCE);
+                        0
+                    }
                     // The adapter's declared replay cost already includes
                     // reasoning; counting its presentation again duplicates it.
                     ContentBlock::Reasoning { text } => {

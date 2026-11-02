@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { spawn } from 'node:child_process'
 import { EventEmitter } from 'node:events'
@@ -5,7 +6,7 @@ import { PassThrough } from 'node:stream'
 import { resolve } from 'node:path'
 import { Backend, backendSandboxEnvironment } from './backend'
 import { apiRequest } from './protocol'
-import { initializeRuntime, watchInitializedRuntime } from './runtime-startup'
+import { ModelRestoration } from './runtime-startup'
 
 vi.mock('node:child_process', () => ({ spawn: vi.fn() }))
 
@@ -114,8 +115,96 @@ describe('local runtime request deadlines', () => {
   })
 })
 
+describe('local original attachment storage', () => {
+  it('uploads unmodified bytes and validates the returned immutable reference', async () => {
+    const backend = new Backend('unused', 'unused')
+    vi.spyOn(backend, 'start').mockResolvedValue('http://127.0.0.1:1234')
+    const bytes = Buffer.from('original PDF\0bytes')
+    const file = {
+      name: '中文 & notes.pdf',
+      attachment: { id: createHash('sha256').update(bytes).digest('hex'), size: bytes.length },
+    }
+    const fetch = vi.fn(async () => new Response(JSON.stringify(file)))
+    vi.stubGlobal('fetch', fetch)
+    await expect(backend.importAttachment(file.name, bytes)).resolves.toEqual(file)
+    const [url, init] = fetch.mock.calls[0] as unknown as [string, RequestInit]
+    expect(new URL(url).pathname).toBe('/api/attachments')
+    expect(new URL(url).searchParams.get('name')).toBe(file.name)
+    expect(init.body).toEqual(new Uint8Array(bytes))
+    expect(init.headers).toMatchObject({
+      Authorization: expect.stringMatching(/^Bearer [a-f0-9]+$/),
+    })
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({ ...file, attachment: { ...file.attachment, id: 'b'.repeat(64) } }),
+          ),
+      ),
+    )
+    await expect(backend.importAttachment(file.name, bytes)).rejects.toThrow('保存结果无效')
+  })
+
+  it('downloads only a bounded file from a saved message, never a caller-provided path', async () => {
+    const backend = new Backend('unused', 'unused')
+    vi.spyOn(backend, 'start').mockResolvedValue('http://127.0.0.1:1234')
+    const bytes = Buffer.from('original\0bytes')
+    const fetch = vi.fn(async (_url: string) => new Response(bytes))
+    vi.stubGlobal('fetch', fetch)
+    await expect(backend.attachmentContent('run-1', 'event-0', 12)).resolves.toEqual(bytes)
+    expect(fetch.mock.calls[0][0]).toBe(
+      'http://127.0.0.1:1234/api/runs/run-1/messages/event-0/files/12/content',
+    )
+    await expect(backend.attachmentContent('../other', 'event-0', 0)).rejects.toThrow('引用无效')
+    await expect(backend.attachmentContent('run-1', 'event-0', 64)).rejects.toThrow('引用无效')
+  })
+})
+
+describe('local document extraction', () => {
+  it('sends raw bytes and an encoded basename to the authenticated local endpoint', async () => {
+    const backend = new Backend('unused', 'unused')
+    vi.spyOn(backend, 'start').mockResolvedValue('http://127.0.0.1:1234')
+    const fetch = vi.fn(async () => new Response(JSON.stringify({ text: '[page 1]\nPDF text' })))
+    vi.stubGlobal('fetch', fetch)
+    const bytes = Buffer.from([37, 80, 68, 70, 0, 255])
+    await expect(backend.extractDocument('中文 & notes.pdf', bytes)).resolves.toBe(
+      '[page 1]\nPDF text',
+    )
+    const [url, init] = fetch.mock.calls[0] as unknown as [string, RequestInit]
+    expect(new URL(url).pathname).toBe('/api/documents/extract')
+    expect(new URL(url).searchParams.get('name')).toBe('中文 & notes.pdf')
+    expect(init.body).toEqual(new Uint8Array(bytes))
+    expect(init.headers).toMatchObject({
+      'Content-Type': 'application/octet-stream',
+      Authorization: expect.stringMatching(/^Bearer [a-f0-9]+$/),
+    })
+    expect(init.redirect).toBe('error')
+  })
+
+  it('surfaces extraction errors and rejects a malformed successful response', async () => {
+    const backend = new Backend('unused', 'unused')
+    vi.spyOn(backend, 'start').mockResolvedValue('http://127.0.0.1:1234')
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValue(
+          new Response(JSON.stringify({ error: '扫描件需要 OCR' }), { status: 400 }),
+        ),
+    )
+    await expect(backend.extractDocument('scan.pdf', Buffer.from('fixture'))).rejects.toThrow(
+      '扫描件需要 OCR',
+    )
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('{}')))
+    await expect(backend.extractDocument('scan.pdf', Buffer.from('fixture'))).rejects.toThrow(
+      '解析结果无效',
+    )
+  })
+})
+
 describe('local runtime initialization', () => {
-  it('does not start a process or readiness timer while keychain initialization is pending', async () => {
+  it('starts history immediately while credential decryption remains pending', async () => {
     vi.useFakeTimers()
     const child = runtimeProcess()
     const backend = new Backend(fixtureBinary, 'fixture-directory')
@@ -123,45 +212,48 @@ describe('local runtime initialization', () => {
     const load = new Promise<[]>((resolve) => {
       unlock = () => resolve([])
     })
-    const initialization = initializeRuntime(backend, () => load, vi.fn())
-    const cancelled = new AbortController()
-    const active = new AbortController()
-    const cancelledWatch = vi.fn().mockResolvedValue(undefined)
-    const activeWatch = vi.fn().mockResolvedValue(undefined)
-    const stopped = watchInitializedRuntime(initialization, cancelled.signal, cancelledWatch)
-    const watching = watchInitializedRuntime(initialization, active.signal, activeWatch)
-    cancelled.abort()
-    await vi.advanceTimersByTimeAsync(60_000)
-    expect(spawn).not.toHaveBeenCalled()
-    expect(vi.getTimerCount()).toBe(0)
-    expect(activeWatch).not.toHaveBeenCalled()
-    unlock()
-    await Promise.resolve()
+    const models = new ModelRestoration(backend, () => load)
+    const restoration = models.restore()
+    const started = backend.start()
     expect(spawn).toHaveBeenCalledOnce()
-    expect(vi.getTimerCount()).toBe(1)
     child.stdout.write(JSON.stringify({ event: 'ready', address: '127.0.0.1:1234' }) + '\n')
-    await Promise.all([initialization, stopped, watching])
-    expect(cancelledWatch).not.toHaveBeenCalled()
-    expect(activeWatch).toHaveBeenCalledOnce()
-    expect(vi.getTimerCount()).toBe(0)
-  })
-
-  it('starts the runtime even if saved models cannot be decrypted', async () => {
-    const backend = { start: vi.fn().mockResolvedValue('http://127.0.0.1:1234'), request: vi.fn() }
-    const report = vi.fn()
-    await initializeRuntime(
-      backend,
-      async () => {
-        throw new Error('fixture keychain unavailable')
-      },
-      report,
+    await started
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(new Response(JSON.stringify([{ id: 'saved-run' }]))),
     )
-    expect(backend.start).toHaveBeenCalledOnce()
-    expect(backend.request).not.toHaveBeenCalled()
-    expect(report).toHaveBeenCalledWith(expect.stringContaining('本地会话记录仍然可用'))
+    expect(await backend.request({ path: '/api/runs', method: 'GET' })).toEqual([
+      { id: 'saved-run' },
+    ])
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(models.snapshot().status).toBe('loading')
+    expect(child.kill).not.toHaveBeenCalled()
+    unlock()
+    await restoration
+    expect(models.snapshot()).toEqual({ status: 'ready' })
   })
 
-  it('does not subscribe until restored model registration finishes', async () => {
+  it('keeps model failure retryable and deduplicates concurrent unlock requests', async () => {
+    const backend = { request: vi.fn() }
+    const load = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('fixture keychain cancelled'))
+      .mockResolvedValue([])
+    const models = new ModelRestoration(backend, load)
+    const first = models.restore()
+    expect(models.restore()).toBe(first)
+    await first
+    expect(models.snapshot()).toMatchObject({
+      status: 'error',
+      message: expect.stringContaining('本地历史仍可查看'),
+    })
+    await models.restore()
+    expect(models.snapshot()).toEqual({ status: 'ready' })
+    expect(load).toHaveBeenCalledTimes(2)
+    expect(backend.request).not.toHaveBeenCalled()
+  })
+
+  it('re-registers models after failure without creating or resuming a task', async () => {
     const input = {
       protocol: 'responses' as const,
       base_url: 'http://127.0.0.1:1234',
@@ -170,30 +262,18 @@ describe('local runtime initialization', () => {
       context_window: 128_000,
       max_output_tokens: 8_192,
       reasoning_mode: 'off' as const,
-      reasoning_effort: 'medium' as const,
+      reasoning_effort: 'medium',
     }
-    let registered!: () => void
-    const pending = new Promise<void>((resolve) => {
-      registered = resolve
-    })
     const backend = {
-      start: vi.fn().mockResolvedValue('http://127.0.0.1:1234'),
-      request: vi.fn(() => pending),
+      request: vi.fn().mockRejectedValueOnce(new Error('runtime exited')).mockResolvedValue({}),
     }
-    const initialization = initializeRuntime(backend, async () => [input], vi.fn())
-    const watch = vi.fn().mockResolvedValue(undefined)
-    const watching = watchInitializedRuntime(initialization, new AbortController().signal, watch)
-    await Promise.resolve()
-    expect(backend.request).toHaveBeenCalledWith({
-      path: '/api/models',
-      method: 'POST',
-      body: input,
-    })
-    expect(watch).not.toHaveBeenCalled()
-    registered()
-    await watching
-    expect(backend.start).toHaveBeenCalledOnce()
-    expect(watch).toHaveBeenCalledOnce()
+    const models = new ModelRestoration(backend, async () => [input])
+    await models.restore()
+    expect(models.snapshot().status).toBe('error')
+    await models.restore()
+    expect(models.snapshot().status).toBe('ready')
+    for (const [request] of backend.request.mock.calls)
+      expect(request).toEqual({ path: '/api/models', method: 'POST', body: input })
   })
 
   it('keeps the startup timeout as the cause when terminating the process produces exit zero', async () => {
@@ -216,7 +296,7 @@ describe('local runtime initialization', () => {
     expect(spawn).toHaveBeenCalledOnce()
   })
 
-  it('requires an app restart after a runtime that was ready exits unexpectedly', async () => {
+  it('keeps unexpected runtime exits failed until explicitly restarted', async () => {
     const child = runtimeProcess()
     const backend = new Backend(fixtureBinary, 'fixture-directory')
     const started = backend.start()
@@ -230,6 +310,35 @@ describe('local runtime initialization', () => {
 })
 
 describe('local runtime shutdown', () => {
+  it('restarts only after failure, rotates credentials and never replays a failed mutation', async () => {
+    const old = runtimeProcess()
+    const backend = new Backend(fixtureBinary, 'fixture-directory')
+    const started = backend.start()
+    old.stdout.write(JSON.stringify({ event: 'ready', address: '127.0.0.1:1234' }) + '\n')
+    await started
+    await expect(backend.restartAfterFailure()).rejects.toThrow('仍在运行')
+    Object.assign(old, { exitCode: 1 })
+    old.emit('exit', 1, null)
+    const fetchMock = vi.fn().mockResolvedValue(new Response('{}'))
+    vi.stubGlobal('fetch', fetchMock)
+    await expect(backend.request({ path: '/api/runs', method: 'POST', body: {} })).rejects.toThrow(
+      'stopped',
+    )
+    const next = runtimeProcess()
+    const restarted = backend.restartAfterFailure()
+    expect(backend.restartAfterFailure()).toBe(restarted)
+    await Promise.resolve()
+    next.stdout.write(JSON.stringify({ event: 'ready', address: '127.0.0.1:5678' }) + '\n')
+    await restarted
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(vi.mocked(spawn).mock.calls[0][2]?.env?.OPENHARNESS_API_TOKEN).not.toEqual(
+      vi.mocked(spawn).mock.calls[1][2]?.env?.OPENHARNESS_API_TOKEN,
+    )
+    old.emit('error', new Error('late event from dead process'))
+    await expect(backend.request({ path: '/api/config', method: 'GET' })).resolves.toEqual({})
+    expect(fetchMock.mock.calls[0][0]).toBe('http://127.0.0.1:5678/api/config')
+  })
+
   it('closes the managed input pipe and lets the runtime finish cleanup', async () => {
     vi.useFakeTimers()
     const child = runtimeProcess()

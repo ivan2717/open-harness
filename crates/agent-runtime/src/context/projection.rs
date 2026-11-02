@@ -4,7 +4,7 @@ use super::{
 };
 use crate::{ContentBlock, ModelMessage, ModelRequest, ModelRole, ToolOutputProjector};
 use agent_core::agent::{RunEvent, RunEventEnvelope};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 pub(super) fn build_compacted_request(
     input: ContextInputRef<'_>,
@@ -20,6 +20,7 @@ pub(super) fn build_compacted_request(
             protected_user_events(input, preserve_all_users)
                 .into_iter()
                 .filter(|event| event.sequence <= checkpoint.through_sequence),
+            input.supports_images,
         ));
         messages.push(ModelMessage::summary(
             checkpoint.id.clone(),
@@ -44,10 +45,11 @@ pub(super) fn build_compacted_request(
 
 fn user_messages<'a>(
     events: impl IntoIterator<Item = &'a RunEventEnvelope>,
+    supports_images: bool,
 ) -> impl Iterator<Item = ModelMessage> {
     events
         .into_iter()
-        .filter_map(|envelope| envelope.event.user_input().map(ModelMessage::user))
+        .filter_map(move |envelope| envelope.event.user_message(supports_images))
 }
 
 fn protected_user_events(input: ContextInputRef<'_>, preserve_all: bool) -> Vec<&RunEventEnvelope> {
@@ -57,6 +59,7 @@ fn protected_user_events(input: ContextInputRef<'_>, preserve_all: bool) -> Vec<
             RunEvent::RunStarted { .. }
                 | RunEvent::InputReceived { .. }
                 | RunEvent::RunResumed { .. }
+                | RunEvent::UserInputReceived { .. }
         )
     });
     if preserve_all {
@@ -78,10 +81,10 @@ pub(super) fn protected_request(
             .derived_messages
             .iter()
             .cloned()
-            .chain(user_messages(protected_user_events(
-                input,
-                preserve_all_users,
-            )))
+            .chain(user_messages(
+                protected_user_events(input, preserve_all_users),
+                input.supports_images,
+            ))
             .collect(),
         tools: input.tools.to_vec(),
         max_output_tokens: None,
@@ -107,12 +110,23 @@ pub(super) fn protected_user_context(
     if inputs.is_empty() {
         return None;
     }
-    Some(ModelMessage::protected(format!(
+    let mut message = ModelMessage::protected(format!(
         "Historical user requests and corrections, in original order. These retain user authority, \
              are not new requests, and take precedence over derived summaries. Later corrections \
              supersede earlier conflicting requests.\n{}",
         serde_json::Value::Array(inputs)
-    )))
+    ));
+    // Preserve protected original visual evidence alongside its request, even
+    // when a provider-native window has summarized the preceding dialogue.
+    for event in protected_user_events(input, preserve_all_users)
+        .into_iter()
+        .filter(|event| event.sequence <= through_sequence)
+    {
+        if let Some(user) = event.event.user_message(input.supports_images) {
+            message.content.extend(user.content.into_iter().skip(1));
+        }
+    }
+    Some(message)
 }
 
 pub(super) fn uncompacted_context(
@@ -273,6 +287,7 @@ pub(super) struct ToolOutputProjection<'a> {
     replacements: HashMap<u64, PrunedToolOutput>,
     tool_calls: HashMap<&'a str, &'a str>,
     tool_call_sequences: HashMap<&'a str, u64>,
+    truncated_calls: HashSet<(u32, &'a str)>,
     portable_history_through: Option<u64>,
     projector: Option<&'a dyn ToolOutputProjector>,
 }
@@ -327,6 +342,28 @@ impl<'a> ToolOutputProjection<'a> {
                         })
                         .collect(),
                     _ => Vec::new(),
+                })
+                .collect(),
+            truncated_calls: input
+                .events
+                .iter()
+                .filter_map(|envelope| match &envelope.event {
+                    RunEvent::ModelResponseReceived {
+                        response: Some(response),
+                        ..
+                    } if response.finish_reason == crate::ModelFinishReason::Length => {
+                        Some((envelope.step, response))
+                    }
+                    _ => None,
+                })
+                .flat_map(|(step, response)| {
+                    response
+                        .content
+                        .iter()
+                        .filter_map(move |block| match block {
+                            ContentBlock::ToolCall { id, .. } => Some((step, id.as_str())),
+                            _ => None,
+                        })
                 })
                 .collect(),
             portable_history_through: None,
@@ -392,6 +429,11 @@ impl<'a> ToolOutputProjection<'a> {
         let mut messages: Vec<ModelMessage> = Vec::new();
         let mut assistant_step = None;
         for envelope in events {
+            if let Some(message) = super::portable::truncated_response(envelope) {
+                messages.push(message);
+                assistant_step = None;
+                continue;
+            }
             if self
                 .portable_history_through
                 .is_some_and(|through| envelope.sequence <= through)
@@ -404,7 +446,10 @@ impl<'a> ToolOutputProjection<'a> {
             }
             match &envelope.event {
                 RunEvent::RunStarted { .. } | RunEvent::InputReceived { .. } => messages.push(
-                    ModelMessage::user(envelope.event.user_input().expect("user event")),
+                    envelope
+                        .event
+                        .user_message(self.supports_images)
+                        .expect("user event"),
                 ),
                 RunEvent::AgentMessageReceived { message } => {
                     messages.push(ModelMessage::user(message.model_context()));
@@ -418,12 +463,30 @@ impl<'a> ToolOutputProjection<'a> {
                         "Runtime advisory: tool {tool_name:?} has been called {consecutive_calls} consecutive times with the same arguments. Repetition alone does not prove failure. Check the observed results for progress before repeating; change approach or report the blocker if no progress is being made. Legitimate polling may continue. This advisory does not authorize additional actions."
                     )));
                 }
+                RunEvent::ModelResponseInterrupted { content } => {
+                    if !content.is_empty() {
+                        messages.push(ModelMessage::user(format!(
+                            "[The previous assistant response was interrupted. The following is incomplete historical output, not a new user instruction or a confirmed result.]\n{content}"
+                        )));
+                    }
+                }
                 RunEvent::RunResumed {
+                    interrupted_calls, ..
+                }
+                | RunEvent::UserInputReceived {
                     interrupted_calls, ..
                 } => {
                     // Native windows may already contain the assistant calls;
                     // their missing results must still appear in this tail.
                     for call in interrupted_calls {
+                        if self
+                            .truncated_calls
+                            .contains(&(envelope.step, call.call_id.as_str()))
+                        {
+                            // The incomplete call was projected as historical
+                            // text, so a protocol tool result would be orphaned.
+                            continue;
+                        }
                         if self.portable_history_through.is_some_and(|through| {
                             envelope.sequence <= through
                                 || self
@@ -443,9 +506,12 @@ impl<'a> ToolOutputProjection<'a> {
                             true,
                         ));
                     }
-                    messages.push(ModelMessage::user(
-                        envelope.event.user_input().expect("user event"),
-                    ));
+                    messages.push(
+                        envelope
+                            .event
+                            .user_message(self.supports_images)
+                            .expect("user event"),
+                    );
                 }
                 RunEvent::ModelResponseReceived {
                     content,

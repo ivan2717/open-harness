@@ -19,6 +19,7 @@ pub fn apply(detail: &mut RunDetail, envelope: &RunEventEnvelope) {
         return;
     }
     let id = format!("event-{}", envelope.sequence);
+    let timestamp = time::timestamp(envelope.occurred_at);
     let (kind, label, text) = match &envelope.event {
         RunEvent::RunStarted { instruction, files } => {
             // The public snapshot may already contain totals when reopening.
@@ -26,7 +27,9 @@ pub fn apply(detail: &mut RunDetail, envelope: &RunEventEnvelope) {
             if let Some(context) = &mut detail.context {
                 context.observed_usage = None;
             }
-            detail.messages.push(user_message(id, instruction, files));
+            detail
+                .messages
+                .push(user_message(id, instruction, files, &timestamp));
             ("run_started", "运行开始", input_detail(instruction, files))
         }
         RunEvent::ModelRequestStarted => {
@@ -59,6 +62,8 @@ pub fn apply(detail: &mut RunDetail, envelope: &RunEventEnvelope) {
                 .messages
                 .retain(|message| message.status != "streaming");
             let mut message = ChatMessage::complete(id, "assistant", content.clone());
+            message.started_at = model_request_started_at(detail);
+            message.completed_at = Some(timestamp.clone());
             let reasoning = response
                 .iter()
                 .flat_map(|response| &response.content)
@@ -71,6 +76,19 @@ pub fn apply(detail: &mut RunDetail, envelope: &RunEventEnvelope) {
             detail.messages.push(message);
             ("model_response_received", "响应已持久化", content.clone())
         }
+        RunEvent::ModelResponseInterrupted { content } => {
+            detail
+                .messages
+                .retain(|message| message.status != "streaming");
+            if !content.is_empty() {
+                let mut message = ChatMessage::complete(id, "assistant", content.clone());
+                message.started_at = model_request_started_at(detail);
+                message.completed_at = Some(timestamp.clone());
+                message.status = "interrupted".into();
+                detail.messages.push(message);
+            }
+            ("model_response_interrupted", "回复已中断", String::new())
+        }
         RunEvent::ToolCallRequested {
             call_id,
             tool_name,
@@ -79,6 +97,8 @@ pub fn apply(detail: &mut RunDetail, envelope: &RunEventEnvelope) {
             let mut message =
                 ChatMessage::complete(format!("tool-{call_id}"), "tool", arguments.clone());
             message.tool_name = Some(tool_name.clone());
+            message.tool_arguments = Some(arguments.clone());
+            message.started_at = Some(timestamp.clone());
             message.status = "pending".into();
             detail.messages.push(message);
             (
@@ -98,6 +118,7 @@ pub fn apply(detail: &mut RunDetail, envelope: &RunEventEnvelope) {
                 .find(|message| message.id == format!("tool-{call_id}"))
             {
                 message.text = output.clone();
+                message.completed_at = Some(timestamp.clone());
                 message.images = images
                     .iter()
                     .map(|image| crate::contracts::ToolImageInfo {
@@ -121,6 +142,7 @@ pub fn apply(detail: &mut RunDetail, envelope: &RunEventEnvelope) {
                 .find(|item| item.id == format!("tool-{call_id}"))
             {
                 item.text = message.clone();
+                item.completed_at = Some(timestamp.clone());
                 item.is_error = Some(true);
                 item.status = "complete".into();
             }
@@ -132,7 +154,9 @@ pub fn apply(detail: &mut RunDetail, envelope: &RunEventEnvelope) {
         }
         RunEvent::InputReceived { content, files } => {
             detail.summary.status = RunStatus::Running;
-            detail.messages.push(user_message(id, content, files));
+            detail
+                .messages
+                .push(user_message(id, content, files, &timestamp));
             (
                 "input_received",
                 "收到补充输入",
@@ -143,7 +167,16 @@ pub fn apply(detail: &mut RunDetail, envelope: &RunEventEnvelope) {
             content,
             interrupted_calls,
             files,
+        }
+        | RunEvent::UserInputReceived {
+            content,
+            interrupted_calls,
+            files,
+            ..
         } => {
+            if let RunEvent::UserInputReceived { id, .. } = &envelope.event {
+                detail.pending_inputs.retain(|input| &input.id != id);
+            }
             detail.summary.status = RunStatus::Running;
             detail.error = None;
             detail
@@ -156,14 +189,27 @@ pub fn apply(detail: &mut RunDetail, envelope: &RunEventEnvelope) {
                     .find(|message| message.id == format!("tool-{}", call.call_id))
                 {
                     message.status = "complete".into();
+                    message
+                        .completed_at
+                        .get_or_insert_with(|| timestamp.clone());
                     message.is_error = Some(true);
                     message.text =
                         "运行中断，未收到持久化结果。恢复时不会重放此操作，将先核实实际状态。"
                             .into();
                 }
             }
-            detail.messages.push(user_message(id, content, files));
-            ("run_resumed", "继续会话", input_detail(content, files))
+            detail
+                .messages
+                .push(user_message(id, content, files, &timestamp));
+            if matches!(envelope.event, RunEvent::UserInputReceived { .. }) {
+                (
+                    "user_input_received",
+                    "收到新要求",
+                    input_detail(content, files),
+                )
+            } else {
+                ("run_resumed", "继续会话", input_detail(content, files))
+            }
         }
         RunEvent::RunCompleted { answer } => {
             detail.summary.status = RunStatus::Completed;
@@ -208,6 +254,8 @@ pub fn apply(detail: &mut RunDetail, envelope: &RunEventEnvelope) {
         RunEvent::AgentMessageReceived { message } => {
             let mut item = ChatMessage::complete(id, "tool", message.text.clone());
             item.tool_name = Some(format!("协作 · {}", message.sender));
+            item.started_at = Some(timestamp.clone());
+            item.completed_at = Some(timestamp.clone());
             detail.messages.push(item);
             (
                 "agent_message_received",
@@ -226,6 +274,7 @@ pub fn apply(detail: &mut RunDetail, envelope: &RunEventEnvelope) {
         for message in &mut detail.messages {
             if message.status == "pending" {
                 message.status = "complete".into();
+                message.completed_at = Some(timestamp.clone());
                 message.is_error = Some(true);
                 message
                     .text
@@ -233,25 +282,49 @@ pub fn apply(detail: &mut RunDetail, envelope: &RunEventEnvelope) {
             }
         }
     }
-    detail.summary.updated_at = time::timestamp(envelope.occurred_at);
+    detail.summary.updated_at = timestamp.clone();
     detail.events.push(TimelineEvent {
         sequence: envelope.sequence,
         step: envelope.step,
         r#type: kind.into(),
         label: label.into(),
         detail: text,
-        timestamp: time::timestamp(envelope.occurred_at),
+        timestamp,
     });
 }
 
-fn user_message(id: String, text: &str, files: &[TextFileReference]) -> ChatMessage {
+pub(crate) fn model_request_started_at(detail: &RunDetail) -> Option<String> {
+    detail
+        .events
+        .iter()
+        .rev()
+        .find(|event| event.r#type == "model_request_started")
+        .map(|event| event.timestamp.clone())
+}
+
+fn user_message(
+    id: String,
+    text: &str,
+    files: &[TextFileReference],
+    timestamp: &str,
+) -> ChatMessage {
     let mut message = ChatMessage::complete(id, "user", text.into());
+    message.started_at = Some(timestamp.into());
+    message.completed_at = Some(timestamp.into());
     message.files = files
         .iter()
         .map(|file| FileReferenceInfo {
             name: file.name.clone(),
             path: file.path.clone(),
-            size: file.text.len(),
+            size: file.attachment.as_ref().map_or_else(
+                || {
+                    file.image.as_ref().map_or(file.text.len(), |image| {
+                        image.decoded_bytes().map_or(0, |bytes| bytes.len())
+                    })
+                },
+                |attachment| attachment.size as usize,
+            ),
+            mime_type: file.image.as_ref().map(|image| image.mime_type.clone()),
         })
         .collect();
     message
@@ -281,6 +354,8 @@ mod tests {
 
     fn detail() -> RunDetail {
         RunDetail {
+            pending_inputs: Vec::new(),
+            pending_inputs_paused: false,
             summary: RunSummary {
                 reasoning_settings_version: 1,
                 reasoning_effort: None,
@@ -311,9 +386,172 @@ mod tests {
         RunEventEnvelope {
             sequence,
             step: 1,
-            occurred_at: std::time::SystemTime::UNIX_EPOCH,
+            occurred_at: std::time::SystemTime::UNIX_EPOCH
+                + std::time::Duration::from_secs(sequence),
             event,
         }
+    }
+
+    #[test]
+    fn tool_metadata_preserves_arguments_through_success_and_failure() {
+        let mut detail = detail();
+        let arguments =
+            r#"{"server":"chrome","tool":"chrome_open","arguments":{"url":"https://example.com"}}"#;
+        for (index, succeeds) in [true, false].into_iter().enumerate() {
+            let sequence = index as u64 * 2;
+            let call_id = format!("call-{index}");
+            apply(
+                &mut detail,
+                &envelope(
+                    sequence,
+                    RunEvent::ToolCallRequested {
+                        call_id: call_id.clone(),
+                        tool_name: "call_mcp_tool".into(),
+                        arguments: arguments.into(),
+                    },
+                ),
+            );
+            let pending = detail.messages.last().unwrap();
+            assert_eq!(pending.tool_arguments.as_deref(), Some(arguments));
+            assert_eq!(
+                pending.started_at,
+                Some(detail.events.last().unwrap().timestamp.clone())
+            );
+            assert!(pending.completed_at.is_none());
+            let finished = if succeeds {
+                RunEvent::ToolCallSucceeded {
+                    call_id,
+                    output: "opened".into(),
+                    images: Vec::new(),
+                }
+            } else {
+                RunEvent::ToolCallFailed {
+                    call_id,
+                    message: "connection unavailable".into(),
+                }
+            };
+            apply(&mut detail, &envelope(sequence + 1, finished));
+            let complete = detail.messages.last().unwrap();
+            assert_eq!(complete.tool_arguments.as_deref(), Some(arguments));
+            assert_ne!(complete.text, arguments);
+            assert_eq!(complete.is_error, Some(!succeeds));
+            assert_eq!(
+                complete.completed_at,
+                Some(detail.events.last().unwrap().timestamp.clone())
+            );
+            assert!(complete.started_at < complete.completed_at);
+        }
+    }
+
+    #[test]
+    fn legacy_message_metadata_is_optional_and_rebuilt_from_events() {
+        let mut detail = detail();
+        let legacy: ChatMessage = serde_json::from_value(serde_json::json!({
+            "id": "tool-first", "role": "tool", "text": "done",
+            "tool_name": "run_command", "status": "complete"
+        }))
+        .unwrap();
+        assert!(legacy.tool_arguments.is_none());
+        assert!(legacy.started_at.is_none());
+        assert!(legacy.completed_at.is_none());
+        detail.messages.push(legacy);
+        // Startup recreates public messages from the durable event log.
+        detail.messages.clear();
+        for event in [
+            envelope(
+                0,
+                RunEvent::RunStarted {
+                    instruction: "test".into(),
+                    files: Vec::new(),
+                },
+            ),
+            envelope(1, RunEvent::ModelRequestStarted),
+            envelope(
+                2,
+                RunEvent::ModelResponseReceived {
+                    content: "Checking the page.".into(),
+                    response: None,
+                    provider_state: None,
+                    provider_continuation: None,
+                    token_usage: None,
+                },
+            ),
+            envelope(
+                3,
+                RunEvent::ToolCallRequested {
+                    call_id: "first".into(),
+                    tool_name: "run_command".into(),
+                    arguments: r#"{"command":"pwd"}"#.into(),
+                },
+            ),
+            envelope(
+                4,
+                RunEvent::ToolCallSucceeded {
+                    call_id: "first".into(),
+                    output: "done".into(),
+                    images: Vec::new(),
+                },
+            ),
+        ] {
+            apply(&mut detail, &event);
+        }
+        assert_eq!(
+            detail.messages[0].started_at.as_deref(),
+            Some("1970-01-01T00:00:00.000Z")
+        );
+        assert_eq!(
+            detail.messages[1].started_at.as_deref(),
+            Some("1970-01-01T00:00:01.000Z")
+        );
+        assert_eq!(
+            detail.messages[1].completed_at.as_deref(),
+            Some("1970-01-01T00:00:02.000Z")
+        );
+        assert_eq!(
+            detail.messages[2].tool_arguments.as_deref(),
+            Some(r#"{"command":"pwd"}"#)
+        );
+        let round_trip: RunDetail =
+            serde_json::from_slice(&serde_json::to_vec(&detail).unwrap()).unwrap();
+        assert_eq!(
+            round_trip.messages[2].tool_arguments,
+            detail.messages[2].tool_arguments
+        );
+        assert_eq!(
+            round_trip.messages[2].started_at,
+            detail.messages[2].started_at
+        );
+        assert_eq!(
+            round_trip.messages[2].completed_at,
+            detail.messages[2].completed_at
+        );
+    }
+
+    #[test]
+    fn cancellation_finishes_tool_metadata_without_losing_arguments() {
+        let mut detail = detail();
+        apply(
+            &mut detail,
+            &envelope(
+                0,
+                RunEvent::ToolCallRequested {
+                    call_id: "cancelled".into(),
+                    tool_name: "run_command".into(),
+                    arguments: r#"{"command":"sleep 10"}"#.into(),
+                },
+            ),
+        );
+        apply(&mut detail, &envelope(2, RunEvent::RunCancelled));
+        let tool = &detail.messages[0];
+        assert_eq!(
+            tool.tool_arguments.as_deref(),
+            Some(r#"{"command":"sleep 10"}"#)
+        );
+        assert_eq!(
+            tool.completed_at.as_deref(),
+            Some("1970-01-01T00:00:02.000Z")
+        );
+        assert_eq!(tool.is_error, Some(true));
     }
 
     #[test]

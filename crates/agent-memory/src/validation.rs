@@ -259,10 +259,12 @@ fn visible_sources(events: &[RunEventEnvelope]) -> BTreeSet<u64> {
                 files,
             }
             | RunEvent::InputReceived { content, files }
+            | RunEvent::UserInputReceived { content, files, .. }
             | RunEvent::RunResumed { content, files, .. } => {
                 !content.trim().is_empty() || !files.is_empty()
             }
-            RunEvent::ModelResponseReceived { content, .. } => !content.trim().is_empty(),
+            RunEvent::ModelResponseInterrupted { content }
+            | RunEvent::ModelResponseReceived { content, .. } => !content.trim().is_empty(),
             RunEvent::ToolCallRequested {
                 call_id, tool_name, ..
             } => {
