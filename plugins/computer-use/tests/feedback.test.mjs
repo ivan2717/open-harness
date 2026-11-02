@@ -19,5 +19,7 @@ test('Windows live preview and virtual cursor lifecycle on a real test window', 
       'WPF/UIAutomationClient.dll', 'WPF/UIAutomationTypes.dll', 'WPF/WindowsBase.dll'].map(name => `/reference:${path.join(framework, name)}`),
     ...readdirSync(path.join(root, 'windows')).filter(name => name.endsWith('.cs') && name !== 'Fixture.cs').map(name => path.join(root, 'windows', name)),
     path.join(root, 'tests/FeedbackTests.cs')], options);
-  assert.match(execFileSync(binary, [], options), /Passed Windows feedback GUI acceptance/);
+  // windowsHide sets STARTUPINFO.wShowWindow = SW_HIDE. Windows may apply it
+  // to the fixture's first ShowWindow call, making the capture target invalid.
+  assert.match(execFileSync(binary, [], { ...options, windowsHide: false }), /Passed Windows feedback GUI acceptance/);
 });
