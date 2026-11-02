@@ -85,14 +85,31 @@ async fn approved(tools: &LocalTools, arguments: Value) -> Value {
     serde_json::from_str(&task.await.unwrap().unwrap()).unwrap()
 }
 
-async fn file_ready(path: &Path) {
-    tokio::time::timeout(Duration::from_secs(15), async {
+async fn file_ready(path: &Path, tools: &LocalTools, command_id: &str) {
+    let ready = tokio::time::timeout(Duration::from_secs(15), async {
         while !path.is_file() {
+            let command = tools
+                .command_status(command_id, 0, 0)
+                .await
+                .map_err(|error| error.to_string())?;
+            if command.status != "running" && !path.is_file() {
+                return Err(format!(
+                    "command ended before its child started: {command:?}"
+                ));
+            }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
+        Ok::<(), String>(())
     })
-    .await
-    .expect("the sandboxed child never started");
+    .await;
+    if !matches!(ready, Ok(Ok(()))) {
+        let command = tools.command_status(command_id, 0, 0).await;
+        let review = tools.review();
+        let _ = tools.stop_command(command_id).await;
+        panic!(
+            "the sandboxed child never started: {ready:?}\ncommand: {command:?}\nreview: {review:?}"
+        );
+    }
 }
 
 fn delayed_child() -> &'static str {
@@ -311,7 +328,7 @@ async fn cancellation_stops_an_actual_powershell_descendant_and_preserves_review
     )
     .await;
     let id = result["command_id"].as_str().unwrap();
-    file_ready(&fixture.root.join("started.txt")).await;
+    file_ready(&fixture.root.join("started.txt"), &tools, id).await;
     assert_eq!(
         other
             .tools()
@@ -428,11 +445,13 @@ fn windows_command_host_for_crash_test() {
                 PermissionMode::WorkspaceWrite,
             )
             .unwrap();
-            approved(
+            let result = approved(
                 &tools,
                 json!({"command":delayed_child(), "yield_time_ms":30000}),
             )
             .await;
+            eprintln!("sandboxed host command result: {result}");
+            eprintln!("sandboxed host review: {:?}", tools.review());
         });
 }
 
@@ -440,6 +459,10 @@ fn windows_command_host_for_crash_test() {
 async fn terminating_the_host_stops_descendants_and_marks_the_journal_interrupted() {
     let fixture = Fixture::new();
     drop(fixture.tools());
+    // Keep the trusted test host's output outside the sandbox workspace. A
+    // failed nested shell must surface its error instead of only a timeout.
+    let log_path = fixture.base.join("command-host.log");
+    let log = fs::File::create(&log_path).unwrap();
     let mut host = std::process::Command::new(std::env::current_exe().unwrap())
         .args([
             "--exact",
@@ -447,19 +470,35 @@ async fn terminating_the_host_stops_descendants_and_marks_the_journal_interrupte
             "--nocapture",
         ])
         .env("OPENHARNESS_TEST_WINDOWS_COMMAND_HOST", &fixture.base)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
+        .stdout(log.try_clone().unwrap())
+        .stderr(log)
         .spawn()
         .unwrap();
     let ready = tokio::time::timeout(Duration::from_secs(20), async {
         while !fixture.root.join("started.txt").exists() {
+            if let Some(status) = host.try_wait().unwrap()
+                && !fixture.root.join("started.txt").exists()
+            {
+                return Err(format!(
+                    "command host exited before its child started: {status}"
+                ));
+            }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
+        Ok::<(), String>(())
     })
     .await;
-    host.kill().unwrap();
+    if host.try_wait().unwrap().is_none() {
+        host.kill().unwrap();
+    }
     host.wait().unwrap();
-    ready.expect("the sandboxed host never started its child");
+    assert!(
+        matches!(ready, Ok(Ok(()))),
+        "the sandboxed host never started its child: {ready:?}\nhost output: {}\njournal: {}",
+        fs::read_to_string(&log_path).unwrap_or_else(|error| error.to_string()),
+        fs::read_to_string(fixture.state.join("journal.json"))
+            .unwrap_or_else(|error| error.to_string()),
+    );
     tokio::time::sleep(Duration::from_secs(4)).await;
     assert!(!fixture.root.join("late.txt").exists());
     assert_eq!(
