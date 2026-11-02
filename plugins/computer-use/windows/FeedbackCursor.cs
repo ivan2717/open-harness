@@ -1,7 +1,9 @@
 using System;
+using System.ComponentModel;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
+using System.Runtime.InteropServices;
 using System.Windows.Forms;
 
 namespace OpenHarness.ComputerUse {
@@ -12,7 +14,7 @@ namespace OpenHarness.ComputerUse {
         private Point start, destination;
         private bool pressed;
         internal FeedbackCursor() {
-            FormBorderStyle = FormBorderStyle.None; ShowInTaskbar = false; TopMost = true;
+            FormBorderStyle = FormBorderStyle.None; ShowInTaskbar = false;
             Size = new Size(64, 64);
             animation.Tick += delegate {
                 double elapsed = (DateTime.UtcNow - began).TotalSeconds;
@@ -22,6 +24,7 @@ namespace OpenHarness.ComputerUse {
                     (int)Math.Round(start.Y + (destination.Y - start.Y) * ease)), Math.Max(0, Math.Min(1, (1.5 - elapsed) / .3)));
             };
         }
+        internal bool Presented { get { return IsHandleCreated && Native.IsWindowVisible(Handle); } }
         protected override bool ShowWithoutActivation { get { return true; } }
         protected override CreateParams CreateParams {
             get { var p = base.CreateParams; p.ExStyle |= 0x08000000 | 0x00000080 | 0x00000020 | 0x00080000; return p; }
@@ -32,11 +35,21 @@ namespace OpenHarness.ComputerUse {
             base.WndProc(ref message);
         }
         internal void Present(Point point, bool isPressed) {
-            start = Visible ? new Point(Left + 25, Top + 24) : point;
+            Native.Rect bounds;
+            start = Presented && Native.GetWindowRect(Handle, out bounds) ? new Point(bounds.Left + 25, bounds.Top + 24) : point;
             destination = point; pressed = isPressed; began = DateTime.UtcNow;
-            Render(start, 1); Show(); animation.Start();
+            Render(start, 1); SetPresented(true); animation.Start();
         }
-        internal void Clear() { animation.Stop(); Hide(); }
+        internal void Clear() { animation.Stop(); if (Presented) SetPresented(false); }
+        private void SetPresented(bool value) {
+            // Form.Show/Hide and the managed TopMost property can assign focus.
+            // Keep both visibility transitions in Win32's nonactivating path.
+            const uint noSize = 0x0001, noMove = 0x0002, noZOrder = 0x0004,
+                noActivate = 0x0010, showWindow = 0x0040, hideWindow = 0x0080, noOwnerZOrder = 0x0200;
+            uint flags = noSize | noMove | noActivate | noOwnerZOrder | (value ? showWindow : hideWindow | noZOrder);
+            if (!FeedbackNative.SetWindowPos(Handle, value ? new IntPtr(-1) : IntPtr.Zero, 0, 0, 0, 0, flags))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "Could not change feedback cursor visibility without activation.");
+        }
         private void Draw(Graphics graphics) {
             graphics.SmoothingMode = SmoothingMode.AntiAlias;
             for (int i = 29; i >= 4; i -= 2) {

@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Threading;
 using System.Windows.Forms;
 
@@ -34,6 +35,16 @@ namespace OpenHarness.ComputerUse {
             Check(Native.IsWindowVisible(identity.Window), "Fixture must be natively visible: " + SourceStatus(identity));
             preview.Observe(identity);
             Check((bool)State(preview)["active"], "Observation must retain the fixture: " + SourceStatus(identity));
+        }
+        private static string WindowStatus(IntPtr window) {
+            var title = new StringBuilder(256); Native.GetWindowText(window, title, title.Capacity);
+            return "hwnd=" + window + ", pid=" + Native.WindowProcess(window) + ", title=" + title;
+        }
+        private static void CheckStable(FeedbackPreview preview, AppIdentity identity, IntPtr foreground, string phase) {
+            Check((bool)State(preview)["active"], phase + ": observation lost; " + SourceStatus(identity));
+            IntPtr current = Native.GetForegroundWindow();
+            Check(current == foreground, phase + ": foreground changed; expected " + WindowStatus(foreground) +
+                "; actual " + WindowStatus(current) + "; cursor_visible=" + State(preview)["cursor_visible"]);
         }
         private static void RecoveryPolicy() {
             var recovery = new PreviewRecovery(); double now = 0;
@@ -109,26 +120,46 @@ namespace OpenHarness.ComputerUse {
                             Window = source.Handle, Name = "Test fixture" };
                         RecoveryLifecycle(identity);
                         IntPtr foreground = Native.GetForegroundWindow();
+                        Check(foreground == identity.Window, "Fixture must be foreground for cursor acceptance: " + WindowStatus(foreground));
                         ObserveFixture(preview, identity);
+                        CheckStable(preview, identity, foreground, "Observe synchronously");
                         PumpUntil(() => (int)State(preview)["frames_received"] > 0, "local capture delivers a frame");
                         Check((bool)State(preview)["in_app"] && (int)State(preview)["frames_received"] > 0, "Local capture delivers frames to the in-app view");
-                        Check(Native.GetForegroundWindow() == foreground, "Preview must not activate");
+                        CheckStable(preview, identity, foreground, "Preview must not activate after capture");
                         Check(Application.OpenForms.Count == 1, "Capture must not create a preview Form");
                         Native.Point before, after; Check(GetCursorPos(out before), "Read pointer before feedback");
                         preview.Pointer(140, 90, true);
+                        CheckStable(preview, identity, foreground, "Pointer synchronously");
+                        Check((bool)State(preview)["cursor_visible"], "Pointer feedback must be natively visible");
                         Check(GetCursorPos(out after) && before.X == after.X && before.Y == after.Y, "Feedback must not move the user's pointer");
                         Pump(200);
-                        Check(Native.GetForegroundWindow() == foreground, "Cursor must not activate");
-                        preview.SetEnabled(false); Pump(350);
+                        CheckStable(preview, identity, foreground, "Pointer after message pump");
+                        preview.SetEnabled(false);
+                        CheckStable(preview, identity, foreground, "Collapse synchronously");
+                        Pump(350); CheckStable(preview, identity, foreground, "Collapse after message pump");
                         int pausedFrames = (int)State(preview)["frames_received"];
                         Pump(400); Check(pausedFrames == (int)State(preview)["frames_received"], "Collapse pauses capture");
+                        CheckStable(preview, identity, foreground, "Collapsed observation");
                         preview.SetEnabled(true);
+                        CheckStable(preview, identity, foreground, "Expand synchronously");
                         PumpUntil(() => (int)State(preview)["frames_received"] > pausedFrames, "expanded preview delivers a new frame");
                         Check((int)State(preview)["frames_received"] > pausedFrames, "Expand resumes capture");
-                        preview.SuspendInput(); Pump(50);
+                        CheckStable(preview, identity, foreground, "Expand after capture");
+                        // Refresh feedback so suspension/resumption cannot pass
+                        // merely because the earlier pointer has already faded.
+                        preview.Pointer(150, 100, false);
+                        CheckStable(preview, identity, foreground, "Refresh pointer synchronously");
+                        Check((bool)State(preview)["cursor_visible"], "Refreshed pointer must be visible before suspension");
+                        preview.SuspendInput();
+                        CheckStable(preview, identity, foreground, "Suspend synchronously");
                         Check(!(bool)State(preview)["cursor_visible"], "Display leaves input hit-testing path");
-                        preview.ResumeInput(); Pump(50);
-                        Check((bool)State(preview)["active"] && Native.GetForegroundWindow() == foreground, "Resume without activation");
+                        Pump(50); CheckStable(preview, identity, foreground, "Suspend after message pump");
+                        preview.ResumeInput();
+                        CheckStable(preview, identity, foreground, "Resume synchronously");
+                        Check((bool)State(preview)["cursor_visible"], "Resume restores fresh pointer feedback");
+                        Pump(50); CheckStable(preview, identity, foreground, "Resume after message pump");
+                        PumpUntil(() => !(bool)State(preview)["cursor_visible"], "pointer feedback fades and hides");
+                        CheckStable(preview, identity, foreground, "Automatic cursor hide");
                         replacement.Show(); identity.Window = replacement.Handle; preview.Observe(identity); Pump(100);
                         Check((long)State(preview)["window_id"] == replacement.Handle.ToInt64(), "Switch uses exact new HWND");
                         replacement.Close(); PumpUntil(() => !(bool)State(preview)["active"], "closed source releases preview");
