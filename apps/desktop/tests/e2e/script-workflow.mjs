@@ -78,7 +78,7 @@ import numpy as np, pandas as pd, matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 frame = pd.DataFrame({'value': np.array([1, 2, 3])})
-frame.to_csv('outputs/science.csv', index=False)
+frame.to_csv('outputs/science.csv', index=False, lineterminator='\\n')
 assert pd.read_csv('outputs/science.csv')['value'].sum() == 6
 plt.plot(frame['value'])
 plt.savefig('outputs/science.png')
@@ -225,12 +225,17 @@ const server = createServer(async (request, response) => {
             },
           ]
         else {
-          assert.equal(result.status, 'completed', JSON.stringify(result))
+          // Status polling advances the output cursor. The terminal response
+          // can therefore be empty even when an earlier poll returned an error.
+          const commandResults = results.filter((item) => item.command_id === result.command_id)
+          const diagnostic = JSON.stringify({
+            ...result,
+            output: commandResults.map((item) => item.output ?? '').join(''),
+          })
+          assert.equal(result.status, 'completed', diagnostic)
           assert(
-            results.some(
-              (item) => item.command_id === result.command_id && item.output.includes('RUNTIME_OK'),
-            ),
-            JSON.stringify(result),
+            commandResults.some((item) => item.output?.includes('RUNTIME_OK')),
+            diagnostic,
           )
           text = '脚本已完成。\n\n[下载报告](outputs/report.csv)\n\n![生成图片](outputs/plot.png)'
         }
@@ -347,6 +352,21 @@ async function saveDiagnostics() {
     JSON.stringify({ ...report, stage: currentStage, failures }, null, 2),
   )
   await writeFile(join(artifacts, 'application.log'), applicationLogs.join('\n'))
+  // Only persist tool responses from this isolated local fixture. Request
+  // headers, credentials, model configuration and other messages are excluded.
+  await writeFile(
+    join(artifacts, 'tool-responses.json'),
+    JSON.stringify(
+      calls.map((body, index) => ({
+        request: index + 1,
+        responses: body.messages
+          .filter((message) => message.role === 'tool')
+          .map(({ tool_call_id, content }) => ({ tool_call_id, content })),
+      })),
+      null,
+      2,
+    ),
+  )
 }
 
 async function checkpoint(stage) {
