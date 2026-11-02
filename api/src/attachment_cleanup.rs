@@ -75,7 +75,9 @@ fn run_id(name: &str) -> io::Result<String> {
     }
     let bytes = hex
         .as_bytes()
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| {
             u8::from_str_radix(std::str::from_utf8(pair).expect("ASCII hexadecimal"), 16)
                 .map_err(|_| invalid())
@@ -201,7 +203,7 @@ fn inventory_logs(root: &Path) -> io::Result<Vec<Log>> {
             file.seek(SeekFrom::End(-1))?;
             let mut last = [0];
             file.read_exact(&mut last)?;
-            if last != [b'\n'] {
+            if last != *b"\n" {
                 return Err(io::Error::other(
                     "attachment cleanup found an incomplete event log",
                 ));

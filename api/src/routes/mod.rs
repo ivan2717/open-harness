@@ -23,6 +23,7 @@ mod documents;
 mod health_router;
 mod permissions;
 mod plugins;
+mod request_error;
 
 pub(crate) fn router(state: AppState) -> Router {
     Router::new()

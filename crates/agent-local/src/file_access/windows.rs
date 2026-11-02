@@ -8,8 +8,8 @@ use std::{
 };
 use windows_sys::Win32::Storage::FileSystem::{
     BY_HANDLE_FILE_INFORMATION, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS,
-    FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE,
-    GetFileInformationByHandle, GetFinalPathNameByHandleW,
+    FILE_FLAG_OPEN_REPARSE_POINT, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_SHARE_READ,
+    FILE_SHARE_WRITE, GetFileInformationByHandle, GetFinalPathNameByHandleW,
 };
 
 pub(crate) struct ParentDirectory {
@@ -38,7 +38,10 @@ impl ParentDirectory {
         {
             let open = || {
                 OpenOptions::new()
-                    .access_mode(FILE_READ_ATTRIBUTES)
+                    // Metadata-only handles do not participate in Windows
+                    // share-access checks. Directory read access is required
+                    // for omitting FILE_SHARE_DELETE to prevent renames.
+                    .access_mode(FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES)
                     .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
                     .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
                     .open(directory)

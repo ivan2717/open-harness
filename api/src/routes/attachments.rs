@@ -1,4 +1,5 @@
 //! Original attachment upload/download. No caller-supplied path is opened.
+use super::request_error::RequestError;
 use crate::{AppState, service::ServiceError};
 use axum::{
     Json,
@@ -18,20 +19,20 @@ pub(super) async fn upload(
     State(state): State<AppState>,
     Query(query): Query<UploadQuery>,
     body: Result<Bytes, BytesRejection>,
-) -> Result<Json<agent_core::FileReference>, Response> {
+) -> Result<Json<agent_core::FileReference>, RequestError> {
     let bytes = body.map_err(|error| {
         let message = if error.status() == StatusCode::PAYLOAD_TOO_LARGE {
             "单个原文件最多 100 MiB"
         } else {
             "无法读取附件，请重新添加"
         };
-        (error.status(), Json(serde_json::json!({"error":message}))).into_response()
+        RequestError::Body(error.status(), message)
     })?;
     state
         .store_attachment(query.name, bytes.to_vec())
         .await
         .map(Json)
-        .map_err(IntoResponse::into_response)
+        .map_err(Into::into)
 }
 
 pub(super) async fn download(

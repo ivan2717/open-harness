@@ -331,9 +331,17 @@ async fn full_access_network_is_really_enabled_without_a_grant() {
                 stream
                     .set_read_timeout(Some(Duration::from_secs(2)))
                     .unwrap();
-                let mut bytes = [0; 4096];
-                let _ = stream.read(&mut bytes);
-                stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 12\r\nConnection: close\r\n\r\nHOST_NETWORK").unwrap();
+                // A TCP read may contain only part of the headers. Closing with
+                // unread request bytes can reset the response on Windows.
+                let mut request = Vec::new();
+                let mut bytes = [0; 1024];
+                while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    let count = stream.read(&mut bytes).unwrap();
+                    assert!(count > 0, "request ended before its headers");
+                    request.extend_from_slice(&bytes[..count]);
+                    assert!(request.len() <= 16 * 1024, "request headers too large");
+                }
+                stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: 12\r\nConnection: close\r\n\r\nHOST_NETWORK").unwrap();
                 return;
             }
             assert!(
