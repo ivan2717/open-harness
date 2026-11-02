@@ -141,7 +141,7 @@ namespace OpenHarness.ComputerUse {
         internal object State() {
             return Json.Object("in_app", true, "active", source != IntPtr.Zero, "enabled", enabled,
                 "window_id", source == IntPtr.Zero ? null : (object)source.ToInt64(), "streaming", source != IntPtr.Zero && enabled && !recovery.Failed,
-                "frames_received", frames, "cursor_visible", desktopCursor.Visible, "local_only", true);
+                "frames_received", frames, "cursor_visible", desktopCursor.Presented, "local_only", true);
         }
         internal void Release() { generation++; desktopCursor.Clear(); source = IntPtr.Zero; pid = 0; started = 0; pendingPoint = null; recovery.Reset(); Send(null, null, false); }
         protected override void Dispose(bool disposing) { if (disposing) { Release(); monitor.Dispose(); desktopCursor.Dispose(); } base.Dispose(disposing); }
