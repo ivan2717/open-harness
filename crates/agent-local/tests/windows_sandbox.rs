@@ -356,6 +356,106 @@ fn default_appcontainer_restricts_files_credentials_links_and_network() {
 }
 
 #[test]
+fn repeated_and_covered_runtime_roots_preserve_native_isolation() {
+    let fixture = Fixture::new();
+    let output = fixture
+        .spawn_with_read_paths(
+            false,
+            false,
+            false,
+            "sandbox_probe",
+            &[
+                fixture.0.join("runtime/library.txt"),
+                fixture.0.join("runtime"),
+                fixture.0.join("workspace/managed-runtime/library.txt"),
+                fixture.0.join("workspace/managed-runtime"),
+            ],
+        )
+        .wait_with_output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "overlapping read grants changed isolation:\n{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("native sandbox verified"));
+    assert_eq!(
+        fs::read_to_string(fixture.0.join("outside/secret.txt")).unwrap(),
+        "outside secret"
+    );
+    fs::write(
+        fixture.0.join("runtime/library.txt"),
+        "host remains writable",
+    )
+    .unwrap();
+}
+
+#[test]
+fn covered_reparse_read_root_is_rejected_before_any_command_runs() {
+    let fixture = Fixture::new();
+    let output = fixture
+        .spawn_with_read_paths(
+            false,
+            false,
+            false,
+            "sandbox_probe",
+            &[
+                fixture.0.join("workspace"),
+                fixture.0.join("workspace/junction"),
+            ],
+        )
+        .wait_with_output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(125));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("reparse point"));
+    assert!(!fixture.0.join("workspace/output.txt").exists());
+    assert_eq!(
+        fs::read_to_string(fixture.0.join("outside/secret.txt")).unwrap(),
+        "outside secret"
+    );
+}
+
+#[test]
+fn covered_runtime_inside_writable_workspace_retains_write_protection() {
+    let fixture = Fixture::new();
+    let output = fixture
+        .spawn_with_read_paths(
+            false,
+            false,
+            false,
+            "covered_runtime_write_protection_probe",
+            std::slice::from_ref(&fixture.0),
+        )
+        .wait_with_output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "covered runtime lost write protection:\n{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("covered runtime remains read-only"));
+    assert_eq!(
+        fs::read_to_string(fixture.0.join("workspace/managed-runtime/library.txt")).unwrap(),
+        "overlapping runtime"
+    );
+}
+
+#[test]
+fn covered_runtime_write_protection_probe() {
+    let Some(root) = std::env::var_os("OPENHARNESS_SANDBOX_PROBE_ROOT").map(PathBuf::from) else {
+        return;
+    };
+    fs::write(root.join("workspace/output.txt"), "allowed").unwrap();
+    let library = root.join("workspace/managed-runtime/library.txt");
+    assert_eq!(fs::read_to_string(&library).unwrap(), "overlapping runtime");
+    assert!(fs::write(&library, "runtime mutation").is_err());
+    assert!(fs::remove_file(&library).is_err());
+    println!("covered runtime remains read-only");
+}
+
+#[test]
 fn approved_network_adds_capabilities_without_removing_filesystem_isolation() {
     let fixture = Fixture::new();
     let output = fixture.run(true);

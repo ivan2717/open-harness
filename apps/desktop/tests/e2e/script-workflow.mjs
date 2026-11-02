@@ -9,6 +9,15 @@ import { _electron, expect } from '@playwright/test'
 // Local provider fixture drives real file and command tools through the packaged
 // application. No model API or personal project is used by this test.
 const require = createRequire(import.meta.url)
+const packaged = process.env.OPENHARNESS_E2E_EXECUTABLE
+const coldWindowsRuntime = Boolean(packaged) && process.platform === 'win32'
+// The installed Windows sandbox prepares ACLs for the complete shared runtime,
+// then the fixture cold-starts Python's scientific libraries, pip and pnpm.
+// Its completion budget must exceed each subprocess's own 60-second deadline.
+const initialCommandTimeoutSeconds = coldWindowsRuntime ? 150 : undefined
+const initialCommandWaitMs = coldWindowsRuntime ? 180_000 : 30_000
+const commandStartupWaitMs = coldWindowsRuntime ? 120_000 : undefined
+const workflowTimeoutMs = coldWindowsRuntime ? 600_000 : 180_000
 const directory = await mkdtemp(join(tmpdir(), 'openharness-script-workflow-'))
 const artifacts = resolve(process.env.OPENHARNESS_E2E_ARTIFACTS ?? 'test-results/scripts')
 await mkdir(artifacts, { recursive: true })
@@ -56,7 +65,9 @@ const pythonImports = [
 ]
 const managedPythonScript = `import importlib,json,sys,tempfile
 for name in ${JSON.stringify(pythonImports)}:
+ print('[script-runtime] Python import ' + name, file=sys.stderr, flush=True)
  importlib.import_module(name)
+print('[script-runtime] Python document artifacts', file=sys.stderr, flush=True)
 from docx import Document
 from reportlab.pdfgen.canvas import Canvas
 from pypdf import PdfReader
@@ -74,6 +85,7 @@ with tempfile.TemporaryFile() as scratch:
  scratch.write(b'SHARED_RUNTIME_OK')
  scratch.seek(0)
  assert scratch.read() == b'SHARED_RUNTIME_OK'
+print('[script-runtime] Python scientific artifacts', file=sys.stderr, flush=True)
 import numpy as np, pandas as pd, matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -83,6 +95,7 @@ assert pd.read_csv('outputs/science.csv')['value'].sum() == 6
 plt.plot(frame['value'])
 plt.savefig('outputs/science.png')
 plt.close()
+print('[script-runtime] Python complete', file=sys.stderr, flush=True)
 print(json.dumps({'executable':sys.executable,'prefix':sys.prefix,'base_prefix':sys.base_prefix,'imports':${JSON.stringify(pythonImports)},'artifact_text':marker,'temporary_directory':tempfile.gettempdir()}))`
 
 function outputScript() {
@@ -91,6 +104,8 @@ function outputScript() {
   assert.equal(dependencies.dependency_environment, undefined)
   if (packaged) assert.equal(python?.source, 'bundled', 'packaged scripts must use managed Python')
   return [
+    'const progress = (stage) => console.error("[script-runtime] " + new Date().toISOString() + " " + stage);',
+    'progress("Node started");',
     'if (process.versions.electron) throw new Error("Scripts must use standalone Node, not Electron");',
     "const fs = require('node:fs');",
     "const path = require('node:path');",
@@ -102,16 +117,19 @@ function outputScript() {
     `const python = ${JSON.stringify(python ?? null)};`,
     'const sharedPythonExecutable = python?.executable;',
     `const manager = ${JSON.stringify(runtime.node.package_manager ?? null)};`,
-    'function run(executable, args, environment = {}) {',
+    'function run(label, executable, args, environment = {}) {',
+    '  progress(label + " started");',
     '  const child = spawnSync(executable, args, { encoding: "utf8", timeout: 60000, env: {...process.env, ...environment} });',
+    '  if (child.stderr) process.stderr.write(child.stderr);',
+    '  progress(label + " finished: " + (child.error ? child.error.code : child.status));',
     '  if (child.error || child.status !== 0) throw new Error("Runtime failed: " + (child.error || child.stderr));',
     '  return child.stdout;',
     '}',
     'let pythonReport = null;',
     'if (python) {',
     `  const source = python.source === 'bundled' ? ${JSON.stringify(managedPythonScript)} : 'import json,sys; print(json.dumps({"executable":sys.executable,"prefix":sys.prefix,"base_prefix":sys.base_prefix,"imports":[]}))';`,
-    '  pythonReport = JSON.parse(run(python.executable, [...(python.args || []), "-B", "-c", source], python.environment));',
-    '  pythonReport.pip = run(python.executable, [...(python.args || []), "-m", "pip", "--version"], python.environment).trim();',
+    '  pythonReport = JSON.parse(run("Python", python.executable, [...(python.args || []), "-B", "-c", source], python.environment));',
+    '  pythonReport.pip = run("pip", python.executable, [...(python.args || []), "-m", "pip", "--version"], python.environment).trim();',
     '}',
     'if (process.platform === "darwin" && python?.source === "bundled") {',
     '  const probe = path.join(path.dirname(sharedPythonExecutable), ".openharness-write-probe-" + process.pid);',
@@ -122,7 +140,7 @@ function outputScript() {
     'let pnpmVersion = null;',
     'if (manager) {',
     '  if (manager.name !== "pnpm") throw new Error("Expected the managed pnpm command");',
-    '  pnpmVersion = run(manager.executable, [...manager.args, "--version"], manager.environment).trim();',
+    '  pnpmVersion = run("pnpm", manager.executable, [...manager.args, "--version"], manager.environment).trim();',
     '  const { stringify } = require("csv-stringify/sync");',
     '  const { parse } = require("csv-parse/sync");',
     '  if (parse(stringify([["managed", "42"]]))[0][1] !== "42") throw new Error("Bundled CSV libraries failed");',
@@ -209,7 +227,13 @@ const server = createServer(async (request, response) => {
       else if (count === 2)
         tool = [
           'run_command',
-          { command: invokeNode('.openharness-tmp/report.cjs'), yield_time_ms: 0 },
+          {
+            command: invokeNode('.openharness-tmp/report.cjs'),
+            yield_time_ms: 0,
+            ...(initialCommandTimeoutSeconds
+              ? { timeout_seconds: initialCommandTimeoutSeconds }
+              : {}),
+          },
         ]
       else {
         const result = results.filter((item) => item.command_id).at(-1)
@@ -250,9 +274,27 @@ const server = createServer(async (request, response) => {
                 ? 'Write-Output NETWORK_SCOPE_APPROVED'
                 : 'printf NETWORK_SCOPE_APPROVED',
             network_access: 'allowed',
+            ...(coldWindowsRuntime ? { timeout_seconds: 90 } : {}),
           },
         ]
-      else text = '已验证本会话的联网授权。'
+      else {
+        const result = results.filter((item) => item.command_id).at(-1)
+        assert(result, 'network command must return its ID')
+        if (result.status === 'running')
+          tool = [
+            'manage_command',
+            {
+              command_id: result.command_id,
+              action: 'status',
+              cursor: result.next_cursor,
+              wait_ms: 1000,
+            },
+          ]
+        else {
+          assert.equal(result.status, 'completed', JSON.stringify(result))
+          text = '已验证本会话的联网授权。'
+        }
+      }
     } else if (prompt === 'SCRIPT_BACKGROUND') {
       if (count === 0)
         tool = [
@@ -322,12 +364,72 @@ const server = createServer(async (request, response) => {
 await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
 const env = { ...process.env, OPENHARNESS_DESKTOP_DATA_DIR: join(directory, 'data') }
 delete env.ELECTRON_RUN_AS_NODE
-const packaged = process.env.OPENHARNESS_E2E_EXECUTABLE
 let application
 let applicationPid
 let currentStage = 'starting fixture'
 const applicationLogs = []
 const report = { directory, artifacts, packaged: Boolean(packaged), passed: false }
+
+async function waitForCommandCompletion(page, runId, timeout = initialCommandWaitMs) {
+  let stopped = false
+  try {
+    await within(
+      'script command completion',
+      async () => {
+        while (!stopped) {
+          assert.deepEqual(failures, [], 'local provider fixture failed')
+          const run = await page.evaluate((id) => window.harness.getRun(id), runId)
+          if (stopped) return
+          const workspace = await page.evaluate((id) => window.harness.getWorkspace(id), runId)
+          if (stopped) return
+          assert.deepEqual(workspace.approvals, [], 'local script must not require approval')
+          const command = workspace.commands.at(-1)
+          if (command)
+            assert(
+              // Registration briefly precedes automatic local authorization.
+              // An actual user approval is rejected by the assertion above.
+              ['awaiting_approval', 'running', 'completed'].includes(command.status),
+              `local command ended unexpectedly: ${JSON.stringify(command)}`,
+            )
+          if (run.status === 'waiting_for_input') {
+            assert.equal(command?.status, 'completed', JSON.stringify(command))
+            return
+          }
+          assert.equal(run.status, 'running', `unexpected run state: ${JSON.stringify(run)}`)
+          await new Promise((resolve) => setTimeout(resolve, 250))
+        }
+      },
+      timeout,
+    )
+  } finally {
+    // Promise.race cannot cancel an in-flight IPC request. Stop the loop when
+    // the budget expires so a late response cannot start more teardown polling.
+    stopped = true
+  }
+}
+
+async function captureFailureState(page) {
+  if (!report.runId) return
+  const [run, workspace] = await Promise.all([
+    page.evaluate((id) => window.harness.getRun(id), report.runId),
+    page.evaluate((id) => window.harness.getWorkspace(id), report.runId),
+  ])
+  // This suite owns the temporary conversation and uses only a local provider.
+  // Capture command records before shutdown changes them to interrupted.
+  await writeFile(
+    join(artifacts, 'command-state.json'),
+    JSON.stringify(
+      {
+        run: { id: run.id, status: run.status, error: run.error },
+        commands: workspace.commands,
+        approvals: workspace.approvals,
+        grants: workspace.command_grants,
+      },
+      null,
+      2,
+    ),
+  )
+}
 
 async function within(label, operation, timeout = 30_000) {
   let timer
@@ -469,11 +571,7 @@ try {
       }, run.id)
       await expect(page.getByRole('button', { name: '打开会话文件夹', exact: true })).toBeVisible()
       await checkpoint('run local script without an approval prompt')
-      await expect
-        .poll(async () => (await page.evaluate((id) => window.harness.getRun(id), run.id)).status, {
-          timeout: 30_000,
-        })
-        .toBe('waiting_for_input')
+      await waitForCommandCompletion(page, run.id)
       assert.deepEqual(failures, [])
       await checkpoint('verify generated outputs')
       assert.equal(
@@ -612,9 +710,7 @@ try {
       await expect(networkApproval.getByRole('button', { name: '取消', exact: true })).toBeVisible()
       await page.screenshot({ path: join(artifacts, 'script-approval.png') })
       await networkApproval.getByRole('button', { name: '允许', exact: true }).click()
-      await expect
-        .poll(async () => (await page.evaluate((id) => window.harness.getRun(id), run.id)).status)
-        .toBe('waiting_for_input')
+      await waitForCommandCompletion(page, run.id, commandStartupWaitMs ?? 5000)
       const granted = await page.evaluate((id) => window.harness.getWorkspace(id), run.id)
       assert.deepEqual(granted.command_grants, [
         { access: 'workspace_write', network_access: 'allowed' },
@@ -631,13 +727,15 @@ try {
       await expect(running).toBeVisible()
       await running.getByRole('button', { name: /查看输出/ }).click()
       const panel = page.getByRole('complementary', { name: '会话文件与命令' })
-      await expect(panel).toContainText('BACKGROUND_TICK')
+      await expect(panel).toContainText('BACKGROUND_TICK', { timeout: commandStartupWaitMs })
       await expect
-        .poll(() =>
-          access(join(run.execution_directory, 'outputs/child-started')).then(
-            () => true,
-            () => false,
-          ),
+        .poll(
+          () =>
+            access(join(run.execution_directory, 'outputs/child-started')).then(
+              () => true,
+              () => false,
+            ),
+          { timeout: commandStartupWaitMs },
         )
         .toBe(true)
       await checkpoint('stop background script')
@@ -710,7 +808,7 @@ try {
         ),
       )
     },
-    180_000,
+    workflowTimeoutMs,
   )
 } catch (error) {
   report.error = error.stack ?? String(error)
@@ -718,6 +816,9 @@ try {
   if (failures.length) console.error(failures.join('\n'))
   const page = application?.windows()[0]
   if (page) {
+    await within('failure command state', () => captureFailureState(page), 5_000).catch((error) =>
+      record('diagnostics', error.message),
+    )
     await within(
       'failure screenshot',
       () => page.screenshot({ path: join(artifacts, 'script-failure.png') }),
