@@ -9,7 +9,8 @@ use windows_sys::Win32::{
     },
     Security::{
         CheckTokenMembership, CreateRestrictedToken, CreateWellKnownSid, DISABLE_MAX_PRIVILEGE,
-        SID_AND_ATTRIBUTES, TOKEN_DUPLICATE, TOKEN_QUERY, WinBuiltinAdministratorsSid,
+        SID_AND_ATTRIBUTES, TOKEN_ASSIGN_PRIMARY, TOKEN_DUPLICATE, TOKEN_QUERY,
+        WinBuiltinAdministratorsSid,
     },
     Storage::FileSystem::{
         CreateFileW, FILE_FLAG_BACKUP_SEMANTICS, FILE_SHARE_DELETE, FILE_SHARE_READ,
@@ -28,7 +29,7 @@ use windows_sys::Win32::{
 pub(super) fn run_without_administrator_rights(test: &str) -> bool {
     let mut admin = [0u32; 17];
     let mut length = size_of_val(&admin) as u32;
-    check(unsafe {
+    check("CreateWellKnownSid", unsafe {
         CreateWellKnownSid(
             WinBuiltinAdministratorsSid,
             ptr::null_mut(),
@@ -37,16 +38,20 @@ pub(super) fn run_without_administrator_rights(test: &str) -> bool {
         )
     });
     let mut member = 0;
-    check(unsafe { CheckTokenMembership(ptr::null_mut(), admin.as_mut_ptr().cast(), &mut member) });
+    check("CheckTokenMembership", unsafe {
+        CheckTokenMembership(ptr::null_mut(), admin.as_mut_ptr().cast(), &mut member)
+    });
     if member == 0 {
         return false;
     }
 
     let mut original = ptr::null_mut();
-    check(unsafe {
+    // CreateRestrictedToken preserves these handle access rights. Its result
+    // must remain assignable as the primary token of the test-only child.
+    check("OpenProcessToken", unsafe {
         OpenProcessToken(
             GetCurrentProcess(),
-            TOKEN_DUPLICATE | TOKEN_QUERY,
+            TOKEN_ASSIGN_PRIMARY | TOKEN_DUPLICATE | TOKEN_QUERY,
             &mut original,
         )
     });
@@ -56,7 +61,7 @@ pub(super) fn run_without_administrator_rights(test: &str) -> bool {
         Attributes: 0,
     };
     let mut restricted = ptr::null_mut();
-    check(unsafe {
+    check("CreateRestrictedToken", unsafe {
         CreateRestrictedToken(
             original.0,
             DISABLE_MAX_PRIVILEGE,
@@ -85,13 +90,13 @@ pub(super) fn run_without_administrator_rights(test: &str) -> bool {
     };
     for handle in [startup.hStdInput, startup.hStdOutput, startup.hStdError] {
         if !handle.is_null() && handle != INVALID_HANDLE_VALUE {
-            check(unsafe {
+            check("SetHandleInformation", unsafe {
                 SetHandleInformation(handle, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT)
             });
         }
     }
     let mut process = PROCESS_INFORMATION::default();
-    check(unsafe {
+    check("CreateProcessAsUserW", unsafe {
         CreateProcessAsUserW(
             restricted.0,
             wide(&program).as_ptr(),
@@ -117,7 +122,9 @@ pub(super) fn run_without_administrator_rights(test: &str) -> bool {
         panic!("non-administrator runtime regression did not complete: {wait}");
     }
     let mut code = 125;
-    check(unsafe { GetExitCodeProcess(process_handle.0, &mut code) });
+    check("GetExitCodeProcess", unsafe {
+        GetExitCodeProcess(process_handle.0, &mut code)
+    });
     assert_eq!(
         code, 0,
         "runtime regression failed without administrator rights"
@@ -153,11 +160,12 @@ pub(super) fn assert_system_root_acl_is_not_writable() {
 fn wide(value: impl AsRef<OsStr>) -> Vec<u16> {
     value.as_ref().encode_wide().chain(Some(0)).collect()
 }
-fn check(value: i32) {
+#[track_caller]
+fn check(operation: &str, value: i32) {
     assert_ne!(
         value,
         0,
-        "native standard-user test setup: {}",
+        "native standard-user test setup {operation}: {}",
         std::io::Error::last_os_error()
     );
 }
