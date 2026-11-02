@@ -27,6 +27,9 @@ const rendererErrors = []
 const reviewCalls = []
 const ordinaryCalls = []
 const counts = new Map()
+// This checks approval policy, not shell startup speed. Windows also prepares
+// and cleans AppContainer ACLs for the complete bundled Python/Node runtimes.
+const commandTimeoutSeconds = 60
 let sequence = 0
 let fullAccessNetworkRequests = 0
 const fullAccessOutput = join(directory, 'outside-project.txt')
@@ -82,7 +85,7 @@ const server = createServer(async (request, response) => {
           name: 'run_command',
           arguments: {
             command: user === 'E2E_FULL_EXISTING' ? fullAccessCommand : `echo ${user}`,
-            timeout_seconds: 5,
+            timeout_seconds: commandTimeoutSeconds,
             ...(user.startsWith('E2E_FULL_') ? {} : { access: 'read_only' }),
             network_access: user === 'E2E_OFFLINE' ? 'denied' : 'allowed',
           },
@@ -241,8 +244,23 @@ async function settled(id = runId) {
       { timeout: 30_000 },
     )
     .toBe('waiting_for_input')
-  const state = await review(id)
+  // The tool can yield a running command after ten seconds, before this fixture
+  // model ends its turn. Wait for the actual command too; a finished model turn
+  // does not establish successful execution or completion of sandbox cleanup.
+  let state
+  await expect
+    .poll(
+      async () => {
+        state = await review(id)
+        return ['completed', 'failed', 'timed_out', 'cancelled', 'denied'].includes(
+          state.commands.at(-1)?.status,
+        )
+      },
+      { timeout: commandTimeoutSeconds * 1000 + 15_000 },
+    )
+    .toBe(true)
   assert.equal(state.approvals.length, 0)
+  assert.equal(state.commands.at(-1)?.status, 'completed', JSON.stringify(state.commands.at(-1)))
   assert.equal(state.commands.at(-1)?.exit_code, 0, JSON.stringify(state.commands.at(-1)))
   assert(
     state.commands.at(-1).output.includes(expectedPrompt),
