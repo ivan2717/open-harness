@@ -14,6 +14,11 @@ namespace OpenHarness.ComputerUse {
             var timer = Stopwatch.StartNew();
             while (timer.ElapsedMilliseconds < milliseconds) { Application.DoEvents(); Thread.Sleep(10); }
         }
+        private static void PumpUntil(Func<bool> ready, string message) {
+            var timer = Stopwatch.StartNew();
+            while (!ready() && timer.ElapsedMilliseconds < 10000) { Application.DoEvents(); Thread.Sleep(10); }
+            Check(ready(), "Timed out: " + message);
+        }
         private static Dictionary<string, object> State(FeedbackPreview preview) { return (Dictionary<string, object>)preview.State(); }
         private static void RecoveryPolicy() {
             var recovery = new PreviewRecovery(); double now = 0;
@@ -26,16 +31,30 @@ namespace OpenHarness.ComputerUse {
             recovery.Reset(); Check(recovery.Ready(now) && !recovery.Failed, "Explicit observation resets recovery");
         }
         private static void RecoveryLifecycle(AppIdentity identity) {
-            double now = 0; int calls = 0; bool succeed = false;
-            using (var preview = new FeedbackPreview((window, bounds) => { Interlocked.Increment(ref calls); return succeed ? "/9j/recovered" : null; }, () => now)) {
-                var dispatcher = preview.Handle; preview.SetEnabled(true); preview.Observe(identity); Pump(400);
-                Check(calls == 1, "Failed capture waits before retrying");
-                for (int retry = 0; retry < 5; retry++) { now += 10; Pump(400); }
-                Check(calls == 6, "Capture has a bounded retry budget");
-                now += 100; Pump(400); Check(calls == 6, "Exhausted capture does not spin");
-                succeed = true; preview.Observe(identity); Pump(500);
-                Check((int)State(preview)["frames_received"] > 0, "Observe recovers the same target after retry exhaustion");
-            }
+            double now = 0; int calls = 0; bool succeed = false; int failures = 0;
+            var originalEmit = FeedbackPreview.Emit;
+            FeedbackPreview.Emit = value => {
+                var packet = (Dictionary<string, object>)value;
+                object unavailable; if (packet.TryGetValue("unavailable", out unavailable) && (bool)unavailable) failures++;
+            };
+            try {
+                using (var preview = new FeedbackPreview((window, bounds) => { Interlocked.Increment(ref calls); return succeed ? "/9j/recovered" : null; }, () => now)) {
+                    var dispatcher = preview.Handle; preview.SetEnabled(true); preview.Observe(identity);
+                    // Wait for the worker result to reach the UI before advancing
+                    // virtual time; a fixed sleep races both timer and pool scheduling.
+                    PumpUntil(() => failures == 1, "initial capture failure is processed");
+                    Pump(400); Check(calls == 1, "Failed capture waits before retrying");
+                    for (int retry = 0; retry < 5; retry++) {
+                        now += 10;
+                        PumpUntil(() => failures == retry + 2, "retry failure is processed");
+                        Check(calls == retry + 2, "Each retry starts exactly one capture");
+                    }
+                    Check(calls == 6, "Capture has a bounded retry budget");
+                    now += 100; Pump(400); Check(calls == 6, "Exhausted capture does not spin");
+                    succeed = true; preview.Observe(identity);
+                    PumpUntil(() => (int)State(preview)["frames_received"] > 0, "Observe recovers the same target after retry exhaustion");
+                }
+            } finally { FeedbackPreview.Emit = originalEmit; }
             now = 0; calls = 0; bool lateFrame = false;
             using (var gate = new ManualResetEvent(false))
             using (var preview = new FeedbackPreview((window, bounds) => {
@@ -48,12 +67,14 @@ namespace OpenHarness.ComputerUse {
                     object jpeg; if (packet.TryGetValue("jpeg", out jpeg) && (string)jpeg == "/9j/late") lateFrame = true;
                 };
                 try {
-                    var dispatcher = preview.Handle; preview.SetEnabled(true); preview.Observe(identity); Pump(400);
-                    now = 3; Pump(350); now = 50; Pump(700);
+                    var dispatcher = preview.Handle; preview.SetEnabled(true); preview.Observe(identity);
+                    PumpUntil(() => Interlocked.CompareExchange(ref calls, 0, 0) == 1, "blocked capture starts");
+                    now = 3; PumpUntil(() => !(bool)State(preview)["streaming"], "blocked capture times out");
+                    now = 50; Pump(700);
                     Check(calls == 1, "Timed-out PrintWindow must not spawn concurrent workers");
                     preview.Release(); preview.Observe(identity); Pump(350);
                     Check(calls == 1, "New observation also waits for the old native call");
-                    gate.Set(); Pump(700);
+                    gate.Set(); PumpUntil(() => (int)State(preview)["frames_received"] > 0, "new capture resumes after old worker exits");
                     Check(!lateFrame && (int)State(preview)["frames_received"] > 0, "Old result is discarded and new capture resumes");
                 } finally { gate.Set(); FeedbackPreview.Emit = previousEmit; }
             }
@@ -73,7 +94,8 @@ namespace OpenHarness.ComputerUse {
                             Window = source.Handle, Name = "Test fixture" };
                         RecoveryLifecycle(identity);
                         IntPtr foreground = Native.GetForegroundWindow();
-                        preview.Observe(identity); Pump(1500);
+                        preview.Observe(identity);
+                        PumpUntil(() => (int)State(preview)["frames_received"] > 0, "local capture delivers a frame");
                         Check((bool)State(preview)["in_app"] && (int)State(preview)["frames_received"] > 0, "Local capture delivers frames to the in-app view");
                         Check(Native.GetForegroundWindow() == foreground, "Preview must not activate");
                         Check(Application.OpenForms.Count == 1, "Capture must not create a preview Form");
@@ -85,7 +107,8 @@ namespace OpenHarness.ComputerUse {
                         preview.SetEnabled(false); Pump(350);
                         int pausedFrames = (int)State(preview)["frames_received"];
                         Pump(400); Check(pausedFrames == (int)State(preview)["frames_received"], "Collapse pauses capture");
-                        preview.SetEnabled(true); Pump(1000);
+                        preview.SetEnabled(true);
+                        PumpUntil(() => (int)State(preview)["frames_received"] > pausedFrames, "expanded preview delivers a new frame");
                         Check((int)State(preview)["frames_received"] > pausedFrames, "Expand resumes capture");
                         preview.SuspendInput(); Pump(50);
                         Check(!(bool)State(preview)["cursor_visible"], "Display leaves input hit-testing path");
@@ -93,7 +116,7 @@ namespace OpenHarness.ComputerUse {
                         Check((bool)State(preview)["active"] && Native.GetForegroundWindow() == foreground, "Resume without activation");
                         replacement.Show(); identity.Window = replacement.Handle; preview.Observe(identity); Pump(100);
                         Check((long)State(preview)["window_id"] == replacement.Handle.ToInt64(), "Switch uses exact new HWND");
-                        replacement.Close(); Pump(650);
+                        replacement.Close(); PumpUntil(() => !(bool)State(preview)["active"], "closed source releases preview");
                         Check(!(bool)State(preview)["active"] && !(bool)State(preview)["streaming"], "Closed source releases preview instead of retargeting");
                         identity.Window = source.Handle; preview.Observe(identity); preview.Release(); Pump(50);
                         Check(!(bool)State(preview)["active"] && !(bool)State(preview)["streaming"], "Stop releases display resources");
