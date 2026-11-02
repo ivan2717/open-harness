@@ -1,4 +1,8 @@
-use std::{io, path::PathBuf, ptr};
+use std::{
+    fs, io,
+    path::{Component, Path, PathBuf, Prefix},
+    ptr,
+};
 use tokio::process::Child;
 use windows_sys::Win32::{
     Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE},
@@ -117,4 +121,46 @@ pub(super) fn shell() -> PathBuf {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("C:\\Windows"))
         .join("System32/WindowsPowerShell/v1.0/powershell.exe")
+}
+
+/// Keep canonical paths for access checks, but hand shells a normal DOS/UNC
+/// working directory. PowerShell's provider location can otherwise differ from
+/// the process directory, and it uses that provider location for native children.
+pub(super) fn shell_working_directory(root: &Path) -> io::Result<PathBuf> {
+    let mut components = root.components();
+    let mut directory = match components.next() {
+        Some(Component::Prefix(prefix)) => match prefix.kind() {
+            Prefix::VerbatimDisk(drive) => PathBuf::from(format!("{}:", char::from(drive))),
+            Prefix::VerbatimUNC(server, share) => {
+                let mut directory = PathBuf::from(r"\\");
+                directory.push(server);
+                directory.push(share);
+                directory
+            }
+            _ => return Ok(root.to_owned()),
+        },
+        _ => return Err(io::Error::other("shell working directory must be absolute")),
+    };
+    directory.extend(components);
+    // Removing the verbatim prefix can change names ending in a dot or space.
+    // Never silently execute in a different directory after normalizing syntax.
+    if fs::canonicalize(&directory)? != root {
+        return Err(io::Error::other(
+            "workspace cannot be represented as a shell working directory",
+        ));
+    }
+    Ok(directory)
+}
+
+pub(super) fn shell_script(script: &str, directory: &Path) -> io::Result<String> {
+    let directory = directory
+        .to_str()
+        .ok_or_else(|| io::Error::other("shell working directory is not valid Unicode"))?
+        .replace('\'', "''");
+    // PowerShell maintains a per-runspace location separately from .NET's
+    // process-wide directory. Set both before executing the user's script and
+    // fail closed if provider initialization cannot reach the selected folder.
+    Ok(format!(
+        "try {{ Set-Location -LiteralPath '{directory}' -ErrorAction Stop; [System.Environment]::CurrentDirectory = '{directory}' }} catch {{ [Console]::Error.WriteLine($_.Exception.Message); exit 1 }}; [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); $OutputEncoding = [Console]::OutputEncoding; {script}"
+    ))
 }

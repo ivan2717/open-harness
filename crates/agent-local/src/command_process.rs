@@ -81,6 +81,12 @@ impl CommandProcess {
         // These are exact immutable files authorized by the host from durable
         // user attachments, never their parent directory or model-chosen paths.
         runtime.read_paths.extend(tools.attachment_read_paths()?);
+        #[cfg(windows)]
+        let working_directory = windows::shell_working_directory(tools.root())?;
+        #[cfg(windows)]
+        let shell_script = windows::shell_script(script, &working_directory)?;
+        #[cfg(not(windows))]
+        let working_directory = tools.root();
         #[cfg(not(windows))]
         let mut command = {
             let mut command = Command::new("/bin/sh");
@@ -109,7 +115,13 @@ impl CommandProcess {
         let mut command = {
             let mut command = if options.unrestricted {
                 let mut command = Command::new(windows::shell());
-                command.args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", &format!("[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); $OutputEncoding = [Console]::OutputEncoding; {script}")]);
+                command.args([
+                    "-NoLogo",
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-Command",
+                    &shell_script,
+                ]);
                 command
             } else {
                 Command::new(windows_helper()?)
@@ -123,7 +135,7 @@ impl CommandProcess {
             command
         };
         command
-            .current_dir(tools.root())
+            .current_dir(working_directory.as_os_str())
             .env_clear()
             .env("PATH", runtime.path.clone())
             .envs(command_environment::environment(&temporary))
@@ -172,8 +184,8 @@ impl CommandProcess {
             } else {
                 let request = serde_json::json!({
                     "version":1, "program":windows::shell(),
-                    "args":["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", &format!("[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); $OutputEncoding = [Console]::OutputEncoding; {script}")],
-                    "cwd":tools.root(), "workspace":tools.root(), "read_paths":runtime.read_paths, "write_paths":write_paths,
+                    "args":["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", shell_script],
+                    "cwd":working_directory, "workspace":tools.root(), "read_paths":runtime.read_paths, "write_paths":write_paths,
                     "denied_paths":[tools.inner.state_dir],
                     "network_allowed":network_access == NetworkAccess::Allowed,
                 });
