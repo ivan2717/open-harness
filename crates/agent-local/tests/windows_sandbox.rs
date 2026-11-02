@@ -12,10 +12,14 @@ use std::{
 use windows_sys::Win32::{
     Foundation::CloseHandle,
     Security::{
-        GetTokenInformation, TOKEN_GROUPS, TOKEN_QUERY, TokenCapabilities, TokenIsAppContainer,
+        GetTokenInformation, IsWellKnownSid, TOKEN_GROUPS, TOKEN_QUERY, TokenCapabilities,
+        TokenIsAppContainer, WinCapabilityInternetClientSid,
+        WinCapabilityPrivateNetworkClientServerSid,
     },
     System::Threading::{GetCurrentProcess, OpenProcessToken},
 };
+#[path = "windows_sandbox/standard_user.rs"]
+mod standard_user;
 
 struct Fixture(PathBuf);
 impl Fixture {
@@ -145,6 +149,74 @@ impl Drop for Fixture {
         let _ = fs::remove_dir(self.0.join("workspace/junction"));
         let _ = fs::remove_dir_all(&self.0);
     }
+}
+
+#[test]
+fn node_file_entry_and_dependency_resolution_work_without_exposing_ancestor_contents() {
+    if standard_user::run_without_administrator_rights(
+        "node_file_entry_and_dependency_resolution_work_without_exposing_ancestor_contents",
+    ) {
+        return;
+    }
+    standard_user::assert_system_root_acl_is_not_writable();
+    let fixture = Fixture::new();
+    let node_path = Command::new("node")
+        .args(["-p", "process.execPath"])
+        .output()
+        .expect("Node is required for the native Windows runtime regression");
+    assert!(
+        node_path.status.success(),
+        "cannot locate Node: {node_path:?}"
+    );
+    let source = PathBuf::from(String::from_utf8(node_path.stdout).unwrap().trim());
+    let program = fixture.0.join("runtime/node.exe");
+    fs::copy(source, &program).unwrap();
+    fs::create_dir_all(fixture.0.join("workspace/node_modules/fixture-package")).unwrap();
+    fs::write(
+        fixture
+            .0
+            .join("workspace/node_modules/fixture-package/index.js"),
+        "module.exports = 42;",
+    )
+    .unwrap();
+    fs::write(fixture.0.join("workspace/main.cjs"), r#"
+const fs = require('node:fs');
+const path = require('node:path');
+const assert = require('node:assert/strict');
+assert.equal(require('fixture-package'), 42);
+assert.equal(fs.realpathSync(__filename).toLowerCase(), path.join(process.cwd(), 'main.cjs').toLowerCase());
+const parent = path.dirname(process.cwd());
+for (let current = parent;; current = path.dirname(current)) {
+    assert.equal(fs.lstatSync(current).isDirectory(), true);
+    if (current === path.dirname(current)) break;
+}
+assert.throws(() => fs.readdirSync(parent), error => ['EACCES', 'EPERM'].includes(error.code));
+assert.throws(() => fs.readFileSync(path.join(parent, 'outside/secret.txt')));
+assert.throws(() => fs.writeFileSync(path.join(parent, 'forbidden.txt'), 'no'));
+assert.throws(() => fs.writeFileSync(path.join(parent, 'runtime/library.txt'), 'no'));
+assert.equal(fs.readFileSync(path.join(parent, 'runtime/library.txt'), 'utf8'), 'shared library');
+console.log('NODE_METADATA_BOUNDARY_OK');
+"#).unwrap();
+    let request = json!({"version":1,"program":program,"args":["main.cjs"],
+        "cwd":fixture.0.join("workspace"),"workspace":fixture.0.join("workspace"),
+        "read_paths":[fixture.0.join("runtime")],"write_paths":[fixture.0.join("scratch")],
+        "denied_paths":[],"network_allowed":false});
+    let mut child = Command::new(env!("CARGO_BIN_EXE_openharness-sandbox"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    writeln!(child.stdin.take().unwrap(), "{request}").unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "Node file-entry regression failed:\n{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("NODE_METADATA_BOUNDARY_OK"));
+    assert!(!fixture.0.join("forbidden.txt").exists());
 }
 
 #[test]
@@ -454,13 +526,38 @@ fn sandbox_probe() {
             0
         );
         let groups = &*buffer.as_ptr().cast::<TOKEN_GROUPS>();
-        assert_eq!(groups.GroupCount, if allowed { 2 } else { 0 });
+        assert_eq!(groups.GroupCount, if allowed { 3 } else { 1 });
+        let capabilities =
+            std::slice::from_raw_parts(groups.Groups.as_ptr(), groups.GroupCount as usize);
+        for kind in [
+            WinCapabilityInternetClientSid,
+            WinCapabilityPrivateNetworkClientServerSid,
+        ] {
+            assert_eq!(
+                capabilities
+                    .iter()
+                    .any(|group| IsWellKnownSid(group.Sid, kind) != 0),
+                allowed
+            );
+        }
         CloseHandle(token);
     }
     assert_eq!(
         fs::read_to_string(root.join("workspace/input.txt")).unwrap(),
         "project input"
     );
+    for ancestor in root.ancestors() {
+        assert!(
+            fs::symlink_metadata(ancestor).unwrap().is_dir(),
+            "ancestor {}",
+            ancestor.display()
+        );
+    }
+    assert!(
+        fs::read_dir(&root).is_err(),
+        "metadata permission must not enumerate the parent"
+    );
+    assert!(fs::write(root.join("parent-output.txt"), "forbidden").is_err());
     if std::env::var("OPENHARNESS_SANDBOX_PROBE_READ_ONLY").as_deref() == Ok("1") {
         assert!(fs::write(root.join("workspace/output.txt"), "new project file").is_err());
         assert!(fs::write(root.join("workspace/input.txt"), "project mutation").is_err());

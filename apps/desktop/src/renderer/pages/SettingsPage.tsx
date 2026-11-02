@@ -5,6 +5,7 @@ import { configOptions } from '../lib/queries'
 import { useUiStore } from '../state/ui-store'
 import { PermissionSettings } from '../components/PermissionSettings'
 import { DeveloperTools } from '../components/DeveloperTools'
+import { WindowsScriptSettings } from '../components/WindowsScriptSettings'
 
 export function SettingsPage() {
   const config = useQuery(configOptions)
@@ -41,6 +42,7 @@ export function SettingsPage() {
             </div>
           </section>
           <PermissionSettings />
+          <WindowsScriptSettings />
           {Boolean(config.data.recovery_issues?.length) && (
             <section className="settings-section recovery-issues">
               <h2>部分会话未恢复</h2>

@@ -1,4 +1,4 @@
-use super::{Request, acl, protected_paths, wide};
+use super::{Request, acl, metadata, protected_paths, wide};
 use serde::{Deserialize, Serialize};
 use std::{
     fs, io,
@@ -189,6 +189,33 @@ impl Lease {
                 "working directory must be inside the workspace",
             ));
         }
+        // Node's file-entry loader and package managers stat every ancestor.
+        // Grant just those directories' attributes, never their contents or
+        // descendants. Root / profiles ACLs are prepared explicitly with UAC;
+        // ordinary commands must not try to rewrite them when already usable.
+        let metadata_start = grants.len();
+        let mut ancestors = std::collections::BTreeSet::new();
+        for root in request
+            .read_paths
+            .iter()
+            .chain(&request.write_paths)
+            .chain([&request.program, &request.cwd, &workspace])
+        {
+            for ancestor in checked(root)?.ancestors().skip(1) {
+                ancestors.insert(ancestor.to_path_buf());
+            }
+        }
+        for path in ancestors {
+            if grants.iter().any(|(granted, rights, mode)| {
+                granted == &path
+                    && *mode == GRANT_ACCESS
+                    && rights & metadata::RIGHTS == metadata::RIGHTS
+            }) || acl::has_metadata_access(&path, metadata::sid()?)?
+            {
+                continue;
+            }
+            grants.push((path, metadata::RIGHTS, GRANT_ACCESS));
+        }
         recover(&state)?;
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -235,9 +262,8 @@ impl Lease {
             serde_json::to_vec(&lease.journal).map_err(io::Error::other)?,
         )?;
         for (index, (path, rights, mode)) in grants.into_iter().enumerate() {
-            let result = if read_only_workspace
-                && workspace_reads.contains(&index)
-                && mode == GRANT_ACCESS
+            let result = if index >= metadata_start
+                || (read_only_workspace && workspace_reads.contains(&index) && mode == GRANT_ACCESS)
             {
                 // Existing files remain live, but a new or atomically replaced
                 // file is readable only after the next command scans it.
@@ -247,10 +273,17 @@ impl Lease {
             };
             if let Err(error) = result {
                 let _ = lease.cleanup();
-                return Err(io::Error::other(format!(
-                    "cannot restrict {}: {error}",
-                    path.display()
-                )));
+                return Err(if index >= metadata_start {
+                    io::Error::new(
+                        error.kind(),
+                        format!(
+                            "cannot prepare sandbox ancestor metadata for {}: {error}. Prepare the Windows script environment in Settings; no unrestricted retry was attempted",
+                            path.display()
+                        ),
+                    )
+                } else {
+                    io::Error::other(format!("cannot restrict {}: {error}", path.display()))
+                });
             }
         }
         Ok(lease)
@@ -287,7 +320,7 @@ impl Drop for Lease {
     }
 }
 
-fn checked(path: &Path) -> io::Result<PathBuf> {
+pub(super) fn checked(path: &Path) -> io::Result<PathBuf> {
     if !path.is_absolute() {
         return Err(io::Error::other("sandbox paths must be absolute"));
     }
@@ -457,9 +490,9 @@ fn creation_time(process: windows_sys::Win32::Foundation::HANDLE) -> io::Result<
 
 // Serializes our read/merge/write ACL operations across commands. This does
 // not serialize command execution; different package SIDs run concurrently.
-struct AclLock(HANDLE);
+pub(super) struct AclLock(HANDLE);
 impl AclLock {
-    fn acquire() -> io::Result<Self> {
+    pub(super) fn acquire() -> io::Result<Self> {
         let name = wide("Local\\OpenHarness.CommandSandbox.Acl")?;
         let handle = unsafe { CreateMutexW(ptr::null(), 0, name.as_ptr()) };
         if handle.is_null() {

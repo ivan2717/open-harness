@@ -16,6 +16,7 @@ import { mkdir } from 'node:fs/promises'
 import { Backend } from './backend'
 import { ModelRestoration } from './runtime-startup'
 import { prepareWorkspaceRuntime } from './workspace-runtime'
+import { WindowsScriptEnvironment } from './windows-script-environment'
 import { BundledPlugins } from './bundled-plugins'
 import { ChromeConnection } from './chrome-connection'
 import { COMPUTER_APP_NAME, installComputerApp } from './computer-app'
@@ -66,6 +67,7 @@ const devUrl = !app.isPackaged ? process.env.ELECTRON_RENDERER_URL : undefined
 const subscriptions = new SubscriptionRegistry()
 let window: BrowserWindow | undefined
 let backend: Backend | undefined
+let windowsScriptEnvironment: WindowsScriptEnvironment | undefined
 let bundledPlugins: BundledPlugins | undefined
 let chromeConnection: ChromeConnection | undefined
 let previewWatching = false
@@ -161,6 +163,14 @@ function installBridge(): void {
   ipcMain.handle(channels.prepareBrowser, async (event) => {
     assertSender(event)
     return bundledPlugins!.prepareBrowser()
+  })
+  ipcMain.handle(channels.windowsScriptEnvironmentStatus, (event) => {
+    assertSender(event)
+    return windowsScriptEnvironment!.status()
+  })
+  ipcMain.handle(channels.prepareWindowsScriptEnvironment, (event) => {
+    assertSender(event)
+    return windowsScriptEnvironment!.prepare()
   })
   ipcMain.handle(channels.chromeConnectionStatus, async (event) => {
     assertSender(event)
@@ -457,6 +467,7 @@ if (!app.requestSingleInstanceLock()) {
     const binary = app.isPackaged
       ? join(process.resourcesPath, 'bin', binaryName)
       : join(targetDirectory, 'debug', binaryName)
+    windowsScriptEnvironment = new WindowsScriptEnvironment(binary)
     const pluginRoot = app.isPackaged
       ? join(process.resourcesPath, 'plugins')
       : process.platform === 'win32'

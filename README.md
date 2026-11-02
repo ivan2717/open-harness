@@ -104,7 +104,12 @@ macOS uses `/bin/sh` and Seatbelt (`sandbox-exec`), with workspace-scoped writes
 protected-path restrictions, and a pipe watchdog that stops the process group
 when the host exits. Windows uses PowerShell in an AppContainer launched by the
 bundled `openharness-sandbox.exe`. A command-specific package SID receives
-workspace/runtime ACL access; existing protected paths are denied. Job Objects
+workspace/runtime ACL access; existing protected paths are denied.
+Before the first sandboxed script on Windows, use **设置 → 本地脚本 → 准备脚本环境**
+and approve the Windows UAC prompt. This one-time setup grants a dedicated
+capability non-inheriting directory metadata access needed by Node's path
+resolution; it does not grant file contents, directory listing or writes.
+The application and subsequent commands do not run as administrator. Job Objects
 terminate the helper and its children on stop or host exit. Read-only project
 grants do not inherit to newly created or atomically replaced files; start a new
 command to scan and authorize those files. Existing files remain live. Windows

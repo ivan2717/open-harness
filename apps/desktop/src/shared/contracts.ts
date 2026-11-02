@@ -395,6 +395,12 @@ export interface DesktopBridge {
   bundledPlugins(): Promise<BundledPlugin[]>
   installBundledPlugin(id: BundledPlugin['id']): Promise<ExtensionSettings>
   prepareBrowser(): Promise<void>
+  windowsScriptEnvironmentStatus(): Promise<
+    import('./windows-script-environment').WindowsScriptEnvironmentStatus
+  >
+  prepareWindowsScriptEnvironment(): Promise<
+    import('./windows-script-environment').WindowsScriptEnvironmentStatus
+  >
   chromeConnectionStatus(): Promise<NonNullable<BundledPlugin['chrome']>>
   connectChrome(mode?: 'store' | 'development' | 'repair'): Promise<void>
   openComputerSettings(permission: 'accessibility' | 'screen-recording'): Promise<void>

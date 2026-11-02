@@ -105,6 +105,9 @@ const bridge: DesktopBridge = {
   bundledPlugins: () => ipcRenderer.invoke(channels.bundledPlugins),
   installBundledPlugin: (id) => ipcRenderer.invoke(channels.installBundledPlugin, id),
   prepareBrowser: () => ipcRenderer.invoke(channels.prepareBrowser),
+  windowsScriptEnvironmentStatus: () => ipcRenderer.invoke(channels.windowsScriptEnvironmentStatus),
+  prepareWindowsScriptEnvironment: () =>
+    ipcRenderer.invoke(channels.prepareWindowsScriptEnvironment),
   chromeConnectionStatus: () => ipcRenderer.invoke(channels.chromeConnectionStatus),
   connectChrome: (mode = 'store') => ipcRenderer.invoke(channels.connectChrome, mode),
   openComputerSettings: (permission) => ipcRenderer.invoke(channels.computerSettings, permission),

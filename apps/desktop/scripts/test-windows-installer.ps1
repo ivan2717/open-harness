@@ -82,6 +82,16 @@ try {
     }
     Assert-BackendDependencies
     Assert-ManagedPython
+    # The installer stays per-user. This is the same fixed setup helper exposed
+    # by Settings; ordinary users approve its one-time elevation through UAC.
+    # GitHub's Windows runner is already elevated, so invoke it directly here.
+    $sandboxHelper = Join-Path $installDirectory 'resources/bin/openharness-sandbox.exe'
+    & $sandboxHelper --prepare-metadata
+    if ($LASTEXITCODE -ne 0) { throw 'Installed script environment preparation failed' }
+    $sandboxStatus = & $sandboxHelper --metadata-status | ConvertFrom-Json
+    if ($LASTEXITCODE -ne 0 -or -not $sandboxStatus.ready) {
+        throw 'Installed script environment is not ready after preparation'
+    }
     foreach ($suite in @('packaged', 'script-workflow')) {
         $env:OPENHARNESS_E2E_ARTIFACTS = if ($suite -eq 'script-workflow') {
             Join-Path $desktop 'test-results/packaged/scripts'
