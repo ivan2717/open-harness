@@ -1,6 +1,8 @@
 #![cfg(windows)]
 
-use agent_local::{CommandApprovalScope, LocalTools, PermissionMode, WorkspaceAccess};
+use agent_local::{
+    ApprovalMode, CommandApprovalScope, LocalTools, PermissionMode, WorkspaceAccess,
+};
 use agent_runtime::{ToolCall, ToolExecutor};
 use serde_json::{Value, json};
 use std::{
@@ -114,6 +116,63 @@ async fn file_ready(path: &Path, tools: &LocalTools, command_id: &str) {
 
 fn delayed_child() -> &'static str {
     r#"$childShell = Join-Path $PSHOME 'pwsh.exe'; if (!(Test-Path $childShell)) { $childShell = Join-Path $PSHOME 'powershell.exe' }; & $childShell -NoLogo -NoProfile -NonInteractive -Command "[IO.File]::WriteAllText('started.txt','ready'); Start-Sleep -Seconds 3; [IO.File]::WriteAllText('late.txt','escaped')""#
+}
+
+#[tokio::test]
+async fn powershell_and_native_children_use_the_selected_workspace() {
+    for mode in [ApprovalMode::Ask, ApprovalMode::FullAccess] {
+        let mut fixture = Fixture::new();
+        let literal_root = fixture.base.join("project's [literal] $workspace");
+        fs::rename(&fixture.root, &literal_root).unwrap();
+        fixture.root = literal_root;
+        fs::write(fixture.root.join("input.txt"), "workspace input").unwrap();
+        let tools = fixture.tools();
+        tools.set_approval_mode(mode).unwrap();
+        let script = r#"
+$ErrorActionPreference = 'Stop'
+[pscustomobject]@{stage='parent'; provider=(Get-Location).ProviderPath; process=[Environment]::CurrentDirectory} | ConvertTo-Json -Compress
+Set-Content -LiteralPath 'parent-provider.txt' -Value (Get-Content -LiteralPath 'input.txt')
+[IO.File]::WriteAllText('parent-process.txt', [IO.File]::ReadAllText('input.txt'))
+$childShell = Join-Path $PSHOME 'pwsh.exe'
+if (!(Test-Path $childShell)) { $childShell = Join-Path $PSHOME 'powershell.exe' }
+$childCode = '$ErrorActionPreference = ''Stop''; [pscustomobject]@{stage=''child''; provider=(Get-Location).ProviderPath; process=[Environment]::CurrentDirectory} | ConvertTo-Json -Compress; Set-Content -LiteralPath ''child-provider.txt'' -Value (Get-Content -LiteralPath ''input.txt''); [IO.File]::WriteAllText(''child-process.txt'', [IO.File]::ReadAllText(''input.txt''))'
+& $childShell -NoLogo -NoProfile -NonInteractive -Command $childCode
+exit $LASTEXITCODE
+"#;
+        let result = approved(&tools, json!({"command":script, "yield_time_ms":30000})).await;
+        assert_eq!(result["status"], "completed", "{mode:?}: {result}");
+        assert_eq!(result["exit_code"], 0, "{mode:?}: {result}");
+        let locations = result["output"]
+            .as_str()
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).expect("location JSON"))
+            .collect::<Vec<_>>();
+        assert_eq!(locations.len(), 2, "{mode:?}: {result}");
+        let expected = fs::canonicalize(&fixture.root).unwrap();
+        for (location, stage) in locations.iter().zip(["parent", "child"]) {
+            assert_eq!(location["stage"], stage);
+            for kind in ["provider", "process"] {
+                assert_eq!(
+                    fs::canonicalize(location[kind].as_str().unwrap()).unwrap(),
+                    expected,
+                    "{mode:?}, {stage} {kind}: {result}"
+                );
+            }
+        }
+        for name in [
+            "parent-provider.txt",
+            "parent-process.txt",
+            "child-provider.txt",
+            "child-process.txt",
+        ] {
+            assert_eq!(
+                fs::read_to_string(fixture.root.join(name)).unwrap().trim(),
+                "workspace input",
+                "{mode:?}, {name}: {result}"
+            );
+        }
+    }
 }
 
 #[tokio::test]

@@ -4,13 +4,19 @@
 use std::{ffi::OsStr, os::windows::ffi::OsStrExt, ptr};
 use windows_sys::Win32::{
     Foundation::{
-        CloseHandle, HANDLE, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, SetHandleInformation,
-        WAIT_OBJECT_0,
+        CloseHandle, ERROR_INSUFFICIENT_BUFFER, GENERIC_ALL, HANDLE, HANDLE_FLAG_INHERIT,
+        INVALID_HANDLE_VALUE, LocalFree, SetHandleInformation, WAIT_OBJECT_0,
     },
     Security::{
+        ACL,
+        Authorization::{
+            EXPLICIT_ACCESS_W, GRANT_ACCESS, SetEntriesInAclW, TRUSTEE_IS_SID, TRUSTEE_IS_USER,
+            TRUSTEE_W,
+        },
         CheckTokenMembership, CreateRestrictedToken, CreateWellKnownSid, DISABLE_MAX_PRIVILEGE,
-        SID_AND_ATTRIBUTES, TOKEN_ASSIGN_PRIMARY, TOKEN_DUPLICATE, TOKEN_QUERY,
-        WinBuiltinAdministratorsSid,
+        GetTokenInformation, SID_AND_ATTRIBUTES, SetTokenInformation, TOKEN_ADJUST_DEFAULT,
+        TOKEN_ASSIGN_PRIMARY, TOKEN_DEFAULT_DACL, TOKEN_DUPLICATE, TOKEN_INFORMATION_CLASS,
+        TOKEN_QUERY, TOKEN_USER, TokenDefaultDacl, TokenUser, WinBuiltinAdministratorsSid,
     },
     Storage::FileSystem::{
         CreateFileW, FILE_FLAG_BACKUP_SEMANTICS, FILE_SHARE_DELETE, FILE_SHARE_READ,
@@ -51,7 +57,7 @@ pub(super) fn run_without_administrator_rights(test: &str) -> bool {
     check("OpenProcessToken", unsafe {
         OpenProcessToken(
             GetCurrentProcess(),
-            TOKEN_ASSIGN_PRIMARY | TOKEN_DUPLICATE | TOKEN_QUERY,
+            TOKEN_ASSIGN_PRIMARY | TOKEN_DUPLICATE | TOKEN_QUERY | TOKEN_ADJUST_DEFAULT,
             &mut original,
         )
     });
@@ -75,6 +81,7 @@ pub(super) fn run_without_administrator_rights(test: &str) -> bool {
         )
     });
     let restricted = Handle(restricted);
+    grant_user_default_dacl(restricted.0);
     let program = std::env::current_exe().unwrap();
     let mut command = wide(format!(
         "\"{}\" --exact {test} --nocapture",
@@ -132,6 +139,76 @@ pub(super) fn run_without_administrator_rights(test: &str) -> bool {
     true
 }
 
+fn grant_user_default_dacl(token: HANDLE) {
+    // An elevated token's default object ACL can grant only Administrators
+    // and SYSTEM. After making Administrators deny-only, such an ACL prevents
+    // the child from opening its own pipes/processes. Match a regular user's
+    // default object ACL by granting this account access, preserving the
+    // existing entries. This does not change any filesystem permissions.
+    let user = token_information(token, TokenUser);
+    let user = unsafe { &*user.as_ptr().cast::<TOKEN_USER>() };
+    let defaults = token_information(token, TokenDefaultDacl);
+    let defaults = unsafe { &*defaults.as_ptr().cast::<TOKEN_DEFAULT_DACL>() };
+    assert!(
+        !defaults.DefaultDacl.is_null(),
+        "standard-user test token must have an explicit default object DACL"
+    );
+    let entry = EXPLICIT_ACCESS_W {
+        grfAccessPermissions: GENERIC_ALL,
+        grfAccessMode: GRANT_ACCESS,
+        grfInheritance: 0,
+        Trustee: TRUSTEE_W {
+            TrusteeForm: TRUSTEE_IS_SID,
+            TrusteeType: TRUSTEE_IS_USER,
+            ptstrName: user.User.Sid.cast(),
+            ..Default::default()
+        },
+    };
+    let mut acl = ptr::null_mut();
+    let code = unsafe { SetEntriesInAclW(1, &entry, defaults.DefaultDacl, &mut acl) };
+    assert_eq!(
+        code,
+        0,
+        "standard-user default object ACL: {}",
+        std::io::Error::from_raw_os_error(code as i32)
+    );
+    let acl = LocalAcl(acl);
+    let defaults = TOKEN_DEFAULT_DACL { DefaultDacl: acl.0 };
+    check("SetTokenInformation(TokenDefaultDacl)", unsafe {
+        SetTokenInformation(
+            token,
+            TokenDefaultDacl,
+            ptr::from_ref(&defaults).cast(),
+            size_of::<TOKEN_DEFAULT_DACL>() as u32,
+        )
+    });
+}
+
+fn token_information(token: HANDLE, class: TOKEN_INFORMATION_CLASS) -> Vec<usize> {
+    let mut length = 0;
+    let result = unsafe { GetTokenInformation(token, class, ptr::null_mut(), 0, &mut length) };
+    assert_eq!(
+        result, 0,
+        "token information size query unexpectedly succeeded"
+    );
+    assert_eq!(
+        std::io::Error::last_os_error().raw_os_error(),
+        Some(ERROR_INSUFFICIENT_BUFFER as i32),
+        "GetTokenInformation({class}) size query failed"
+    );
+    let mut buffer = vec![0usize; (length as usize).div_ceil(size_of::<usize>())];
+    check("GetTokenInformation", unsafe {
+        GetTokenInformation(
+            token,
+            class,
+            buffer.as_mut_ptr().cast(),
+            length,
+            &mut length,
+        )
+    });
+    buffer
+}
+
 pub(super) fn assert_system_root_acl_is_not_writable() {
     let root = format!("{}\\", std::env::var("SystemDrive").unwrap());
     let handle = unsafe {
@@ -174,6 +251,15 @@ impl Drop for Handle {
     fn drop(&mut self) {
         unsafe {
             CloseHandle(self.0);
+        }
+    }
+}
+
+struct LocalAcl(*mut ACL);
+impl Drop for LocalAcl {
+    fn drop(&mut self) {
+        unsafe {
+            LocalFree(self.0.cast());
         }
     }
 }
