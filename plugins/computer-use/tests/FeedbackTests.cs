@@ -20,6 +20,21 @@ namespace OpenHarness.ComputerUse {
             Check(ready(), "Timed out: " + message);
         }
         private static Dictionary<string, object> State(FeedbackPreview preview) { return (Dictionary<string, object>)preview.State(); }
+        private static string SourceStatus(AppIdentity identity) {
+            string observedStarted;
+            try {
+                using (var process = Process.GetProcessById(identity.Pid)) observedStarted = process.StartTime.ToUniversalTime().Ticks.ToString();
+            } catch (Exception error) { observedStarted = error.GetType().Name; }
+            return "desktop=" + Native.DesktopAvailable() + ", window=" + identity.Window +
+                ", exists=" + Native.IsWindow(identity.Window) + ", visible=" + Native.IsWindowVisible(identity.Window) +
+                ", minimized=" + Native.IsIconic(identity.Window) + ", owner_pid=" + Native.WindowProcess(identity.Window) +
+                ", expected_pid=" + identity.Pid + ", started=" + observedStarted + ", expected_started=" + identity.Started;
+        }
+        private static void ObserveFixture(FeedbackPreview preview, AppIdentity identity) {
+            Check(Native.IsWindowVisible(identity.Window), "Fixture must be natively visible: " + SourceStatus(identity));
+            preview.Observe(identity);
+            Check((bool)State(preview)["active"], "Observation must retain the fixture: " + SourceStatus(identity));
+        }
         private static void RecoveryPolicy() {
             var recovery = new PreviewRecovery(); double now = 0;
             foreach (double delay in new[] { 1.0, 2.0, 4.0, 8.0, 8.0 }) {
@@ -39,7 +54,7 @@ namespace OpenHarness.ComputerUse {
             };
             try {
                 using (var preview = new FeedbackPreview((window, bounds) => { Interlocked.Increment(ref calls); return succeed ? "/9j/recovered" : null; }, () => now)) {
-                    var dispatcher = preview.Handle; preview.SetEnabled(true); preview.Observe(identity);
+                    var dispatcher = preview.Handle; preview.SetEnabled(true); ObserveFixture(preview, identity);
                     // Wait for the worker result to reach the UI before advancing
                     // virtual time; a fixed sleep races both timer and pool scheduling.
                     PumpUntil(() => failures == 1, "initial capture failure is processed");
@@ -67,7 +82,7 @@ namespace OpenHarness.ComputerUse {
                     object jpeg; if (packet.TryGetValue("jpeg", out jpeg) && (string)jpeg == "/9j/late") lateFrame = true;
                 };
                 try {
-                    var dispatcher = preview.Handle; preview.SetEnabled(true); preview.Observe(identity);
+                    var dispatcher = preview.Handle; preview.SetEnabled(true); ObserveFixture(preview, identity);
                     PumpUntil(() => Interlocked.CompareExchange(ref blockedCalls, 0, 0) == 1, "blocked capture starts");
                     blockedNow = 3; PumpUntil(() => !(bool)State(preview)["streaming"], "blocked capture times out");
                     blockedNow = 50; Pump(700);
@@ -94,7 +109,7 @@ namespace OpenHarness.ComputerUse {
                             Window = source.Handle, Name = "Test fixture" };
                         RecoveryLifecycle(identity);
                         IntPtr foreground = Native.GetForegroundWindow();
-                        preview.Observe(identity);
+                        ObserveFixture(preview, identity);
                         PumpUntil(() => (int)State(preview)["frames_received"] > 0, "local capture delivers a frame");
                         Check((bool)State(preview)["in_app"] && (int)State(preview)["frames_received"] > 0, "Local capture delivers frames to the in-app view");
                         Check(Native.GetForegroundWindow() == foreground, "Preview must not activate");
