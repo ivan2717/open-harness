@@ -61,13 +61,13 @@ impl Lease {
             .join("OpenHarness/command-sandbox");
         fs::create_dir_all(&state)?;
         let state = checked(&state)?;
+        let read_paths = checked_read_paths(&request.read_paths)?;
         let mut grants = Vec::new();
-        for path in &request.read_paths {
-            let root = checked(path)?;
-            if system_executable(&root) {
+        for root in covering_read_roots(&read_paths) {
+            if system_executable(root) {
                 continue;
             }
-            for path in walk(&root)? {
+            for path in walk(root)? {
                 grants.push((path, FILE_GENERIC_READ | FILE_GENERIC_EXECUTE, GRANT_ACCESS));
             }
         }
@@ -171,13 +171,15 @@ impl Lease {
         }
         // A managed runtime remains read-only even if a user chose a workspace
         // containing it. Restrictions remove this SID's workspace write grants.
-        for root in &request.read_paths {
-            let root = checked(root)?;
+        // Keep every explicit read root for write protection. A covered root
+        // inside a writable workspace still needs its own restriction when the
+        // covering read root is outside that workspace.
+        for root in &read_paths {
             if write_roots
                 .iter()
                 .any(|workspace| root.starts_with(workspace))
             {
-                for path in walk(&root)? {
+                for path in walk(root)? {
                     grants.push((path, acl::WRITE_RIGHTS, DENY_ACCESS));
                 }
             }
@@ -195,12 +197,14 @@ impl Lease {
         // ordinary commands must not try to rewrite them when already usable.
         let metadata_start = grants.len();
         let mut ancestors = std::collections::BTreeSet::new();
-        for root in request
-            .read_paths
-            .iter()
-            .chain(&request.write_paths)
-            .chain([&request.program, &request.cwd, &workspace])
-        {
+        // Keep the original requested roots here: system executable trees use
+        // ambient read ACLs, so a covered nested root may still need metadata
+        // access on ancestors within that tree. These do not trigger tree walks.
+        for root in read_paths.iter().chain(&request.write_paths).chain([
+            &request.program,
+            &request.cwd,
+            &workspace,
+        ]) {
             for ancestor in checked(root)?.ancestors().skip(1) {
                 ancestors.insert(ancestor.to_path_buf());
             }
@@ -334,6 +338,27 @@ pub(super) fn checked(path: &Path) -> io::Result<PathBuf> {
         }
     }
     fs::canonicalize(path)
+}
+
+fn checked_read_paths(paths: &[PathBuf]) -> io::Result<Vec<PathBuf>> {
+    // Runtime discovery reports both interpreter prefixes and nested module
+    // directories. Validate every input before filtering: an invalid/reparse
+    // child must not disappear merely because its parent was also requested.
+    paths.iter().map(|path| checked(path)).collect()
+}
+
+fn covering_read_roots(paths: &[PathBuf]) -> Vec<&PathBuf> {
+    let mut paths: Vec<_> = paths.iter().collect();
+    paths.sort_unstable_by_key(|path| path.components().count());
+    let mut roots: Vec<&PathBuf> = Vec::new();
+    for path in paths {
+        if !roots.iter().any(|root| path.starts_with(root)) {
+            roots.push(path);
+        }
+    }
+    // Only identical read grants are coalesced. Each remaining tree still gets
+    // the same per-object reparse/hardlink checks and temporary command SID.
+    roots
 }
 
 fn clean(journal: &Journal, sid: PSID) -> io::Result<()> {
@@ -556,6 +581,38 @@ fn walk(root: &Path) -> io::Result<Vec<PathBuf>> {
 mod tests {
     use super::*;
     use std::{os::windows::io::AsRawHandle, process::Command};
+
+    #[test]
+    fn read_roots_coalesce_duplicates_and_children_but_validate_every_input() {
+        let directory = std::env::temp_dir().join(format!(
+            "openharness-read-roots-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(directory.join("runtime/modules")).unwrap();
+        fs::create_dir(directory.join("runtime-neighbor")).unwrap();
+        fs::write(directory.join("runtime/modules/library"), "library").unwrap();
+        let runtime = directory.join("runtime");
+        let neighbor = directory.join("runtime-neighbor");
+        let paths = checked_read_paths(&[
+            runtime.join("modules/library"),
+            runtime.join("modules"),
+            runtime.clone(),
+            runtime.join("."),
+            neighbor.clone(),
+        ])
+        .unwrap();
+        let mut roots = covering_read_roots(&paths);
+        roots.sort();
+        let mut expected = [checked(&runtime).unwrap(), checked(&neighbor).unwrap()];
+        expected.sort();
+        assert_eq!(roots, expected.iter().collect::<Vec<_>>());
+        assert!(checked_read_paths(&[runtime.clone(), runtime.join("missing")]).is_err());
+        fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     fn recovery_distinguishes_live_owners_from_retained_terminated_processes() {
