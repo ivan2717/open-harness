@@ -55,12 +55,12 @@ namespace OpenHarness.ComputerUse {
                     PumpUntil(() => (int)State(preview)["frames_received"] > 0, "Observe recovers the same target after retry exhaustion");
                 }
             } finally { FeedbackPreview.Emit = originalEmit; }
-            now = 0; calls = 0; bool lateFrame = false;
+            double blockedNow = 0; int blockedCalls = 0; bool lateFrame = false;
             using (var gate = new ManualResetEvent(false))
             using (var preview = new FeedbackPreview((window, bounds) => {
-                if (Interlocked.Increment(ref calls) == 1) { gate.WaitOne(); return "/9j/late"; }
+                if (Interlocked.Increment(ref blockedCalls) == 1) { gate.WaitOne(); return "/9j/late"; }
                 return "/9j/current";
-            }, () => now)) {
+            }, () => blockedNow)) {
                 var previousEmit = FeedbackPreview.Emit;
                 FeedbackPreview.Emit = value => {
                     var packet = (Dictionary<string, object>)value;
@@ -68,12 +68,12 @@ namespace OpenHarness.ComputerUse {
                 };
                 try {
                     var dispatcher = preview.Handle; preview.SetEnabled(true); preview.Observe(identity);
-                    PumpUntil(() => Interlocked.CompareExchange(ref calls, 0, 0) == 1, "blocked capture starts");
-                    now = 3; PumpUntil(() => !(bool)State(preview)["streaming"], "blocked capture times out");
-                    now = 50; Pump(700);
-                    Check(calls == 1, "Timed-out PrintWindow must not spawn concurrent workers");
+                    PumpUntil(() => Interlocked.CompareExchange(ref blockedCalls, 0, 0) == 1, "blocked capture starts");
+                    blockedNow = 3; PumpUntil(() => !(bool)State(preview)["streaming"], "blocked capture times out");
+                    blockedNow = 50; Pump(700);
+                    Check(blockedCalls == 1, "Timed-out PrintWindow must not spawn concurrent workers");
                     preview.Release(); preview.Observe(identity); Pump(350);
-                    Check(calls == 1, "New observation also waits for the old native call");
+                    Check(blockedCalls == 1, "New observation also waits for the old native call");
                     gate.Set(); PumpUntil(() => (int)State(preview)["frames_received"] > 0, "new capture resumes after old worker exits");
                     Check(!lateFrame && (int)State(preview)["frames_received"] > 0, "Old result is discarded and new capture resumes");
                 } finally { gate.Set(); FeedbackPreview.Emit = previousEmit; }
