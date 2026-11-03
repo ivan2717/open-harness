@@ -3,8 +3,9 @@
 //! selected directories themselves. It cannot enumerate directories, read file
 //! contents, write, or access the network. Command-specific ancestors remain
 //! temporary, per-command grants in lease.rs. A separate capability enables
-//! ignored stdio on the null device; Windows resets that device ACL on reboot.
-use super::{acl, lease, null_device, wide};
+//! ignored stdio on the null device and volume-name queries for native realpath.
+//! Windows resets object/device ACLs on reboot, so readiness is always checked.
+use super::{acl, lease, null_device, volume_namespace, wide};
 use serde::Serialize;
 use std::{
     collections::BTreeSet, ffi::OsString, io, os::windows::ffi::OsStringExt, path::PathBuf, ptr,
@@ -96,6 +97,13 @@ pub(super) fn status() -> io::Result<Status> {
             missing_paths.push(path.clone());
         }
     }
+    let namespace = volume_namespace::status(&paths)?;
+    for (path, ready) in namespace {
+        if !ready {
+            missing_paths.push(path.clone());
+        }
+        paths.push(path);
+    }
     // Windows resets the null-device descriptor on restart. Recheck it on
     // every status request instead of persisting a one-time readiness flag.
     let null_path = PathBuf::from(null_device::DISPLAY_PATH);
@@ -118,13 +126,12 @@ pub(super) fn prepare() -> io::Result<Status> {
         ));
     }
     let _lock = lease::AclLock::acquire()?;
-    let state = status()?;
-    for path in state.missing_paths {
-        if path == std::path::Path::new(null_device::DISPLAY_PATH) {
-            null_device::prepare()?;
+    let roots = system_ancestors()?;
+    for path in &roots {
+        if acl::has_metadata_access(path, sid()?)? {
             continue;
         }
-        acl::change_without_inheritance(&path, sid()?, RIGHTS, GRANT_ACCESS).map_err(|error| {
+        acl::change_without_inheritance(path, sid()?, RIGHTS, GRANT_ACCESS).map_err(|error| {
             io::Error::new(
                 error.kind(),
                 format!(
@@ -134,6 +141,10 @@ pub(super) fn prepare() -> io::Result<Status> {
             )
         })?;
     }
+    if !null_device::ready()? {
+        null_device::prepare()?;
+    }
+    volume_namespace::prepare(&roots)?;
     let state = status()?;
     if !state.ready {
         return Err(io::Error::new(

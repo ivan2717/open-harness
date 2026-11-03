@@ -658,7 +658,7 @@ fn sandbox_probe() {
             0
         );
         let groups = &*buffer.as_ptr().cast::<TOKEN_GROUPS>();
-        assert_eq!(groups.GroupCount, if allowed { 4 } else { 2 });
+        assert_eq!(groups.GroupCount, if allowed { 5 } else { 3 });
         let capabilities =
             std::slice::from_raw_parts(groups.Groups.as_ptr(), groups.GroupCount as usize);
         for kind in [
@@ -687,6 +687,17 @@ fn sandbox_probe() {
     assert_eq!(
         fs::read_to_string(root.join("workspace/input.txt")).unwrap(),
         "project input"
+    );
+    // Rust canonicalize and Node's native/promise realpath use DOS volume-name
+    // resolution, unlike the JavaScript realpath implementation's lstat walk.
+    assert_eq!(
+        fs::canonicalize(root.join("workspace")).expect("native DOS directory canonicalization"),
+        root.join("workspace")
+    );
+    assert_eq!(
+        fs::canonicalize(root.join("workspace/input.txt"))
+            .expect("native DOS file canonicalization"),
+        root.join("workspace/input.txt")
     );
     for ancestor in root.ancestors() {
         assert!(

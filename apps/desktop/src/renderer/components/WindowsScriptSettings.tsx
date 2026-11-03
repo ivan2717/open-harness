@@ -53,7 +53,7 @@ function WindowsScriptEnvironmentSettings() {
       </div>
       <p className="settings-footnote">
         准备需要 Windows
-        管理员确认，用于运行库的目录信息读取与空设备访问，不会将任务或脚本提升为管理员。
+        管理员确认，用于运行库的路径查询与空设备访问，不会将任务或脚本提升为管理员。
         系统重启后可能需要再次准备。
       </p>
       {(status.error || prepare.error) && (
