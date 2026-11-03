@@ -31,8 +31,14 @@ function Assert-BackendDependencies {
         [System.IO.Path]::GetFullPath($env:OPENHARNESS_E2E_ARTIFACTS)
     } else { Join-Path $desktop 'test-results/packaged' }
     New-Item -ItemType Directory -Path $artifacts -Force | Out-Null
-    foreach ($binary in @('api', 'openharness-chrome-host', 'openharness-sandbox')) {
-        $executable = Join-Path $installDirectory "resources/bin/$binary.exe"
+    $binaries = @{
+        'api' = 'resources/bin/api.exe'
+        'openharness-chrome-host' = 'resources/bin/openharness-chrome-host.exe'
+        'openharness-sandbox' = 'resources/bin/openharness-sandbox.exe'
+        'node' = 'resources/workspace-runtime/node/node.exe'
+    }
+    foreach ($binary in $binaries.Keys) {
+        $executable = Join-Path $installDirectory $binaries[$binary]
         if (-not (Test-Path $executable)) { throw "Installed binary missing: $binary" }
         $dependencies = (& $dumpbin.FullName /DEPENDENTS $executable 2>&1 | Out-String)
         $dependencyExitCode = $LASTEXITCODE

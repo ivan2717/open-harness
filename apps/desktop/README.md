@@ -453,6 +453,21 @@ Versions with a prerelease suffix, such as `0.2.0-beta.1`, publish as prerelease
 Ordinary merges with no desktop version change skip both packaging and publishing.
 
 The Windows job builds the Rust backend and Electron app on a Windows x64 runner.
+Windows Node is temporarily built from pinned official Node 24.22.1 source with
+the already-merged [libuv AppContainer pipe fix](https://github.com/libuv/libuv/pull/5181).
+Stock Node's pipe namespace can otherwise hang before child-process timeouts work.
+The source archive, patch, pre/post-patch source and packaged executable are checked
+by SHA-256; `node/openharness-node-build.json` records the build provenance.
+CI caches this runtime and uses the same artifact for native sandbox tests and
+the installer. It checks synchronous/asynchronous child pipes, ignored stdin,
+timeout/cancellation and inherited file restrictions before packaging.
+Local Windows builds need Visual Studio 2022 17.14 with Clang, Python and NASM for
+the first runtime build; an offline `OPENHARNESS_NODE_RUNTIME_DIR` must contain
+the verified executable, license and provenance manifest. Ordinary users install
+the bundled runtime with the app and do not need these build tools.
+Remove this temporary source backport when an official Node release includes the
+fix, retaining the native regression. macOS and Linux keep official Node binaries.
+
 The release backend statically links the Visual C++ runtime. The installed
 `api.exe` and the Chrome host launcher are inspected with `dumpbin` to reject separate VC runtime DLL
 dependencies that a Visual Studio-equipped runner could otherwise hide.

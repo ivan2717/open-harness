@@ -1,8 +1,14 @@
 import { execFileSync } from 'node:child_process'
 import { cp, mkdir, realpath, rm, stat } from 'node:fs/promises'
 import { isAbsolute, join, relative, sep } from 'node:path'
+import {
+  prepareWindowsNode,
+  verifyWindowsNodeBuild,
+  windowsNodeBuild,
+  windowsNodeManifest,
+} from './workspace-runtime-node-windows.mjs'
 
-export const nodeRelease = '24.22.1'
+export const nodeRelease = windowsNodeBuild.version
 // https://nodejs.org/dist/v24.22.1/SHASUMS256.txt
 const targets = {
   'darwin-arm64': [
@@ -64,7 +70,7 @@ export function verifyNodeBinary(directory, platform, architecture, probe = exec
     nodeExecutable(directory, platform),
     [
       '-e',
-      'console.log(JSON.stringify({version:process.versions.node,platform:process.platform,architecture:process.arch}))',
+      'require("node:crypto").createHash("sha256").update("probe").digest("hex"); require("node:tls").createSecureContext(); if(Intl.DateTimeFormat.supportedLocalesOf(["en","zh-CN"]).length!==2)throw new Error("Expected full ICU"); console.log(JSON.stringify({version:process.versions.node,platform:process.platform,architecture:process.arch}))',
     ],
     {
       encoding: 'utf8',
@@ -99,7 +105,10 @@ export async function prepareNodeBinary({
   let root = source
   let extracted
   try {
-    if (!source) {
+    if (!source && platform === 'win32') {
+      if (architecture !== 'x64') throw new Error('Managed Windows Node supports x64 only')
+      root = await prepareWindowsNode({ cache, downloadFile, run })
+    } else if (!source) {
       const artifact = nodeDownload(platform, architecture)
       const archive = await downloadFile({
         ...artifact,
@@ -148,6 +157,13 @@ export async function prepareNodeBinary({
     await mkdir(platform === 'win32' ? destination : join(destination, 'bin'), { recursive: true })
     await cp(executable, nodeExecutable(destination, platform))
     await cp(license, join(destination, 'LICENSE'))
+    if (platform === 'win32') {
+      // Never replace the fixed runtime with a stock binary that hangs inside
+      // AppContainer. Offline distributor payloads carry the same provenance.
+      await verifyWindowsNodeBuild(root)
+      await cp(join(root, windowsNodeManifest), join(destination, windowsNodeManifest))
+      await verifyWindowsNodeBuild(destination)
+    }
     const metadata = verifyNodeBinary(destination, platform, architecture, run)
     if (!source && metadata.version !== nodeRelease)
       throw new Error('Downloaded Node version does not match the pinned release')

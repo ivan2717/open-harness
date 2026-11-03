@@ -1,0 +1,46 @@
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { expect, test } from 'vitest'
+import {
+  fileSha256,
+  verifyWindowsNodeBuild,
+  windowsNodeFingerprint,
+  windowsNodeManifest,
+} from './workspace-runtime-node-windows.mjs'
+import { prepareNodeBinary } from './workspace-runtime-node.mjs'
+
+test('Windows runtime provenance survives copying and rejects stale or corrupted caches', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'openharness-node-backport-'))
+  try {
+    await writeFile(join(root, 'node.exe'), 'fixture executable')
+    await writeFile(join(root, 'LICENSE'), 'fixture license')
+    const manifest = {
+      fingerprint: await windowsNodeFingerprint(),
+      executableSha256: await fileSha256(join(root, 'node.exe')),
+      licenseSha256: await fileSha256(join(root, 'LICENSE')),
+    }
+    await writeFile(join(root, windowsNodeManifest), JSON.stringify(manifest))
+    const destination = join(root, 'copy')
+    await prepareNodeBinary({
+      source: root,
+      destination,
+      platform: 'win32',
+      architecture: 'x64',
+      run: () => '{"version":"24.22.1","platform":"win32","architecture":"x64"}',
+    })
+    expect(await verifyWindowsNodeBuild(destination)).toEqual(manifest)
+    expect(await readFile(join(destination, 'LICENSE'), 'utf8')).toBe('fixture license')
+    await writeFile(join(destination, 'node.exe'), 'wrong executable')
+    await expect(verifyWindowsNodeBuild(destination)).rejects.toThrow('SHA-256 mismatch')
+    await writeFile(
+      join(root, windowsNodeManifest),
+      JSON.stringify({ ...manifest, fingerprint: 'old' }),
+    )
+    await expect(verifyWindowsNodeBuild(root)).rejects.toThrow('provenance')
+    await rm(join(root, windowsNodeManifest))
+    await expect(verifyWindowsNodeBuild(root)).rejects.toThrow()
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})

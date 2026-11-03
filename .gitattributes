@@ -1,0 +1,3 @@
+# Build provenance hashes must be identical on Windows and Unix checkouts.
+apps/desktop/scripts/workspace-runtime-node-windows.mjs text eol=lf
+apps/desktop/scripts/workspace-runtime/patches/*.patch text eol=lf
