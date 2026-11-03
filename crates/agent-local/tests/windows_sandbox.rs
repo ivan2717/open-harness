@@ -3,7 +3,7 @@
 use serde_json::json;
 use std::{
     fs,
-    io::Write,
+    io::{Read, Write},
     path::PathBuf,
     process::{Command, Stdio},
     sync::atomic::{AtomicU64, Ordering},
@@ -658,7 +658,7 @@ fn sandbox_probe() {
             0
         );
         let groups = &*buffer.as_ptr().cast::<TOKEN_GROUPS>();
-        assert_eq!(groups.GroupCount, if allowed { 3 } else { 1 });
+        assert_eq!(groups.GroupCount, if allowed { 4 } else { 2 });
         let capabilities =
             std::slice::from_raw_parts(groups.Groups.as_ptr(), groups.GroupCount as usize);
         for kind in [
@@ -674,6 +674,16 @@ fn sandbox_probe() {
         }
         CloseHandle(token);
     }
+    // These opens happen inside the actual AppContainer, independently of the
+    // host's inherited stdin handle. Nested runtimes reopen NUL for UV_IGNORE.
+    let mut null_input = fs::File::open("NUL").expect("sandbox must reopen NUL for ignored stdin");
+    assert_eq!(null_input.read(&mut [0u8; 1]).unwrap(), 0);
+    fs::OpenOptions::new()
+        .write(true)
+        .open("NUL")
+        .expect("sandbox must reopen NUL for ignored stdout")
+        .write_all(b"discarded output")
+        .unwrap();
     assert_eq!(
         fs::read_to_string(root.join("workspace/input.txt")).unwrap(),
         "project input"

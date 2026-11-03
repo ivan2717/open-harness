@@ -1,4 +1,4 @@
-use super::{metadata, wide};
+use super::{metadata, null_device, wide};
 use std::{
     ffi::OsString,
     io,
@@ -80,7 +80,17 @@ pub(super) fn has_metadata_access(path: &Path, capability: PSID) -> io::Result<b
             "sandbox metadata target is not a plain directory",
         ));
     }
-    let descriptor = NativeDescriptor::read(handle.0)?;
+    has_capability_access(handle.0, capability, metadata::RIGHTS)
+}
+
+/// Inspect the stored DACL of an already opened, trusted object. The caller
+/// separately proves ordinary host access and the exact object identity.
+pub(super) fn has_capability_access(
+    handle: HANDLE,
+    capability: PSID,
+    rights: u32,
+) -> io::Result<bool> {
+    let descriptor = NativeDescriptor::read(handle)?;
     let dacl = descriptor.dacl()?;
     if dacl.is_null() {
         return Ok(false);
@@ -92,7 +102,7 @@ pub(super) fn has_metadata_access(path: &Path, capability: PSID) -> io::Result<b
         let entry = ace.cast::<ACCESS_ALLOWED_ACE>();
         if unsafe {
             (*entry).Header.AceFlags as u32 & INHERIT_ONLY_ACE != 0
-                || file_mask((*entry).Mask) & metadata::RIGHTS == 0
+                || file_mask((*entry).Mask) & rights == 0
         } {
             continue;
         }
@@ -104,7 +114,33 @@ pub(super) fn has_metadata_access(path: &Path, capability: PSID) -> io::Result<b
             granted |= file_mask(unsafe { (*entry).Mask });
         }
     }
-    Ok(granted & metadata::RIGHTS == metadata::RIGHTS)
+    Ok(granted & rights == rights)
+}
+
+/// Add a non-inherited capability grant to an already opened, trusted object.
+/// Only the DACL changes; owner, mandatory label and other trustees remain.
+pub(super) fn grant_to_handle(handle: HANDLE, sid: PSID, rights: u32) -> io::Result<()> {
+    let descriptor = NativeDescriptor::read(handle)?;
+    let original = descriptor.dacl()?;
+    if original.is_null() {
+        return Err(io::Error::other("sandbox requires an object DACL"));
+    }
+    let entry = EXPLICIT_ACCESS_W {
+        grfAccessPermissions: rights,
+        grfAccessMode: GRANT_ACCESS,
+        grfInheritance: 0,
+        Trustee: TRUSTEE_W {
+            pMultipleTrustee: ptr::null_mut(),
+            MultipleTrusteeOperation: NO_MULTIPLE_TRUSTEE,
+            TrusteeForm: TRUSTEE_IS_SID,
+            TrusteeType: TRUSTEE_IS_UNKNOWN,
+            ptstrName: sid.cast(),
+        },
+    };
+    let mut updated = ptr::null_mut();
+    check(unsafe { SetEntriesInAclW(1, &entry, original, &mut updated) })?;
+    let allocated = Allocation(updated.cast());
+    set_dacl(handle, descriptor.pointer(), allocated.0.cast())
 }
 
 fn change_inheritance(
@@ -234,6 +270,7 @@ fn change_inheritance(
                 let trustee = unsafe { ptr::addr_of_mut!((*entry).SidStart).cast() };
                 if ambient_package_sid(trustee)
                     || unsafe { EqualSid(trustee, metadata::sid()?) } != 0
+                    || unsafe { EqualSid(trustee, null_device::sid()?) } != 0
                     || [
                         WinCapabilityInternetClientSid,
                         WinCapabilityPrivateNetworkClientServerSid,
@@ -618,6 +655,38 @@ mod tests {
             }
         }
         rights
+    }
+
+    #[test]
+    fn fixed_object_capability_grant_preserves_other_aces_and_does_not_inherit() {
+        let fixture = Fixture::new();
+        let capability = null_device::sid().unwrap();
+        assert_eq!(unsafe { EqualSid(capability, metadata::sid().unwrap()) }, 0);
+        let existing = fixture.root.join("existing");
+        fs::create_dir(&existing).unwrap();
+        let before = inspect(&fixture.root, capability);
+        let handle = open(&fixture.root, READ_CONTROL | WRITE_DAC).unwrap();
+        let rights = FILE_GENERIC_READ | FILE_GENERIC_WRITE;
+        grant_to_handle(handle.0, capability, rights).unwrap();
+        let first = inspect(&fixture.root, capability);
+        assert_eq!(first.0, before.0);
+        assert!(before.1.iter().all(|entry| first.1.contains(entry)));
+        assert!(has_capability_access(handle.0, capability, rights).unwrap());
+        assert_eq!(allowed_mask(&fixture.root, capability), rights);
+        grant_to_handle(handle.0, capability, rights).unwrap();
+        assert_eq!(inspect(&fixture.root, capability), first);
+        let later = fixture.root.join("later");
+        fs::create_dir(&later).unwrap();
+        for child in [&existing, &later] {
+            assert_eq!(allowed_mask(child, capability), 0);
+        }
+        // A pre-existing grant for any capability carried by our commands
+        // must not silently defeat their read-only filesystem restrictions.
+        let error = change(&fixture.root, fixture.sid, WRITE_RIGHTS, DENY_ACCESS).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert_eq!(inspect(&fixture.root, capability), first);
+        change(&fixture.root, capability, 0, REVOKE_ACCESS).unwrap();
+        assert_eq!(inspect(&fixture.root, capability), before);
     }
 
     #[test]

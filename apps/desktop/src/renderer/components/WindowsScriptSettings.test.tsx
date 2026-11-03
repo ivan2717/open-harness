@@ -34,10 +34,11 @@ describe('Windows script environment settings', () => {
 
   it('offers an explicit preparation action and explains the limited elevation', () => {
     const html = render('win32', false)
-    expect(html).toContain('需要首次准备')
+    expect(html).toContain('需要准备')
     expect(html).toContain('准备脚本环境')
     expect(html).toContain('Windows 管理员确认')
-    expect(html).toContain('不会提升任务或脚本的权限')
+    expect(html).toContain('不会将任务或脚本提升为管理员')
+    expect(html).toContain('系统重启后可能需要再次准备')
     expect(html).not.toContain('disabled')
   })
 

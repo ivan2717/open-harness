@@ -138,14 +138,22 @@ function outputScript() {
     '  if (!denied) throw new Error("macOS sandbox allowed modifying the managed Python runtime");',
     '}',
     'let pnpmVersion = null;',
+    'let pnpmScript = null;',
     'if (manager) {',
     '  if (manager.name !== "pnpm") throw new Error("Expected the managed pnpm command");',
     '  pnpmVersion = run("pnpm", manager.executable, [...manager.args, "--version"], manager.environment).trim();',
+    '  const project = path.resolve(".openharness-tmp/pnpm-script-probe");',
+    '  fs.mkdirSync(project, { recursive: true });',
+    '  fs.writeFileSync(path.join(project, "package.json"), JSON.stringify({name:"openharness-runtime-probe", private:true, scripts:{"verify-runtime":"node verify-runtime.cjs"}}));',
+    `  fs.writeFileSync(path.join(project, "verify-runtime.cjs"), ${JSON.stringify("const fs = require('node:fs');\nfs.writeFileSync('runtime-child.json', JSON.stringify({executable:process.execPath, version:process.versions.node, electron:process.versions.electron, cwd:process.cwd(), managerExecutable:process.env.npm_node_execpath, managerScript:process.env.npm_execpath}));\nconsole.log('PNPM_CHILD_OK');\n")});`,
+    '  const scriptOutput = run("pnpm lifecycle", manager.executable, [...manager.args, "--dir", project, "--silent", "run", "verify-runtime"], manager.environment);',
+    '  if (!scriptOutput.includes("PNPM_CHILD_OK")) throw new Error("pnpm lifecycle did not complete its Node child");',
+    '  pnpmScript = JSON.parse(fs.readFileSync(path.join(project, "runtime-child.json"), "utf8"));',
     '  const { stringify } = require("csv-stringify/sync");',
     '  const { parse } = require("csv-parse/sync");',
     '  if (parse(stringify([["managed", "42"]]))[0][1] !== "42") throw new Error("Bundled CSV libraries failed");',
     '}',
-    'fs.writeFileSync("outputs/runtime-report.json", JSON.stringify({environment, node:{executable:process.execPath, version:process.versions.node, electron:process.versions.electron}, python:pythonReport, pnpm:pnpmVersion}));',
+    'fs.writeFileSync("outputs/runtime-report.json", JSON.stringify({environment, node:{executable:process.execPath, version:process.versions.node, electron:process.versions.electron}, python:pythonReport, pnpm:pnpmVersion, pnpmScript}));',
     "console.log('RUNTIME_OK ' + process.versions.node);",
   ].join('\n')
 }
@@ -626,6 +634,32 @@ try {
       assert.equal(runtimeReport.node.executable, runtime.node.executable)
       assert.equal(runtimeReport.node.electron, undefined)
       assert.match(runtimeReport.node.version, /^24\./)
+      if (runtime.node.package_manager) {
+        const script = runtimeReport.pnpmScript
+        assert(script, 'managed pnpm must execute a local lifecycle script')
+        assert.equal(
+          await realpath(script.executable),
+          await realpath(runtime.node.executable),
+          'pnpm scripts must resolve node to the bundled interpreter, not a host installation',
+        )
+        assert.equal(script.version, runtimeReport.node.version)
+        assert.equal(script.electron, undefined)
+        assert.equal(
+          await realpath(script.managerExecutable),
+          await realpath(runtime.node.executable),
+          'the pnpm process must also use the bundled Node interpreter',
+        )
+        assert.equal(
+          await realpath(script.managerScript),
+          await realpath(runtime.node.package_manager.args[0]),
+          'the lifecycle environment must identify the bundled pnpm entry point',
+        )
+        assert.equal(
+          await realpath(script.cwd),
+          await realpath(join(run.execution_directory, '.openharness-tmp/pnpm-script-probe')),
+          'the pnpm lifecycle must remain in its task project',
+        )
+      }
       assert.equal(dependencies.dependency_environment, undefined)
       assert.equal(
         runtimeReport.environment.NODE_PATH,

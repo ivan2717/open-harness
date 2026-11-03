@@ -1,9 +1,10 @@
-//! Explicit, once-per-machine preparation for runtimes which stat path
+//! Explicit host preparation for runtimes which stat path
 //! ancestors. The named capability grants only attributes and synchronization on the
 //! selected directories themselves. It cannot enumerate directories, read file
 //! contents, write, or access the network. Command-specific ancestors remain
-//! temporary, per-command grants in lease.rs.
-use super::{acl, lease, wide};
+//! temporary, per-command grants in lease.rs. A separate capability enables
+//! ignored stdio on the null device; Windows resets that device ACL on reboot.
+use super::{acl, lease, null_device, wide};
 use serde::Serialize;
 use std::{
     collections::BTreeSet, ffi::OsString, io, os::windows::ffi::OsStringExt, path::PathBuf, ptr,
@@ -34,18 +35,18 @@ const CAPABILITY: &str = "OpenHarness.Command.AncestorMetadata.v1";
 /// of SECURITY_CAPABILITIES. Never accept a capability name from launch input.
 pub(super) fn sid() -> io::Result<PSID> {
     static SID: OnceLock<Result<Vec<u32>, i32>> = OnceLock::new();
-    SID.get_or_init(|| derive_sid().map_err(|error| error.raw_os_error().unwrap_or(13)))
+    SID.get_or_init(|| derive_sid(CAPABILITY).map_err(|error| error.raw_os_error().unwrap_or(13)))
         .as_ref()
         .map(|words| words.as_ptr().cast_mut().cast())
         .map_err(|code| io::Error::from_raw_os_error(*code))
 }
 
-fn derive_sid() -> io::Result<Vec<u32>> {
+pub(super) fn derive_sid(name: &str) -> io::Result<Vec<u32>> {
     let mut groups = SidArray::default();
     let mut capabilities = SidArray::default();
     check(unsafe {
         DeriveCapabilitySidsFromName(
-            wide(CAPABILITY)?.as_ptr(),
+            wide(name)?.as_ptr(),
             &mut groups.pointer,
             &mut groups.count,
             &mut capabilities.pointer,
@@ -88,13 +89,20 @@ pub(super) struct Status {
 }
 
 pub(super) fn status() -> io::Result<Status> {
-    let paths = system_ancestors()?;
+    let mut paths = system_ancestors()?;
     let mut missing_paths = Vec::new();
     for path in &paths {
         if !acl::has_metadata_access(path, sid()?)? {
             missing_paths.push(path.clone());
         }
     }
+    // Windows resets the null-device descriptor on restart. Recheck it on
+    // every status request instead of persisting a one-time readiness flag.
+    let null_path = PathBuf::from(null_device::DISPLAY_PATH);
+    if !null_device::ready()? {
+        missing_paths.push(null_path.clone());
+    }
+    paths.push(null_path);
     Ok(Status {
         ready: missing_paths.is_empty(),
         paths,
@@ -112,6 +120,10 @@ pub(super) fn prepare() -> io::Result<Status> {
     let _lock = lease::AclLock::acquire()?;
     let state = status()?;
     for path in state.missing_paths {
+        if path == std::path::Path::new(null_device::DISPLAY_PATH) {
+            null_device::prepare()?;
+            continue;
+        }
         acl::change_without_inheritance(&path, sid()?, RIGHTS, GRANT_ACCESS).map_err(|error| {
             io::Error::new(
                 error.kind(),
@@ -126,7 +138,7 @@ pub(super) fn prepare() -> io::Result<Status> {
     if !state.ready {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
-            "Windows script environment metadata access is still blocked by filesystem policy",
+            "Windows script environment access is still blocked by system policy",
         ));
     }
     Ok(state)
