@@ -108,6 +108,34 @@ fn issue(state: &AppState, id: &str) -> RecoveryIssue {
 
 #[tokio::test]
 async fn recovery_diagnostics_do_not_echo_private_corrupt_values() {
+    // Callsite interest is cached process-wide. A thread-local subscriber can
+    // miss this event when another recovery test first registers it without a
+    // subscriber. Match production's global subscriber in an isolated process,
+    // so parallel tests cannot suppress events or contribute unrelated logs.
+    const CAPTURE_PROCESS: &str = "OPENHARNESS_RECOVERY_CAPTURE_TEST";
+    let test_name = std::thread::current()
+        .name()
+        .expect("the test runner names its test thread")
+        .to_owned();
+    if std::env::var(CAPTURE_PROCESS).as_deref() != Ok(test_name.as_str()) {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", &test_name, "--nocapture"])
+            .env(CAPTURE_PROCESS, &test_name)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "isolated recovery diagnostics failed:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("RECOVERY_CAPTURE_VERIFIED"),
+            "the isolated process must execute the complete diagnostic assertions"
+        );
+        return;
+    }
+
     #[derive(Clone)]
     struct Capture(Arc<std::sync::Mutex<Vec<u8>>>);
     impl io::Write for Capture {
@@ -155,7 +183,7 @@ async fn recovery_diagnostics_do_not_echo_private_corrupt_values() {
         .with_ansi(false)
         .with_writer(move || writer.clone())
         .finish();
-    let _guard = tracing::subscriber::set_default(subscriber);
+    tracing::subscriber::set_global_default(subscriber).unwrap();
     let restored = fixture.reopen().await;
     let diagnostics = serde_json::to_string(&restored.recovery_issues()).unwrap();
     let logs = String::from_utf8(captured.lock().unwrap().clone()).unwrap();
@@ -168,6 +196,7 @@ async fn recovery_diagnostics_do_not_echo_private_corrupt_values() {
         fs::read(fixture.journal("bad-journal")).unwrap(),
         journal.as_bytes()
     );
+    println!("RECOVERY_CAPTURE_VERIFIED");
 }
 
 #[tokio::test]
