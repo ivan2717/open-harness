@@ -179,7 +179,6 @@ jobs:
     env:
       ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
       OPENHARNESS_WINDOWS_SANDBOX_HELPER: ${{ github.workspace }}\target\debug\openharness-sandbox.exe
-      OPENHARNESS_TEST_NODE: ${{ runner.temp }}\openharness-node-runtime\node.exe
     defaults:
       run:
         working-directory: apps/desktop
@@ -190,6 +189,8 @@ jobs:
         with:
           name: windows-node-runtime
           path: ${{ runner.temp }}/openharness-node-runtime
+      - name: Select verified Node for sandbox checks
+        run: '"OPENHARNESS_TEST_NODE=$env:RUNNER_TEMP\openharness-node-runtime\node.exe" >> $env:GITHUB_ENV'
       - uses: pnpm/action-setup@v6
         with:
           package_json_file: apps/desktop/package.json
@@ -289,7 +290,6 @@ jobs:
     timeout-minutes: 45
     env:
       CSC_IDENTITY_AUTO_DISCOVERY: "false"
-      OPENHARNESS_NODE_RUNTIME_DIR: ${{ runner.temp }}\openharness-node-runtime
     defaults:
       run:
         working-directory: apps/desktop
@@ -300,6 +300,8 @@ jobs:
         with:
           name: windows-node-runtime
           path: ${{ runner.temp }}/openharness-node-runtime
+      - name: Select verified Node for packaging
+        run: '"OPENHARNESS_NODE_RUNTIME_DIR=$env:RUNNER_TEMP\openharness-node-runtime" >> $env:GITHUB_ENV'
       - uses: pnpm/action-setup@v6
         with:
           package_json_file: apps/desktop/package.json
