@@ -52,13 +52,28 @@ export async function applyWindowsNodePatch(source, run = execFileSync) {
   const target = join(source, 'deps/uv/src/win/pipe.c')
   if ((await fileSha256(target)) !== windowsNodeBuild.beforeSha256)
     throw new Error('Unexpected libuv source; refusing to apply the Node AppContainer backport')
-  // Git for Windows commonly enables autocrlf globally. Keep the official
-  // archive's LF bytes, otherwise applying a patch changes the entire file.
-  const gitOptions = ['-c', 'core.autocrlf=false', '-c', 'core.eol=lf', 'apply']
-  run('git', [...gitOptions, '--check', patch], { cwd: source, stdio: 'inherit' })
-  run('git', [...gitOptions, patch], { cwd: source, stdio: 'inherit' })
+  applySourcePatch(source, patch, run)
   if ((await fileSha256(target)) !== windowsNodeBuild.afterSha256)
     throw new Error('Patched libuv source SHA-256 mismatch')
+}
+
+export function applySourcePatch(source, patchFile, run = execFileSync) {
+  // Git for Windows commonly enables autocrlf globally. Keep the official
+  // archive's LF bytes, otherwise applying a patch changes the entire file.
+  // A source cache may sit inside our repository. Without an explicit work
+  // tree, git applies the parent repository's path prefix and silently skips
+  // the archive-relative paths, even returning success for --check.
+  const gitOptions = [
+    '--work-tree',
+    resolve(source),
+    '-c',
+    'core.autocrlf=false',
+    '-c',
+    'core.eol=lf',
+    'apply',
+  ]
+  run('git', [...gitOptions, '--check', patchFile], { cwd: source, stdio: 'inherit' })
+  run('git', [...gitOptions, patchFile], { cwd: source, stdio: 'inherit' })
 }
 
 /** Temporary upstream backport until an official Node release includes libuv #5181. */

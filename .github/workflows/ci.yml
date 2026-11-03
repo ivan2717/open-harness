@@ -190,7 +190,9 @@ jobs:
           name: windows-node-runtime
           path: ${{ runner.temp }}/openharness-node-runtime
       - name: Select verified Node for sandbox checks
-        run: '"OPENHARNESS_TEST_NODE=$env:RUNNER_TEMP\openharness-node-runtime\node.exe" >> $env:GITHUB_ENV'
+        run: |
+          "OPENHARNESS_TEST_NODE=$env:RUNNER_TEMP\openharness-node-runtime\node.exe" >> $env:GITHUB_ENV
+          "OPENHARNESS_NODE_RUNTIME_DIR=$env:RUNNER_TEMP\openharness-node-runtime" >> $env:GITHUB_ENV
       - uses: pnpm/action-setup@v6
         with:
           package_json_file: apps/desktop/package.json
