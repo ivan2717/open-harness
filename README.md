@@ -111,8 +111,13 @@ capability non-inheriting directory metadata access needed by Node's path
 resolution; it does not grant file contents, directory listing or writes.
 Another dedicated capability permits read/write access only to the null device
 (`NUL`), needed for ignored child-process stdio. Reads return EOF and writes
-discard bytes; other devices, ownership and integrity labels remain unchanged.
-Windows resets the null-device ACL on reboot. If settings reports the environment
+discard bytes; this capability does not authorize other devices.
+A separate volume-query capability permits native path resolution through the
+fixed Windows object namespace, available fixed-drive links and mount-manager
+attributes. It does not grant file data access or mount-manager read/write data
+rights. The preparation changes DACLs only, without changing ownership or
+integrity labels.
+Windows resets device/object ACLs on reboot. If settings reports the environment
 is not ready afterwards, prepare it again and confirm UAC. Readiness is checked
 from current permissions, not a persisted setup flag.
 The application and subsequent commands do not run as administrator. Job Objects

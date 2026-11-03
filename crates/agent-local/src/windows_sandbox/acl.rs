@@ -1,4 +1,4 @@
-use super::{metadata, null_device, wide};
+use super::{metadata, null_device, volume_namespace, wide};
 use std::{
     ffi::OsString,
     io,
@@ -90,6 +90,17 @@ pub(super) fn has_capability_access(
     capability: PSID,
     rights: u32,
 ) -> io::Result<bool> {
+    has_capability_access_with_mapping(handle, capability, rights, &file_mapping())
+}
+
+/// NT object directories and symbolic links have different generic rights from
+/// files. Interpret their stored ACEs with the object's actual access mapping.
+pub(super) fn has_capability_access_with_mapping(
+    handle: HANDLE,
+    capability: PSID,
+    rights: u32,
+    mapping: &GENERIC_MAPPING,
+) -> io::Result<bool> {
     let descriptor = NativeDescriptor::read(handle)?;
     let dacl = descriptor.dacl()?;
     if dacl.is_null() {
@@ -102,7 +113,7 @@ pub(super) fn has_capability_access(
         let entry = ace.cast::<ACCESS_ALLOWED_ACE>();
         if unsafe {
             (*entry).Header.AceFlags as u32 & INHERIT_ONLY_ACE != 0
-                || file_mask((*entry).Mask) & rights == 0
+                || mapped_mask((*entry).Mask, mapping) & rights == 0
         } {
             continue;
         }
@@ -111,7 +122,7 @@ pub(super) fn has_capability_access(
         }
         let trustee = unsafe { ptr::addr_of_mut!((*entry).SidStart).cast() };
         if unsafe { EqualSid(trustee, capability) != 0 } || ambient_package_sid(trustee) {
-            granted |= file_mask(unsafe { (*entry).Mask });
+            granted |= mapped_mask(unsafe { (*entry).Mask }, mapping);
         }
     }
     Ok(granted & rights == rights)
@@ -271,6 +282,7 @@ fn change_inheritance(
                 if ambient_package_sid(trustee)
                     || unsafe { EqualSid(trustee, metadata::sid()?) } != 0
                     || unsafe { EqualSid(trustee, null_device::sid()?) } != 0
+                    || unsafe { EqualSid(trustee, volume_namespace::sid()?) } != 0
                     || [
                         WinCapabilityInternetClientSid,
                         WinCapabilityPrivateNetworkClientServerSid,
@@ -352,15 +364,22 @@ fn change_inheritance(
     set_dacl(handle.0, descriptor.pointer(), updated)
 }
 
-fn file_mask(mut mask: u32) -> u32 {
-    let mapping = GENERIC_MAPPING {
+fn file_mapping() -> GENERIC_MAPPING {
+    GENERIC_MAPPING {
         GenericRead: FILE_GENERIC_READ,
         GenericWrite: FILE_GENERIC_WRITE,
         GenericExecute: FILE_GENERIC_EXECUTE,
         GenericAll: FILE_ALL_ACCESS,
-    };
+    }
+}
+
+fn file_mask(mask: u32) -> u32 {
+    mapped_mask(mask, &file_mapping())
+}
+
+fn mapped_mask(mut mask: u32, mapping: &GENERIC_MAPPING) -> u32 {
     unsafe {
-        MapGenericMask(&mut mask, &mapping);
+        MapGenericMask(&mut mask, mapping);
     }
     mask
 }

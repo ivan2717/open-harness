@@ -8,6 +8,7 @@ mod null_device;
 mod process;
 #[path = "../protected_paths.rs"]
 mod protected_paths;
+mod volume_namespace;
 
 use serde::{Deserialize, Serialize};
 use std::{

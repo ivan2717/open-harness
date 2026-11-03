@@ -1,4 +1,4 @@
-use super::{Request, metadata, null_device, wide};
+use super::{Request, metadata, null_device, volume_namespace, wide};
 use std::{io, ptr};
 use windows_sys::Win32::{
     Foundation::{
@@ -58,6 +58,12 @@ pub(super) fn execute(request: &Request, sid: PSID) -> io::Result<u32> {
         // capability grants access only to that fixed, contentless device.
         SID_AND_ATTRIBUTES {
             Sid: null_device::sid()?,
+            Attributes: 0x4,
+        },
+        // Native realpath maps a file handle's NT volume back to a DOS drive.
+        // The separate capability queries volume names, never file contents.
+        SID_AND_ATTRIBUTES {
+            Sid: volume_namespace::sid()?,
             Attributes: 0x4,
         },
     ];

@@ -144,11 +144,15 @@ function outputScript() {
     '  pnpmVersion = run("pnpm", manager.executable, [...manager.args, "--version"], manager.environment).trim();',
     '  const project = path.resolve(".openharness-tmp/pnpm-script-probe");',
     '  fs.mkdirSync(project, { recursive: true });',
+    '  progress("pnpm project native path resolution");',
+    '  const nativeProject = fs.realpathSync.native(project);',
+    '  if (nativeProject !== fs.realpathSync(project)) throw new Error("Native and JavaScript project paths disagree");',
     '  fs.writeFileSync(path.join(project, "package.json"), JSON.stringify({name:"openharness-runtime-probe", private:true, scripts:{"verify-runtime":"node verify-runtime.cjs"}}));',
     `  fs.writeFileSync(path.join(project, "verify-runtime.cjs"), ${JSON.stringify("const fs = require('node:fs');\nfs.writeFileSync('runtime-child.json', JSON.stringify({executable:process.execPath, version:process.versions.node, electron:process.versions.electron, cwd:process.cwd(), managerExecutable:process.env.npm_node_execpath, managerScript:process.env.npm_execpath}));\nconsole.log('PNPM_CHILD_OK');\n")});`,
     '  const scriptOutput = run("pnpm lifecycle", manager.executable, [...manager.args, "--dir", project, "--silent", "run", "verify-runtime"], manager.environment);',
     '  if (!scriptOutput.includes("PNPM_CHILD_OK")) throw new Error("pnpm lifecycle did not complete its Node child");',
     '  pnpmScript = JSON.parse(fs.readFileSync(path.join(project, "runtime-child.json"), "utf8"));',
+    '  pnpmScript.nativeProject = nativeProject;',
     '  const { stringify } = require("csv-stringify/sync");',
     '  const { parse } = require("csv-parse/sync");',
     '  if (parse(stringify([["managed", "42"]]))[0][1] !== "42") throw new Error("Bundled CSV libraries failed");',
@@ -658,6 +662,11 @@ try {
           await realpath(script.cwd),
           await realpath(join(run.execution_directory, '.openharness-tmp/pnpm-script-probe')),
           'the pnpm lifecycle must remain in its task project',
+        )
+        assert.equal(
+          script.nativeProject,
+          await realpath(join(run.execution_directory, '.openharness-tmp/pnpm-script-probe')),
+          'sandboxed native path resolution must match the host result',
         )
       }
       assert.equal(dependencies.dependency_environment, undefined)
