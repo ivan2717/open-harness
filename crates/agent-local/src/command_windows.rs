@@ -159,10 +159,11 @@ pub(super) fn shell_script(
     directory: &Path,
     environment: &BTreeMap<&str, OsString>,
 ) -> io::Result<String> {
-    let directory = directory
-        .to_str()
-        .ok_or_else(|| io::Error::other("shell working directory is not valid Unicode"))?
-        .replace('\'', "''");
+    let directory = single_quoted_contents(
+        directory
+            .to_str()
+            .ok_or_else(|| io::Error::other("shell working directory is not valid Unicode"))?,
+    );
     // AppContainer startup rewrites TEMP, TMP and LOCALAPPDATA to its package
     // profile. Restore the host's already-filtered environment after entering
     // the token, so tools use the scratch directory that the ACL lease grants.
@@ -170,10 +171,11 @@ pub(super) fn shell_script(
     let mut restore_environment = String::new();
     for key in ["TEMP", "TMP", "TMPDIR", "LOCALAPPDATA"] {
         if let Some(value) = environment.get(key) {
-            let value = value
-                .to_str()
-                .ok_or_else(|| io::Error::other("shell environment is not valid Unicode"))?
-                .replace('\'', "''");
+            let value = single_quoted_contents(
+                value
+                    .to_str()
+                    .ok_or_else(|| io::Error::other("shell environment is not valid Unicode"))?,
+            );
             restore_environment.push_str(&format!(
                 "[System.Environment]::SetEnvironmentVariable('{key}', '{value}', 'Process'); "
             ));
@@ -185,4 +187,17 @@ pub(super) fn shell_script(
     Ok(format!(
         "try {{ {restore_environment}Set-Location -LiteralPath '{directory}' -ErrorAction Stop; [System.Environment]::CurrentDirectory = '{directory}' }} catch {{ [Console]::Error.WriteLine($_.Exception.Message); exit 1 }}; [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); $OutputEncoding = [Console]::OutputEncoding; {script}"
     ))
+}
+
+fn single_quoted_contents(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for character in value.chars() {
+        // PowerShell's IsSingleQuote recognizes smart quotes as delimiters too.
+        // Doubling each delimiter preserves the original Unicode character.
+        if matches!(character, '\'' | '\u{2018}'..='\u{201b}') {
+            escaped.push(character);
+        }
+        escaped.push(character);
+    }
+    escaped
 }
