@@ -136,19 +136,60 @@ jobs:
       - run: pnpm run test:chrome
       - run: pnpm run test:computer
 
+  windows-node:
+    name: Windows sandbox-compatible Node
+    runs-on: windows-2022
+    timeout-minutes: 100
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Prepare NASM for the official Node build
+        shell: pwsh
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP 'nasm.zip'
+          Invoke-WebRequest 'https://www.nasm.us/pub/nasm/releasebuilds/2.16.03/win64/nasm-2.16.03-win64.zip' -OutFile $archive
+          if ((Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne '3ee4782247bcb874378d02f7eab4e294a84d3d15f3f6ee2de2f47a46aa7226e6') {
+            throw 'NASM archive SHA-256 mismatch'
+          }
+          Expand-Archive $archive -DestinationPath $env:RUNNER_TEMP -Force
+          (Join-Path $env:RUNNER_TEMP 'nasm-2.16.03') >> $env:GITHUB_PATH
+      - uses: actions/cache@v5
+        with:
+          path: ${{ runner.temp }}/openharness-node-cache
+          key: windows-2022-x64-node-${{ hashFiles('apps/desktop/scripts/workspace-runtime-node-windows.mjs', 'apps/desktop/scripts/workspace-runtime/patches/*.patch') }}
+      - name: Build pinned Node with upstream AppContainer pipe fix
+        run: node apps/desktop/scripts/build-windows-node.mjs "${{ runner.temp }}/openharness-node-cache" "${{ runner.temp }}/openharness-node-runtime"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: windows-node-runtime
+          path: ${{ runner.temp }}/openharness-node-runtime/
+          if-no-files-found: error
+          retention-days: 7
+
   windows-checks:
     name: Windows checks
+    needs: [windows-node]
     runs-on: windows-2022
     timeout-minutes: 45
     env:
       ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
       OPENHARNESS_WINDOWS_SANDBOX_HELPER: ${{ github.workspace }}\target\debug\openharness-sandbox.exe
+      OPENHARNESS_TEST_NODE: ${{ runner.temp }}\openharness-node-runtime\node.exe
     defaults:
       run:
         working-directory: apps/desktop
         shell: pwsh
     steps:
       - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v8
+        with:
+          name: windows-node-runtime
+          path: ${{ runner.temp }}/openharness-node-runtime
       - uses: pnpm/action-setup@v6
         with:
           package_json_file: apps/desktop/package.json
@@ -181,6 +222,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Windows script environment preparation failed' }
           $status = & $env:OPENHARNESS_WINDOWS_SANDBOX_HELPER --metadata-status | ConvertFrom-Json
           if ($LASTEXITCODE -ne 0 -or -not $status.ready) { throw 'Windows script environment is not ready' }
+      - name: Check Node child-process pipes inside AppContainer
+        run: cargo test -p agent-local --test windows_sandbox node_child_process_pipes_complete_and_remain_sandboxed --locked -- --nocapture
       - name: Check Windows local command permissions, sandbox, and lifecycle
         run: cargo test -p agent-local --all-targets --locked --no-fail-fast
       - name: Check Windows API execution and runtime shutdown
@@ -194,6 +237,7 @@ jobs:
         run: >-
           pnpm exec vitest run
           scripts/workspace-runtime-node.test.mjs
+          scripts/workspace-runtime-node-windows.test.mjs
           scripts/workspace-runtime-bundle.test.mjs
           scripts/workspace-runtime.test.mjs
           src/main/workspace-runtime.test.ts
@@ -245,12 +289,17 @@ jobs:
     timeout-minutes: 45
     env:
       CSC_IDENTITY_AUTO_DISCOVERY: "false"
+      OPENHARNESS_NODE_RUNTIME_DIR: ${{ runner.temp }}\openharness-node-runtime
     defaults:
       run:
         working-directory: apps/desktop
         shell: pwsh
     steps:
       - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v8
+        with:
+          name: windows-node-runtime
+          path: ${{ runner.temp }}/openharness-node-runtime
       - uses: pnpm/action-setup@v6
         with:
           package_json_file: apps/desktop/package.json

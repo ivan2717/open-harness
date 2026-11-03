@@ -4,6 +4,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { nodeRelease } from './workspace-runtime-node.mjs'
+import { verifyWindowsNodeBuild } from './workspace-runtime-node-windows.mjs'
 import {
   prepareManagedRuntime,
   pythonRelease,
@@ -162,6 +163,7 @@ export async function stageManagedWorkspaceRuntime({
     try {
       await verifyPayloadLinks(await realpath(join(destination, 'python')))
       await verifyPayloadLinks(await realpath(join(destination, 'node')))
+      if (platform === 'win32') await verifyWindowsNodeBuild(join(destination, 'node'))
       verifyManagedRuntime(destination, platform)
       return
     } catch {
@@ -179,6 +181,7 @@ export async function stageManagedWorkspaceRuntime({
       architecture,
     })
     await stageNodeDependencies(runtime.node, join(staging, 'node'))
+    if (platform === 'win32') await verifyWindowsNodeBuild(join(staging, 'node'))
     verifyManagedRuntime(staging, platform)
     await markManagedPython(staging, platform)
     const configuration = join(dirname(fileURLToPath(import.meta.url)), 'workspace-runtime')
@@ -191,9 +194,11 @@ export async function stageManagedWorkspaceRuntime({
           ? 'Distributor-supplied standalone Python. See runtime.json for the verified interpreter version.'
           : `CPython ${pythonRelease.version}; standalone build ${pythonRelease.release} from https://github.com/astral-sh/python-build-standalone.`,
         'Python and bundled libraries retain their upstream licenses in the python directory and *.dist-info directories.',
-        nodeSource
-          ? 'Distributor-supplied standalone Node. Node license is included in node/LICENSE.'
-          : `Node ${nodeRelease} from https://nodejs.org/dist/. Node license is included in node/LICENSE.`,
+        platform === 'win32'
+          ? `Node ${nodeRelease}, built from official source with upstream libuv #5181. See node/openharness-node-build.json for patch and payload hashes; node/LICENSE contains upstream licenses.`
+          : nodeSource
+            ? 'Distributor-supplied standalone Node. Node license is included in node/LICENSE.'
+            : `Node ${nodeRelease} from https://nodejs.org/dist/. Node license is included in node/LICENSE.`,
         'pnpm and Node library licenses are included in node/node_modules. No npm CLI is shipped.',
         'Pinned Python package hashes: requirements.txt. Pinned pnpm dependencies: node/pnpm-lock.yaml.',
         'Shared dependencies are application resources. Additional dependencies belong in task environments.',

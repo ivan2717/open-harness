@@ -18,6 +18,10 @@ import { pipeline } from 'node:stream/promises'
 import { Readable } from 'node:stream'
 import { fileURLToPath } from 'node:url'
 import { nodeDownload, nodeExecutable, prepareNodeBinary } from './workspace-runtime-node.mjs'
+import {
+  verifyWindowsNodeBuild,
+  windowsNodeFingerprint,
+} from './workspace-runtime-node-windows.mjs'
 
 const configuration = join(dirname(fileURLToPath(import.meta.url)), 'workspace-runtime')
 export const pythonRelease = { version: '3.12.15', release: '20261021' }
@@ -202,6 +206,7 @@ export async function reusableRuntime(
     return false
   try {
     await verifyPayloadLinks(await realpath(join(directory, 'node')))
+    if (platform === 'win32') await verifyWindowsNodeBuild(join(directory, 'node'))
     if (!nodeOnly) await verifyPayloadLinks(await realpath(join(directory, 'python')))
     if (nodeOnly) verifyManagedNodeRuntime(directory, platform, probe)
     else verifyManagedRuntime(directory, platform, probe)
@@ -228,10 +233,13 @@ export async function prepareManagedRuntime({
 }) {
   const download = source ? null : pythonDownload(platform, architecture)
   const nodeArtifact = nodeSource ? null : nodeDownload(platform, architecture)
+  const nodeBackport = platform === 'win32' ? await windowsNodeFingerprint() : null
   const requirements = await readFile(join(configuration, 'requirements.txt'), 'utf8')
   const packageLock = await readFile(join(configuration, 'node/pnpm-lock.yaml'), 'utf8')
   const fingerprint = createHash('sha256')
-    .update(JSON.stringify({ format: 7, download, nodeArtifact, platform, architecture }))
+    .update(
+      JSON.stringify({ format: 8, download, nodeArtifact, nodeBackport, platform, architecture }),
+    )
     .update(requirements)
     .update(packageLock)
     .digest('hex')

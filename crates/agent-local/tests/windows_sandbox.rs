@@ -18,6 +18,8 @@ use windows_sys::Win32::{
     },
     System::Threading::{GetCurrentProcess, OpenProcessToken},
 };
+#[path = "windows_sandbox/node.rs"]
+mod node;
 #[path = "windows_sandbox/standard_user.rs"]
 mod standard_user;
 
@@ -160,17 +162,7 @@ fn node_file_entry_and_dependency_resolution_work_without_exposing_ancestor_cont
     }
     standard_user::assert_system_root_acl_is_not_writable();
     let fixture = Fixture::new();
-    let node_path = Command::new("node")
-        .args(["-p", "process.execPath"])
-        .output()
-        .expect("Node is required for the native Windows runtime regression");
-    assert!(
-        node_path.status.success(),
-        "cannot locate Node: {node_path:?}"
-    );
-    let source = PathBuf::from(String::from_utf8(node_path.stdout).unwrap().trim());
-    let program = fixture.0.join("runtime/node.exe");
-    fs::copy(source, &program).unwrap();
+    let program = node::copy_runtime(&fixture);
     fs::create_dir_all(fixture.0.join("workspace/node_modules/fixture-package")).unwrap();
     fs::write(
         fixture
@@ -214,14 +206,7 @@ console.log('NODE_METADATA_BOUNDARY_OK');
         "cwd":cwd,"workspace":fixture.0.join("workspace"),
         "read_paths":[fixture.0.join("runtime")],"write_paths":[fixture.0.join("scratch")],
         "denied_paths":[],"network_allowed":false});
-    let mut child = Command::new(env!("CARGO_BIN_EXE_openharness-sandbox"))
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    writeln!(child.stdin.take().unwrap(), "{request}").unwrap();
-    let output = child.wait_with_output().unwrap();
+    let output = node::run(&request);
     assert!(
         output.status.success(),
         "Node file-entry regression failed:\n{}\n{}",
@@ -230,6 +215,40 @@ console.log('NODE_METADATA_BOUNDARY_OK');
     );
     assert!(String::from_utf8_lossy(&output.stdout).contains("NODE_METADATA_BOUNDARY_OK"));
     assert!(!fixture.0.join("forbidden.txt").exists());
+}
+
+#[test]
+fn node_child_process_pipes_complete_and_remain_sandboxed() {
+    if standard_user::run_without_administrator_rights(
+        "node_child_process_pipes_complete_and_remain_sandboxed",
+    ) {
+        return;
+    }
+    standard_user::assert_system_root_acl_is_not_writable();
+    let fixture = Fixture::new();
+    let program = node::copy_runtime(&fixture);
+    fs::write(
+        fixture.0.join("workspace/child-process-pipes.cjs"),
+        include_str!("windows_sandbox/child-process-pipes.cjs"),
+    )
+    .unwrap();
+    let request = json!({"version":1,"program":program,"args":["child-process-pipes.cjs"],
+        "cwd":fixture.1.join("workspace"),"workspace":fixture.0.join("workspace"),
+        "read_paths":[fixture.0.join("runtime")],"write_paths":[fixture.0.join("scratch")],
+        "denied_paths":[],"network_allowed":false});
+    let output = node::run(&request);
+    assert!(
+        output.status.success(),
+        "Node child-process pipe regression failed:\n{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("NODE_CHILD_PROCESS_PIPES_OK"));
+    assert!(!fixture.0.join("outside/child-write.txt").exists());
+    assert_eq!(
+        fs::read_to_string(fixture.0.join("outside/secret.txt")).unwrap(),
+        "outside secret"
+    );
 }
 
 #[test]
