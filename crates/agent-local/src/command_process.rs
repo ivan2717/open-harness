@@ -84,7 +84,12 @@ impl CommandProcess {
         #[cfg(windows)]
         let working_directory = windows::shell_working_directory(tools.root())?;
         #[cfg(windows)]
-        let shell_script = windows::shell_script(script, &working_directory)?;
+        let temporary_environment_path = windows::shell_working_directory(&temporary)?;
+        #[cfg(not(windows))]
+        let temporary_environment_path = &temporary;
+        let environment = command_environment::environment(temporary_environment_path.as_path());
+        #[cfg(windows)]
+        let shell_script = windows::shell_script(script, &working_directory, &environment)?;
         #[cfg(not(windows))]
         let working_directory = tools.root();
         #[cfg(not(windows))]
@@ -138,7 +143,7 @@ impl CommandProcess {
             .current_dir(working_directory.as_os_str())
             .env_clear()
             .env("PATH", runtime.path.clone())
-            .envs(command_environment::environment(&temporary))
+            .envs(environment)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())

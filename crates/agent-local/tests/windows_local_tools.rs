@@ -447,29 +447,25 @@ async fn windows_commands_reuse_runtime_inventory_without_per_conversation_packa
     .await;
     assert_eq!(result["status"], "completed", "{result}");
     let environment: Value = serde_json::from_str(result["output"].as_str().unwrap()).unwrap();
-    // Windows redirects TEMP/TMP into the per-command AppContainer profile;
-    // TMPDIR still names the host's workspace scratch. Neither is a package
-    // environment. Profile cleanup removes TEMP after the command exits.
+    // Shell initialization restores the host-selected scratch after Windows
+    // constructs the AppContainer profile environment. Identity paths remain
+    // unchanged; knowing a path does not grant access to its contents.
     let expected_tmp = fs::canonicalize(&fixture.root)
         .unwrap()
         .join(".openharness-tmp/tmp");
-    assert_eq!(
-        fs::canonicalize(environment["hostScratch"].as_str().unwrap()).unwrap(),
-        expected_tmp
-    );
-    let temporary = PathBuf::from(environment["temporary"].as_str().unwrap());
-    assert!(temporary.is_absolute());
+    for key in ["temporary", "tmp", "hostScratch"] {
+        assert_eq!(
+            fs::canonicalize(environment[key].as_str().unwrap()).unwrap(),
+            expected_tmp,
+            "{key}: {environment}"
+        );
+    }
     assert_eq!(environment["temporary"], environment["tmp"]);
     assert_eq!(
-        temporary,
-        PathBuf::from(environment["localAppData"].as_str().unwrap()).join("Temp")
+        environment["localAppData"].as_str(),
+        std::env::var("LOCALAPPDATA").ok().as_deref()
     );
-    assert!(!temporary.starts_with(fs::canonicalize(&fixture.root).unwrap()));
     assert_eq!(environment["probe"], "scratch");
-    assert!(
-        !temporary.exists(),
-        "completed command retained its AppContainer scratch directory"
-    );
     assert!(environment["cache"].is_null());
     assert!(environment["store"].is_null());
     assert!(environment["requireVenv"].is_null());
@@ -485,6 +481,74 @@ async fn windows_commands_reuse_runtime_inventory_without_per_conversation_packa
         );
     }
     assert!(tools.review().unwrap().changes.is_empty());
+}
+
+#[tokio::test]
+async fn node_and_its_child_resolve_and_write_only_the_authorized_temporary_directory() {
+    let mut fixture = Fixture::new();
+    let literal_root = fixture.base.join("project's [临时文件] $workspace");
+    fs::rename(&fixture.root, &literal_root).unwrap();
+    fixture.root = literal_root;
+    let source = match std::env::var_os("OPENHARNESS_TEST_NODE") {
+        Some(path) => PathBuf::from(path),
+        None => {
+            let output = std::process::Command::new("node")
+                .args(["-p", "process.execPath"])
+                .output()
+                .expect("Node is required for the Windows temporary-directory regression");
+            assert!(output.status.success(), "cannot locate Node: {output:?}");
+            PathBuf::from(String::from_utf8(output.stdout).unwrap().trim())
+        }
+    };
+    assert!(source.is_absolute(), "test Node path must be absolute");
+    fs::copy(source, fixture.root.join("node.exe")).unwrap();
+    fs::write(fixture.root.join("input.txt"), "project input").unwrap();
+    fs::write(fixture.root.join(".env"), "protected secret").unwrap();
+    fs::create_dir(fixture.base.join("outside")).unwrap();
+    fs::write(fixture.base.join("outside/secret.txt"), "outside secret").unwrap();
+    let expected_identity = ["HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA"]
+        .map(|key| (key, std::env::var(key).ok()))
+        .into_iter()
+        .collect::<std::collections::BTreeMap<_, _>>();
+    fs::write(
+        fixture.root.join("expected-identity.json"),
+        serde_json::to_vec(&expected_identity).unwrap(),
+    )
+    .unwrap();
+    fs::write(
+        fixture.root.join("temporary-environment.cjs"),
+        include_str!("windows_sandbox/temporary-environment.cjs"),
+    )
+    .unwrap();
+    let tools = fixture.tools();
+    for access in ["workspace_write", "read_only"] {
+        let script =
+            format!("& './node.exe' './temporary-environment.cjs' '{access}'; exit $LASTEXITCODE");
+        let result = approved(
+            &tools,
+            json!({"command":script, "access":access, "yield_time_ms":30000}),
+        )
+        .await;
+        assert_eq!(result["status"], "completed", "{access}: {result}");
+        assert_eq!(result["exit_code"], 0, "{access}: {result}");
+        let report: Value = serde_json::from_str(result["output"].as_str().unwrap())
+            .unwrap_or_else(|error| panic!("{access}: {error}: {result}"));
+        assert_eq!(report["parent"], report["child"], "{access}: {report}");
+        let scratch = PathBuf::from(report["parent"]["temporary"].as_str().unwrap());
+        if access == "workspace_write" {
+            assert_eq!(
+                fs::canonicalize(&scratch).unwrap(),
+                fs::canonicalize(fixture.root.join(".openharness-tmp/tmp")).unwrap()
+            );
+        } else {
+            assert!(!scratch.exists(), "read-only command retained its scratch");
+        }
+    }
+    assert_eq!(
+        fs::read_to_string(fixture.root.join("input.txt")).unwrap(),
+        "project input"
+    );
+    assert!(!fixture.base.join("outside/forbidden.txt").exists());
 }
 
 #[test]

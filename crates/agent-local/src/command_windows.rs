@@ -1,4 +1,6 @@
 use std::{
+    collections::BTreeMap,
+    ffi::OsString,
     fs, io,
     path::{Component, Path, PathBuf, Prefix},
     ptr,
@@ -152,15 +154,35 @@ pub(super) fn shell_working_directory(root: &Path) -> io::Result<PathBuf> {
     Ok(directory)
 }
 
-pub(super) fn shell_script(script: &str, directory: &Path) -> io::Result<String> {
+pub(super) fn shell_script(
+    script: &str,
+    directory: &Path,
+    environment: &BTreeMap<&str, OsString>,
+) -> io::Result<String> {
     let directory = directory
         .to_str()
         .ok_or_else(|| io::Error::other("shell working directory is not valid Unicode"))?
         .replace('\'', "''");
+    // AppContainer startup rewrites TEMP, TMP and LOCALAPPDATA to its package
+    // profile. Restore the host's already-filtered environment after entering
+    // the token, so tools use the scratch directory that the ACL lease grants.
+    // This changes path values, never file permissions or the sandbox token.
+    let mut restore_environment = String::new();
+    for key in ["TEMP", "TMP", "TMPDIR", "LOCALAPPDATA"] {
+        if let Some(value) = environment.get(key) {
+            let value = value
+                .to_str()
+                .ok_or_else(|| io::Error::other("shell environment is not valid Unicode"))?
+                .replace('\'', "''");
+            restore_environment.push_str(&format!(
+                "[System.Environment]::SetEnvironmentVariable('{key}', '{value}', 'Process'); "
+            ));
+        }
+    }
     // PowerShell maintains a per-runspace location separately from .NET's
     // process-wide directory. Set both before executing the user's script and
     // fail closed if provider initialization cannot reach the selected folder.
     Ok(format!(
-        "try {{ Set-Location -LiteralPath '{directory}' -ErrorAction Stop; [System.Environment]::CurrentDirectory = '{directory}' }} catch {{ [Console]::Error.WriteLine($_.Exception.Message); exit 1 }}; [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); $OutputEncoding = [Console]::OutputEncoding; {script}"
+        "try {{ {restore_environment}Set-Location -LiteralPath '{directory}' -ErrorAction Stop; [System.Environment]::CurrentDirectory = '{directory}' }} catch {{ [Console]::Error.WriteLine($_.Exception.Message); exit 1 }}; [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); $OutputEncoding = [Console]::OutputEncoding; {script}"
     ))
 }
