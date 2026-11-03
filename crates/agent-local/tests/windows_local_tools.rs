@@ -486,7 +486,9 @@ async fn windows_commands_reuse_runtime_inventory_without_per_conversation_packa
 #[tokio::test]
 async fn node_and_its_child_resolve_and_write_only_the_authorized_temporary_directory() {
     let mut fixture = Fixture::new();
-    let literal_root = fixture.base.join("project's [临时文件] $workspace");
+    let literal_root = fixture
+        .base
+        .join("project's ‘left’ ‚low‛ [临时文件] $workspace");
     fs::rename(&fixture.root, &literal_root).unwrap();
     fixture.root = literal_root;
     let source = match std::env::var_os("OPENHARNESS_TEST_NODE") {
