@@ -52,6 +52,14 @@ async function main() {
   assert.equal(ignored.stdout, 'ignored stdin');
   assert.equal(ignored.stderr, 'ignored stdin stderr');
 
+  console.error('spawnSync ignored output');
+  const ignoredOutput = spawnSync(process.execPath, ['-e', boundary + `
+    process.stdout.write('discarded stdout');
+    process.stderr.write('discarded stderr');
+  `], { stdio: 'ignore', timeout: 10_000 });
+  assert.ifError(ignoredOutput.error);
+  assert.equal(ignoredOutput.status, 0);
+
   console.error('spawn pipes');
   const asyncChild = start(exchange);
   const closed = once(asyncChild, 'close');

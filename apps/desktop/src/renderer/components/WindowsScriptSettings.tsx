@@ -30,7 +30,7 @@ function WindowsScriptEnvironmentSettings() {
                   ? '暂时无法检查'
                   : status.data.ready
                     ? '已就绪'
-                    : '需要首次准备'}
+                    : '需要准备'}
           </p>
         </div>
         {status.data?.ready ? (
@@ -52,8 +52,9 @@ function WindowsScriptEnvironmentSettings() {
         )}
       </div>
       <p className="settings-footnote">
-        首次准备需要 Windows
-        管理员确认；只补齐运行库所需的目录信息读取权限，不会提升任务或脚本的权限。
+        准备需要 Windows
+        管理员确认，用于运行库的目录信息读取与空设备访问，不会将任务或脚本提升为管理员。
+        系统重启后可能需要再次准备。
       </p>
       {(status.error || prepare.error) && (
         <InlineError

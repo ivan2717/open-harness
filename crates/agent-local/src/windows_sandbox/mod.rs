@@ -4,6 +4,7 @@
 mod acl;
 mod lease;
 mod metadata;
+mod null_device;
 mod process;
 #[path = "../protected_paths.rs"]
 mod protected_paths;

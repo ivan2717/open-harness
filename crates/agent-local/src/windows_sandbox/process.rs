@@ -1,4 +1,4 @@
-use super::{Request, metadata, wide};
+use super::{Request, metadata, null_device, wide};
 use std::{io, ptr};
 use windows_sys::Win32::{
     Foundation::{
@@ -49,10 +49,18 @@ pub(super) fn execute(request: &Request, sid: PSID) -> io::Result<u32> {
 
     // A stable, metadata-only capability permits lstat on prepared system
     // ancestors. File contents and writes still require the unique lease SID.
-    let mut capabilities = vec![SID_AND_ATTRIBUTES {
-        Sid: metadata::sid()?,
-        Attributes: 0x4,
-    }];
+    let mut capabilities = vec![
+        SID_AND_ATTRIBUTES {
+            Sid: metadata::sid()?,
+            Attributes: 0x4,
+        },
+        // Nested runtimes reopen NUL for ignored stdio. This separate
+        // capability grants access only to that fixed, contentless device.
+        SID_AND_ATTRIBUTES {
+            Sid: null_device::sid()?,
+            Attributes: 0x4,
+        },
+    ];
     let mut sid_storage = [[0u32; 17]; 2];
     if request.network_allowed {
         // These capabilities allow Internet and LAN traffic. Windows still
