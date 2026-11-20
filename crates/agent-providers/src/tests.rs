@@ -252,6 +252,26 @@ async fn read_request(socket: &mut tokio::net::TcpStream) -> String {
     String::from_utf8(bytes).unwrap()
 }
 
+async fn serve_responses(
+    responses: Vec<(&'static str, &'static str, String)>,
+) -> (String, tokio::task::JoinHandle<Vec<String>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/v1", listener.local_addr().unwrap());
+    let task = tokio::spawn(async move {
+        let mut requests = Vec::new();
+        for (status, content_type, body) in responses {
+            let (mut socket, _) = tokio::time::timeout(Duration::from_secs(5), listener.accept())
+                .await
+                .expect("expected the next bounded attempt")
+                .unwrap();
+            requests.push(read_request(&mut socket).await);
+            socket.write_all(format!("HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nRetry-After: 0\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+        }
+        requests
+    });
+    (url, task)
+}
+
 fn sse(value: Value) -> String {
     format!("data: {value}\n\n")
 }
@@ -450,13 +470,14 @@ fn context_overflow_requires_confirmed_code_and_never_rate_limits() {
 fn deepseek_context_limit_template_requires_status_code_and_consistent_counts() {
     let message = "This model's maximum context length is 1048576 tokens. However, you requested 1077729 tokens (1069537 in the messages, 8192 in the completion). Please reduce the length of the messages or completion. (request_id: secret-test-value)";
     let body = json!({"error":{"code":"invalid_request_error","type":"invalid_request_error","message":message}});
-    assert_eq!(
+    assert!(matches!(
         classify_http(400, &body),
         ProviderError::Http {
             status: 400,
-            kind: HttpErrorKind::ContextOverflow
+            kind: HttpErrorKind::ContextOverflow,
+            ..
         }
-    );
+    ));
     assert!(!format!("{:?}", classify_http(400, &body)).contains("secret-test-value"));
     for status in [401, 429, 500] {
         assert!(!matches!(
@@ -478,27 +499,29 @@ fn deepseek_context_limit_template_requires_status_code_and_consistent_counts() 
     ] {
         let mut invalid = body.clone();
         invalid["error"]["message"] = json!(replacement);
-        assert_eq!(
+        assert!(matches!(
             classify_http(400, &invalid),
             ProviderError::Http {
                 status: 400,
-                kind: HttpErrorKind::Request
+                kind: HttpErrorKind::Request,
+                ..
             }
-        );
+        ));
     }
     let mut different_code = body;
     different_code["error"]["code"] = json!("rate_limit_error");
-    assert_eq!(
+    assert!(matches!(
         classify_http(400, &different_code),
         ProviderError::Http {
             status: 400,
-            kind: HttpErrorKind::Request
+            kind: HttpErrorKind::Request,
+            ..
         }
-    );
+    ));
 }
 
 #[tokio::test]
-async fn structured_stream_errors_retain_classes_without_provider_text_or_retries() {
+async fn structured_stream_errors_retain_classes_after_bounded_retries() {
     for (protocol, event, kind) in [
         (
             ProviderProtocol::Responses,
@@ -521,6 +544,11 @@ async fn structured_stream_errors_retain_classes_without_provider_text_or_retrie
             HttpErrorKind::Server,
         ),
         (
+            ProviderProtocol::AnthropicMessages,
+            json!({"type":"error","error":{"type":"timeout_error","message":"secret-test-value"}}),
+            HttpErrorKind::Server,
+        ),
+        (
             ProviderProtocol::Responses,
             json!({"type":"error","code":"rate_limit_exceeded","message":"secret-test-value"}),
             HttpErrorKind::RateLimit,
@@ -531,18 +559,165 @@ async fn structured_stream_errors_retain_classes_without_provider_text_or_retrie
             HttpErrorKind::Request,
         ),
     ] {
-        let (url, task) = serve("200 OK", "text/event-stream", vec![sse(event)]).await;
+        let attempts = if matches!(kind, HttpErrorKind::Server | HttpErrorKind::RateLimit) {
+            3
+        } else {
+            1
+        };
+        let (url, task) =
+            serve_responses(vec![("200 OK", "text/event-stream", sse(event)); attempts]).await;
         let model = HttpModel::new(config(protocol, url)).unwrap();
         let error = model.respond_with_metadata(request()).await.unwrap_err();
-        assert_eq!(error, ProviderError::Rejected { kind });
+        assert!(matches!(error, ProviderError::Rejected { kind: actual, .. } if actual == kind));
         assert_eq!(
             model.is_context_overflow(&error),
             kind == HttpErrorKind::ContextOverflow
         );
         assert!(!error.is_retryable());
         assert!(!format!("{error:?} {error}").contains("secret-test-value"));
-        task.await.unwrap();
+        assert_eq!(task.await.unwrap().len(), attempts);
     }
+}
+
+#[tokio::test]
+async fn transient_rejections_before_output_retry_the_same_request_and_settle_once() {
+    for (content_type, error_type) in [
+        ("text/event-stream", "overloaded_error"),
+        ("text/event-stream", "timeout_error"),
+        ("application/json", "rate_limit_error"),
+    ] {
+        let rejection =
+            json!({"type":"error","error":{"type":error_type,"message":"secret-test-value"}});
+        let first = if content_type == "text/event-stream" {
+            // Native stream metadata/pings are not model output. They must not
+            // prevent recovery when the first actual response is a rejection.
+            sse(
+                json!({"type":"message_start","message":{"id":"rejected","role":"assistant","content":[]}}),
+            ) + &sse(json!({"type":"ping"}))
+                + &sse(rejection)
+        } else {
+            rejection.to_string()
+        };
+        let success = [
+            json!({"type":"message_start","message":{"id":"retry-ok","role":"assistant","content":[],"usage":{"input_tokens":2,"output_tokens":0}}}),
+            json!({"type":"content_block_start","index":0,"content_block":{"type":"text","text":"Done"}}),
+            json!({"type":"content_block_stop","index":0}),
+            json!({"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}),
+            json!({"type":"message_stop"}),
+        ].into_iter().map(sse).collect::<String>();
+        let (url, task) = serve_responses(vec![
+            ("200 OK", content_type, first),
+            ("200 OK", "text/event-stream", success),
+        ])
+        .await;
+        struct Events {
+            assembler: ModelStreamAssembler,
+            finishes: usize,
+        }
+        impl ModelStreamSink for Events {
+            fn emit(&mut self, event: agent_runtime::ModelStreamEvent) {
+                if matches!(event, agent_runtime::ModelStreamEvent::Finish { .. }) {
+                    self.finishes += 1;
+                }
+                self.assembler.emit(event);
+            }
+        }
+        let mut events = Events {
+            assembler: ModelStreamAssembler::new(),
+            finishes: 0,
+        };
+        let model = HttpModel::new(config(ProviderProtocol::AnthropicMessages, url)).unwrap();
+        model.stream(request(), &mut events).await.unwrap();
+        assert_eq!(events.finishes, 1);
+        assert_eq!(events.assembler.finish().unwrap().response.text(), "Done");
+        let requests = task.await.unwrap();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0], requests[1]);
+    }
+}
+
+#[tokio::test]
+async fn quota_and_unknown_rejections_never_retry_without_output() {
+    for error in [
+        json!({"type":"insufficient_quota","message":"secret-test-value"}),
+        json!({"code":"insufficient_quota","type":"rate_limit_error","message":"secret-test-value"}),
+        json!({"type":"invalid_request_error","message":"secret-test-value"}),
+        json!({"type":"unknown_gateway_error","message":"secret-test-value"}),
+    ] {
+        let (url, task) = serve_responses(vec![(
+            "200 OK",
+            "text/event-stream",
+            sse(json!({"type":"error","error":error})),
+        )])
+        .await;
+        let model = HttpModel::new(config(ProviderProtocol::AnthropicMessages, url)).unwrap();
+        let error = model.respond(request()).await.unwrap_err();
+        assert!(matches!(error, ProviderError::Rejected { .. }));
+        assert!(!error.is_retryable());
+        assert!(!format!("{error:?} {error}").contains("secret-test-value"));
+        assert_eq!(task.await.unwrap().len(), 1);
+    }
+}
+
+#[tokio::test]
+async fn http_and_stream_rejections_share_one_retry_budget() {
+    let rejection = sse(json!({"type":"error","error":{"type":"timeout_error"}}));
+    let (url, task) = serve_responses(vec![
+        (
+            "429 Too Many Requests",
+            "application/json",
+            json!({"error":{"type":"rate_limit_error"}}).to_string(),
+        ),
+        ("200 OK", "text/event-stream", rejection.clone()),
+        ("200 OK", "text/event-stream", rejection),
+    ])
+    .await;
+    let model = HttpModel::new(config(ProviderProtocol::AnthropicMessages, url)).unwrap();
+    let error = model.respond(request()).await.unwrap_err();
+    assert!(matches!(
+        error,
+        ProviderError::Rejected {
+            kind: HttpErrorKind::Server,
+            ..
+        }
+    ));
+    let requests = task.await.unwrap();
+    assert_eq!(requests.len(), 3);
+    assert!(requests.windows(2).all(|pair| pair[0] == pair[1]));
+}
+
+#[tokio::test]
+async fn tool_block_start_prevents_rejection_retry_before_arguments_arrive() {
+    let body = [
+        json!({"type":"message_start","message":{"id":"partial-call","role":"assistant","content":[]}}),
+        json!({"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"call-1","name":"lookup","input":{}}}),
+        json!({"type":"error","error":{"type":"timeout_error","message":"secret-test-value"}}),
+    ].into_iter().map(sse).collect::<String>();
+    let (url, task) = serve_responses(vec![("200 OK", "text/event-stream", body)]).await;
+    let model = HttpModel::new(config(ProviderProtocol::AnthropicMessages, url)).unwrap();
+    struct Events(Vec<agent_runtime::ModelStreamEvent>);
+    impl ModelStreamSink for Events {
+        fn emit(&mut self, event: agent_runtime::ModelStreamEvent) {
+            self.0.push(event);
+        }
+    }
+    let mut events = Events(Vec::new());
+    let error = model.stream(request(), &mut events).await.unwrap_err();
+    assert!(matches!(
+        error,
+        ProviderError::Rejected {
+            kind: HttpErrorKind::Server,
+            ..
+        }
+    ));
+    assert!(matches!(
+        events.0.as_slice(),
+        [agent_runtime::ModelStreamEvent::BlockStart {
+            kind: agent_runtime::ModelBlockKind::ToolCall,
+            ..
+        }]
+    ));
+    assert_eq!(task.await.unwrap().len(), 1);
 }
 
 #[tokio::test]
@@ -554,15 +729,57 @@ async fn failed_json_response_preserves_structured_error_without_claiming_http_f
     ).await;
     let model = HttpModel::new(config(ProviderProtocol::Responses, url)).unwrap();
     let error = model.respond(request()).await.unwrap_err();
-    assert_eq!(
+    assert!(matches!(
         error,
         ProviderError::Rejected {
-            kind: HttpErrorKind::ContextOverflow
+            kind: HttpErrorKind::ContextOverflow,
+            ..
         }
-    );
+    ));
     assert!(model.is_context_overflow(&error));
     assert!(!error.is_retryable());
     task.await.unwrap();
+}
+
+#[tokio::test]
+async fn http_json_and_stream_failures_expose_safe_parameter_diagnostics() {
+    let provider_error = json!({
+        "code":"unsupported_parameter", "type":"invalid_request_error",
+        "param":"max_output_tokens",
+        "message":"Unsupported parameter: 'max_output_tokens'. secret-test-value; private prompt"
+    });
+    for (status, content_type, body) in [
+        (
+            "400 Bad Request",
+            "application/json",
+            json!({"error":provider_error}).to_string(),
+        ),
+        (
+            "200 OK",
+            "application/json",
+            json!({"status":"failed", "error":provider_error}).to_string(),
+        ),
+        (
+            "200 OK",
+            "text/event-stream",
+            sse(
+                json!({"type":"response.failed", "response":{"status":"failed", "error":provider_error}}),
+            ),
+        ),
+    ] {
+        let (url, task) = serve(status, content_type, vec![body]).await;
+        let model = HttpModel::new(config(ProviderProtocol::Responses, url)).unwrap();
+        let error = model.respond(request()).await.unwrap_err();
+        let rendered = error.to_string();
+        assert!(rendered.contains("code=unsupported_parameter"));
+        assert!(rendered.contains("type=invalid_request_error"));
+        assert!(rendered.contains("param=max_output_tokens"));
+        assert!(rendered.contains("message=parameter is not supported by this model"));
+        assert!(!format!("{error:?} {error}").contains("secret-test-value"));
+        assert!(!format!("{error:?} {error}").contains("private prompt"));
+        assert!(!error.is_retryable());
+        task.await.unwrap();
+    }
 }
 
 #[tokio::test]
@@ -580,12 +797,13 @@ async fn provider_error_after_partial_stream_never_settles_or_retries() {
     }
     let mut events = Events(Vec::new());
     let error = model.stream(request(), &mut events).await.unwrap_err();
-    assert_eq!(
+    assert!(matches!(
         error,
         ProviderError::Rejected {
-            kind: HttpErrorKind::Server
+            kind: HttpErrorKind::Server,
+            ..
         }
-    );
+    ));
     assert!(events.0.iter().any(|event| matches!(event, agent_runtime::ModelStreamEvent::TextDelta { text, .. } if text == "partial")));
     assert!(!events.0.iter().any(|event| matches!(
         event,
@@ -663,6 +881,129 @@ async fn rate_limit_retries_only_before_stream_and_uses_retry_after() {
     });
     assert_eq!(model.respond(request()).await.unwrap().text(), "Done");
     server.await.unwrap();
+}
+
+fn opaque_routing_error() -> Value {
+    json!({"error":{"code":"invalid_request","type":"invalid_request_error",
+        "message": diagnostics::OPAQUE_ROUTING_REJECTION}})
+}
+
+#[tokio::test]
+async fn optional_encrypted_output_fallback_is_cached_but_never_strips_opaque_history() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let model = HttpModel::new(config(
+        ProviderProtocol::Responses,
+        format!("http://{}/v1", listener.local_addr().unwrap()),
+    ))
+    .unwrap();
+    let server = tokio::spawn(async move {
+        let mut bodies = Vec::new();
+        for attempt in 0..4 {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let wire = read_request(&mut socket).await;
+            bodies.push(
+                serde_json::from_str::<Value>(wire.split_once("\r\n\r\n").unwrap().1).unwrap(),
+            );
+            let rejected = attempt == 0 || attempt == 3;
+            let body = if rejected { opaque_routing_error() } else {
+                json!({"id":"resp-ok","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Done"}]}]})
+            }.to_string();
+            let status = if rejected {
+                "400 Bad Request"
+            } else {
+                "200 OK"
+            };
+            socket.write_all(format!("HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+        }
+        bodies
+    });
+    assert_eq!(model.respond(request()).await.unwrap().text(), "Done");
+    assert_eq!(
+        model.clone().respond(request()).await.unwrap().text(),
+        "Done"
+    );
+    let previous = model.decode(&json!({"id":"resp-opaque","status":"completed","output":[
+        {"id":"reasoning-1","type":"reasoning","summary":[],"encrypted_content":"opaque-private"},
+        {"type":"message","role":"assistant","content":[{"type":"output_text","text":"Earlier answer"}]}
+    ],"usage":{"input_tokens":10,"output_tokens":4,"output_tokens_details":{"reasoning_tokens":2}}})).unwrap();
+    let mut next = request();
+    next.messages.push(ModelMessage::assistant_blocks(
+        previous.response.content,
+        previous.provider_state,
+    ));
+    next.messages.push(ModelMessage::user("Continue".into()));
+    let error = model.respond(next).await.unwrap_err();
+    assert!(matches!(error, ProviderError::Http { status: 400, .. }));
+    let bodies = server.await.unwrap();
+    assert_eq!(bodies[0]["include"], json!(["reasoning.encrypted_content"]));
+    let mut expected = bodies[0].clone();
+    expected.as_object_mut().unwrap().remove("include");
+    assert_eq!(bodies[1], expected);
+    assert_eq!(bodies[2], expected);
+    assert_eq!(bodies[3]["include"], json!(["reasoning.encrypted_content"]));
+    assert_eq!(bodies[3]["input"][1]["encrypted_content"], "opaque-private");
+}
+
+#[tokio::test]
+async fn opaque_fallback_never_retries_ambiguous_errors_or_an_opened_stream() {
+    for (status, content_type, body) in [
+        ("400 Bad Request", "application/json", json!({"error":{"code":"invalid_request","type":"invalid_request_error","message":"unsupported request"}}).to_string()),
+        ("422 Unprocessable Entity", "application/json", opaque_routing_error().to_string()),
+        ("200 OK", "text/event-stream", sse(json!({"type":"response.failed","response":{"status":"failed","error":opaque_routing_error()["error"]}}))),
+    ] {
+        let (url, task) = serve(status, content_type, vec![body]).await;
+        let model = HttpModel::new(config(ProviderProtocol::Responses, url)).unwrap();
+        let error = model.respond(request()).await.unwrap_err();
+        assert!(matches!(error, ProviderError::Http { .. } | ProviderError::Rejected { .. }));
+        assert!(!model.omit_encrypted_reasoning.load(Ordering::Relaxed));
+        task.await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn combined_routing_rejection_retries_once_then_surfaces_tool_rejection() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let model = HttpModel::new(config(
+        ProviderProtocol::Responses,
+        format!("http://{}/v1", listener.local_addr().unwrap()),
+    ))
+    .unwrap();
+    let server = tokio::spawn(async move {
+        let mut requests = Vec::new();
+        for message in [
+            diagnostics::TOOLS_OPAQUE_ROUTING_REJECTION,
+            diagnostics::TOOLS_ROUTING_REJECTION,
+        ] {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let wire = read_request(&mut socket).await;
+            requests.push(
+                serde_json::from_str::<Value>(wire.split_once("\r\n\r\n").unwrap().1).unwrap(),
+            );
+            let body = json!({"error":{"code":"invalid_request","type":"invalid_request_error","message":message}}).to_string();
+            socket.write_all(format!("HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+        }
+        requests
+    });
+    let mut request = request();
+    request.tools.push(ToolDefinition {
+        name: "lookup".into(),
+        description: "Look up".into(),
+        input_schema: "{\"type\":\"object\"}".into(),
+    });
+    let error = model.respond(request).await.unwrap_err();
+    assert!(matches!(error, ProviderError::Http { status: 400, .. }));
+    assert!(
+        error
+            .to_string()
+            .contains("requested capability: function_tools")
+    );
+    assert!(!model.omit_encrypted_reasoning.load(Ordering::Relaxed));
+    let requests = server.await.unwrap();
+    assert_eq!(requests.len(), 2);
+    let mut expected = requests[0].clone();
+    expected.as_object_mut().unwrap().remove("include");
+    assert_eq!(requests[1], expected);
+    assert_eq!(requests[1]["tools"][0]["name"], "lookup");
 }
 
 #[test]

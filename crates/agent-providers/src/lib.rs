@@ -1,11 +1,13 @@
 //! Async HTTP transports for the runtime's canonical model protocol.
 //! Credentials remain in memory and never enter model state or diagnostics.
+mod diagnostics;
 mod encode;
 mod reasoning;
 #[cfg(test)]
 mod reasoning_tests;
 mod stream;
 
+pub use diagnostics::ProviderErrorDetails;
 pub use reasoning::{ReasoningAdapter, ReasoningCapability, ReasoningOption, ReasoningSource};
 
 use agent_adapters::WireProtocol;
@@ -21,7 +23,14 @@ use reqwest::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::{fmt, time::Duration};
+use std::{
+    fmt,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -97,7 +106,8 @@ impl fmt::Debug for ProviderConfig {
     }
 }
 
-/// Errors intentionally have no provider text, URLs, payloads, credentials, or sources.
+/// Errors retain only allowlisted diagnostic identifiers and synthesized messages,
+/// never raw provider text, URLs, payloads, credentials, or sources.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProviderError {
     InvalidConfig(&'static str),
@@ -110,11 +120,14 @@ pub enum ProviderError {
     Http {
         status: u16,
         kind: HttpErrorKind,
+        details: ProviderErrorDetails,
     },
     /// A structured provider error delivered inside a successful HTTP response,
-    /// including SSE. It is never automatically retried: output may have begun.
+    /// including SSE. Callers must not retry it without knowing whether the
+    /// stream already emitted output.
     Rejected {
         kind: HttpErrorKind,
+        details: ProviderErrorDetails,
     },
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -126,8 +139,8 @@ pub enum HttpErrorKind {
     Request,
 }
 impl ProviderError {
-    /// Retrying transport failures after output starts can duplicate generation.
-    /// The client retries only explicit 429/5xx responses before opening a stream.
+    /// Retrying after output starts can duplicate generation. Rejections remain
+    /// non-retryable to callers; only the transport can prove no event was emitted.
     pub fn is_retryable(&self) -> bool {
         matches!(
             self,
@@ -136,6 +149,27 @@ impl ProviderError {
                 ..
             }
         )
+    }
+
+    fn is_pre_output_retryable(&self) -> bool {
+        matches!(self, Self::Rejected {
+            kind: HttpErrorKind::Server | HttpErrorKind::RateLimit,
+            details,
+        } if details.code.as_deref() != Some("insufficient_quota")
+            && details.error_type.as_deref() != Some("insufficient_quota"))
+    }
+}
+
+struct TrackingSink<'a> {
+    inner: &'a mut dyn ModelStreamSink,
+    emitted: bool,
+}
+impl ModelStreamSink for TrackingSink<'_> {
+    fn emit(&mut self, event: agent_runtime::ModelStreamEvent) {
+        // Even a block start or usage event makes a replay observable. Never
+        // feed a second response into an already-started consumer/assembler.
+        self.emitted = true;
+        self.inner.emit(event);
     }
 }
 impl fmt::Display for ProviderError {
@@ -150,8 +184,19 @@ impl fmt::Display for ProviderError {
             Self::IncompleteStream => f.write_str("provider stream ended before completion"),
             Self::Transport => f.write_str("could not connect to the model provider"),
             Self::Timeout => f.write_str("model provider request timed out"),
-            Self::Http { status, kind } => write!(f, "model provider HTTP {status} ({kind:?})"),
-            Self::Rejected { kind } => write!(f, "model provider rejected the response ({kind:?})"),
+            Self::Http {
+                status,
+                kind,
+                details,
+            } => {
+                write!(f, "model provider HTTP {status} ({kind:?}){details}")
+            }
+            Self::Rejected { kind, details } => {
+                write!(
+                    f,
+                    "model provider rejected the response ({kind:?}){details}"
+                )
+            }
         }
     }
 }
@@ -169,6 +214,8 @@ pub struct HttpModel {
     metadata: ModelContextMetadata,
     identity: ProviderContextIdentity,
     supports_images: bool,
+    // Shared across per-run/reasoning clones, scoped to this configured model.
+    omit_encrypted_reasoning: Arc<AtomicBool>,
 }
 impl fmt::Debug for HttpModel {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -305,6 +352,7 @@ impl HttpModel {
             legacy_reasoning_profile: true,
             metadata,
             supports_images: config.supports_images,
+            omit_encrypted_reasoning: Arc::new(AtomicBool::new(false)),
             identity,
         })
     }
@@ -314,9 +362,15 @@ impl HttpModel {
         request: ModelRequest,
         sink: &mut dyn ModelStreamSink,
     ) -> Result<(), ProviderError> {
-        let body = self.encode(&request)?;
+        let mut body = self.encode(&request)?;
+        let mut compatibility_retry = false;
+        if self.omit_encrypted_reasoning.load(Ordering::Relaxed)
+            && optional_encrypted_reasoning(&body)
+        {
+            body.as_object_mut().unwrap().remove("include");
+        }
         let mut attempt = 0;
-        let response = loop {
+        loop {
             let response = match self
                 .client
                 .post(self.endpoint.clone())
@@ -334,10 +388,6 @@ impl HttpModel {
                 }
                 Err(error) => return Err(transport_error(error)),
             };
-            if response.status().is_success() {
-                break response;
-            }
-            let status = response.status().as_u16();
             let retry_delay = response
                 .headers()
                 .get("retry-after")
@@ -345,6 +395,32 @@ impl HttpModel {
                 .and_then(|s| s.parse::<u64>().ok())
                 .map(|s| s.min(30))
                 .unwrap_or(1 << attempt);
+            if response.status().is_success() {
+                let mut tracked = TrackingSink {
+                    inner: sink,
+                    emitted: false,
+                };
+                let result = self.consume_response(response, &mut tracked).await;
+                // Some providers report overload/rate-limit/timeout errors
+                // inside HTTP 200. An explicit transient rejection is safe to
+                // retry only before any event reaches the caller. Unknown
+                // errors and interrupted transports are deliberately excluded.
+                if !tracked.emitted
+                    && attempt < 2
+                    && result
+                        .as_ref()
+                        .is_err_and(|error| error.is_pre_output_retryable())
+                {
+                    tokio::time::sleep(Duration::from_secs(retry_delay)).await;
+                    attempt += 1;
+                    continue;
+                }
+                if compatibility_retry && result.is_ok() {
+                    self.omit_encrypted_reasoning.store(true, Ordering::Relaxed);
+                }
+                return result;
+            }
+            let status = response.status().as_u16();
             let retryable = status == 429 || (500..=599).contains(&status);
             if retryable && attempt < 2 {
                 drop(response);
@@ -354,8 +430,31 @@ impl HttpModel {
             }
             let bytes = limited_body(response, 64 * 1024).await.unwrap_or_default();
             let wire = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+            // Some Responses-compatible routers treat this optional output
+            // request as an unsupported opaque-pass-through capability. Only
+            // recover from the exact pre-stream rejection, and never downgrade
+            // a request that already needs opaque history replay.
+            if !compatibility_retry
+                && self.protocol == ProviderProtocol::Responses
+                && status == 400
+                && wire["error"]["code"] == "invalid_request"
+                && wire["error"]["type"] == "invalid_request_error"
+                && diagnostics::unsupported_opaque_routing(&wire["error"]["message"])
+                && optional_encrypted_reasoning(&body)
+            {
+                body.as_object_mut().unwrap().remove("include");
+                compatibility_retry = true;
+                continue;
+            }
             return Err(classify_http(status, &wire));
-        };
+        }
+    }
+
+    async fn consume_response(
+        &self,
+        response: reqwest::Response,
+        sink: &mut dyn ModelStreamSink,
+    ) -> Result<(), ProviderError> {
         let content_type = response
             .headers()
             .get("content-type")
@@ -507,6 +606,35 @@ impl HttpModel {
 fn valid_effort(value: &str) -> bool {
     reasoning::valid_reasoning_name(value)
 }
+
+fn optional_encrypted_reasoning(body: &Value) -> bool {
+    fn opaque(value: &Value) -> bool {
+        match value {
+            Value::Object(object) => {
+                object.contains_key("encrypted_content")
+                    || object.get("type").is_some_and(|kind| kind == "reasoning")
+                    || object.values().any(opaque)
+            }
+            Value::Array(items) => items.iter().any(opaque),
+            _ => false,
+        }
+    }
+    body["include"] == serde_json::json!(["reasoning.encrypted_content"])
+        && body.get("previous_response_id").is_none()
+        && body["input"].as_array().is_some_and(|items| {
+            items.iter().all(|item| {
+                let known_item = match item.get("type").and_then(Value::as_str) {
+                    Some("message" | "function_call" | "function_call_output") => true,
+                    None => matches!(
+                        item["role"].as_str(),
+                        Some("user" | "system" | "developer" | "assistant")
+                    ),
+                    _ => false,
+                };
+                known_item && !opaque(item)
+            })
+        })
+}
 fn transport_error(error: reqwest::Error) -> ProviderError {
     if error.is_timeout() {
         ProviderError::Timeout
@@ -540,12 +668,17 @@ fn classify_http(status: u16, body: &Value) -> ProviderError {
         }
         _ => HttpErrorKind::Request,
     };
-    ProviderError::Http { status, kind }
+    ProviderError::Http {
+        status,
+        kind,
+        details: ProviderErrorDetails::from_error(&body["error"]),
+    }
 }
 
 fn classify_rejection(error: &Value) -> ProviderError {
     ProviderError::Rejected {
         kind: structured_error_kind(error),
+        details: ProviderErrorDetails::from_error(error),
     }
 }
 
@@ -605,7 +738,13 @@ fn structured_error_kind(error: &Value) -> HttpErrorKind {
     } else if codes.iter().any(|code| {
         matches!(
             code,
-            Some("server_error" | "internal_server_error" | "api_error" | "overloaded_error")
+            Some(
+                "server_error"
+                    | "internal_server_error"
+                    | "api_error"
+                    | "overloaded_error"
+                    | "timeout_error"
+            )
         )
     }) {
         HttpErrorKind::Server
@@ -629,7 +768,8 @@ impl Model for HttpModel {
                 kind: HttpErrorKind::ContextOverflow,
                 ..
             } | ProviderError::Rejected {
-                kind: HttpErrorKind::ContextOverflow
+                kind: HttpErrorKind::ContextOverflow,
+                ..
             }
         )
     }

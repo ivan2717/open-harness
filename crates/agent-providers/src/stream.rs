@@ -497,8 +497,18 @@ impl State {
                     .ok_or(ProviderError::InvalidResponse)?;
                 self.open_blocks.remove(pos);
                 if let Some(input) = self.partial_json.remove(&i) {
-                    self.wire["content"][i]["input"] =
-                        serde_json::from_str(&input).map_err(|_| ProviderError::InvalidResponse)?;
+                    if input.is_empty() {
+                        // A no-argument tool may emit only an empty initial
+                        // fragment. Its complete input is already present in
+                        // content_block_start; do not parse "" as JSON or
+                        // replace that valid input with a fabricated value.
+                        if !self.wire["content"][i]["input"].is_object() {
+                            return Err(ProviderError::InvalidResponse);
+                        }
+                    } else {
+                        self.wire["content"][i]["input"] = serde_json::from_str(&input)
+                            .map_err(|_| ProviderError::InvalidResponse)?;
+                    }
                 }
             }
             "message_delta" => {
@@ -574,6 +584,58 @@ fn merge_delta(target: &mut Value, delta: &Value) -> Result<(), ProviderError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn messages_tool_stream(
+        partial: &str,
+    ) -> Result<(Value, Live, ModelStreamAssembler), ProviderError> {
+        let mut state = State::new(ProviderProtocol::AnthropicMessages);
+        let mut live = Live::default();
+        let mut sink = ModelStreamAssembler::new();
+        for event in [
+            json!({"type":"message_start","message":{"id":"msg-empty-tool","role":"assistant","content":[]}}),
+            json!({"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"call-empty","name":"list_available_tools","input":{}}}),
+            json!({"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":partial}}),
+            json!({"type":"content_block_stop","index":0}),
+            json!({"type":"message_delta","delta":{"stop_reason":"tool_use"}}),
+            json!({"type":"message_stop"}),
+        ] {
+            state.event(&event.to_string(), &mut live, &mut sink)?;
+        }
+        Ok((state.finish()?, live, sink))
+    }
+
+    #[tokio::test]
+    async fn messages_empty_argument_delta_preserves_the_complete_initial_tool_input() {
+        let (wire, live, mut sink) = messages_tool_stream("").unwrap();
+        let model = HttpModel::new(ProviderConfig {
+            protocol: ProviderProtocol::AnthropicMessages,
+            base_url: "http://127.0.0.1:12345/v1".into(),
+            api_key: "test-key".into(),
+            model: "test-model".into(),
+            context_window: 32000,
+            max_output_tokens: 4096,
+            reasoning: ReasoningMode::Off,
+            supports_images: false,
+        })
+        .unwrap();
+        let output = model.decode(&wire).unwrap();
+        live.settle(output, &mut sink).unwrap();
+        let output = sink.finish().unwrap();
+        assert_eq!(output.response.calls()[0].arguments, "{}");
+        assert_eq!(
+            output.provider_state.unwrap().payload["content"][0]["input"],
+            json!({})
+        );
+    }
+
+    #[test]
+    fn messages_nonempty_malformed_argument_delta_does_not_fall_back_to_empty_input() {
+        assert!(matches!(
+            messages_tool_stream("{\"unfinished\":"),
+            Err(ProviderError::InvalidResponse)
+        ));
+    }
+
     #[test]
     fn sse_handles_split_unicode_crlf_comments_and_multiline_data() {
         let mut parser = Sse::default();
