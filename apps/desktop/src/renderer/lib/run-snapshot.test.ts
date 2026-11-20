@@ -20,6 +20,36 @@ function snapshot(overrides: Partial<RunDetail> = {}): RunDetail {
 }
 
 describe('snapshot ordering', () => {
+  it('preserves bounded turn context when adapting a full legacy response', () => {
+    const full = snapshot({
+      messages: [
+        {
+          id: 'event-0',
+          role: 'user',
+          status: 'complete',
+          text: 'Original question',
+          started_at: '2026-10-21T12:00:00Z',
+        },
+        { id: 'intro', role: 'assistant', status: 'complete', text: 'Checking the results' },
+        ...Array.from({ length: 150 }, (_, index) => ({
+          id: `tool-${index}`,
+          role: 'tool' as const,
+          status: 'complete' as const,
+          text: 'result',
+        })),
+      ],
+    })
+    const result = latestSnapshot(undefined, full)
+    expect(result.messages).toHaveLength(100)
+    expect(result.history?.before).toBe('tool-50')
+    expect(result.history?.leading_turn).toEqual({
+      id: 'event-0',
+      user: full.messages[0],
+      preview: full.messages[1],
+      started_at: '2026-10-21T12:00:00Z',
+      completed_at: undefined,
+    })
+  })
   it('bounds full mutation replies without letting equal-revision SSE restore the full log', () => {
     const full = snapshot({
       revision: 12,

@@ -143,7 +143,11 @@ function RawToolActivity({
       className={`tool-activity${outcome.failed ? ' activity-failed' : ''}${secondary ? ' agent-call-details' : ''}`}
       onToggle={(event) => setExpanded(event.currentTarget.open)}
     >
-      <summary title={[title, activity.detail].filter(Boolean).join(' · ')}>
+      <summary
+        title={[title, activity.detail].filter(Boolean).join(' · ')}
+        data-message-id={message.id}
+        data-scroll-anchor={`message:${message.id}`}
+      >
         {!secondary &&
           (running ? <LoaderCircle size={14} className="animate-spin" /> : <Icon size={14} />)}
         <span className="activity-label">{secondary ? '操作详情' : title}</span>
@@ -204,10 +208,12 @@ function RawToolActivity({
 }
 
 export function ToolActivityGroup({
+  id,
   messages,
   runId,
   resolved,
 }: {
+  id: string
   messages: ChatMessage[]
   runId: string
   resolved: Map<string, Outcome>
@@ -230,6 +236,8 @@ export function ToolActivityGroup({
   return (
     <details className="tool-activity-group" open={open}>
       <summary
+        data-message-id={messages[0].id}
+        data-scroll-anchor={open ? undefined : id}
         onClick={(event) => {
           event.preventDefault()
           setChoice(!open)

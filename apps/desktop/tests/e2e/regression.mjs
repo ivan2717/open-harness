@@ -16,6 +16,7 @@ const suites = [
   'file-references',
   'image-references',
   'history',
+  'long-conversation',
 ]
 const requested = process.argv.slice(2)
 if (requested.some((suite) => !suites.includes(suite)))

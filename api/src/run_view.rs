@@ -1,5 +1,5 @@
 //! Bounded UI history views. The runtime and event log retain the full history.
-use crate::contracts::{RunDetail, TimelineEvent};
+use crate::contracts::{ChatMessage, RunDetail, RunStatus, TimelineEvent};
 use serde::Serialize;
 
 const MESSAGE_PAGE_SIZE: usize = 100;
@@ -11,6 +11,19 @@ pub struct HistoryWindow {
     pub total_messages: usize,
     pub total_events: usize,
     pub events_before: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub leading_turn: Option<LeadingTurn>,
+}
+
+/// Context for the turn cut by a page boundary, separate from the paged rows.
+/// At most one user message and one earlier assistant message are included.
+#[derive(Debug, Serialize)]
+pub struct LeadingTurn {
+    pub id: String,
+    pub user: Option<ChatMessage>,
+    pub preview: Option<ChatMessage>,
+    pub started_at: Option<String>,
+    pub completed_at: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -59,9 +72,86 @@ impl RunView {
                 total_messages: source.messages.len(),
                 total_events: source.events.len(),
                 events_before: (event_start > 0).then(|| source.events[event_start].sequence),
+                leading_turn: (start < end).then(|| leading_turn(source, start)).flatten(),
             },
         })
     }
+}
+
+fn event_sequence(message: &ChatMessage) -> Option<u64> {
+    message.id.strip_prefix("event-")?.parse().ok()
+}
+
+fn leading_turn(source: &RunDetail, start: usize) -> Option<LeadingTurn> {
+    if source.messages[start].role == "user" {
+        return None;
+    }
+    // Find the boundary and preview in one reverse pass. Long tool-only turns
+    // otherwise require scanning the same prefix twice on every stream update.
+    let mut turn_start = 0;
+    let mut preview = None;
+    for (index, message) in source.messages[..start].iter().enumerate().rev() {
+        if message.role == "user" {
+            turn_start = index;
+            break;
+        }
+        if preview.is_none()
+            && message.role == "assistant"
+            && message.status != "streaming"
+            && (!message.text.is_empty()
+                || message
+                    .reasoning
+                    .as_ref()
+                    .is_some_and(|text| !text.is_empty()))
+        {
+            preview = Some(message);
+        }
+    }
+    let turn_end = source.messages[start + 1..]
+        .iter()
+        .position(|message| message.role == "user")
+        .map_or(source.messages.len(), |offset| start + 1 + offset);
+    let first = &source.messages[turn_start];
+    let user = (first.role == "user").then_some(first);
+    let events = user.and_then(event_sequence).map_or(&[][..], |sequence| {
+        let next_sequence = source.messages.get(turn_end).and_then(event_sequence);
+        let event_start = source
+            .events
+            .partition_point(|event| event.sequence < sequence);
+        let event_end = next_sequence.map_or(source.events.len(), |next| {
+            source.events.partition_point(|event| event.sequence < next)
+        });
+        &source.events[event_start..event_end]
+    });
+    let active = turn_end == source.messages.len() && source.summary.status == RunStatus::Running;
+    Some(LeadingTurn {
+        id: first.id.clone(),
+        user: user.cloned(),
+        preview: preview.cloned(),
+        started_at: first
+            .started_at
+            .clone()
+            .or_else(|| events.first().map(|event| event.timestamp.clone())),
+        completed_at: if active {
+            None
+        } else {
+            events
+                .iter()
+                .find(|event| {
+                    matches!(
+                        event.r#type.as_str(),
+                        "input_requested"
+                            | "run_completed"
+                            | "run_failed"
+                            | "run_cancelled"
+                            | "run_paused"
+                    )
+                })
+                .or_else(|| events.last())
+                .map(|event| event.timestamp.clone())
+                .or_else(|| source.messages[turn_end - 1].completed_at.clone())
+        },
+    })
 }
 
 #[cfg(test)]

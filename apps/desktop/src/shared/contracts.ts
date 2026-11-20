@@ -231,6 +231,15 @@ export type PendingInputAction =
   | { action: 'edit'; id: string; revision: number; content: string }
   | { action: 'steer' | 'remove'; id: string; revision: number }
 
+/** Context for a page beginning inside a turn; never part of its paging cursor. */
+export interface ConversationTurnContext {
+  id: string
+  user?: ChatMessage | null
+  preview?: ChatMessage | null
+  started_at?: string | null
+  completed_at?: string | null
+}
+
 export interface RunDetail extends RunSummary {
   /** UI paging metadata only; the runtime always retains the complete history. */
   history?: {
@@ -238,6 +247,7 @@ export interface RunDetail extends RunSummary {
     total_messages: number
     total_events: number
     events_before: number | null
+    leading_turn?: ConversationTurnContext | null
   }
   pending_inputs?: PendingInput[]
   pending_inputs_paused?: boolean

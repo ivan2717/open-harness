@@ -70,6 +70,7 @@ try {
     context: null,
     error: undefined,
     pending_inputs: [],
+    history: undefined,
     messages: [
       message('event-0', 'user', '检查网页和脚本的执行结果', 0),
       message('intro-1', 'assistant', '先查看网页，再核对脚本输出。', 1),
@@ -163,9 +164,20 @@ try {
   await application.evaluate(({ ipcMain }, fixture) => {
     globalThis.conversationFixture = fixture
     globalThis.conversationSubscription = undefined
+    const original = ipcMain._invokeHandlers.get('openharness:invoke')
+    ipcMain.removeHandler('openharness:invoke')
+    ipcMain.handle('openharness:invoke', (event, request) => {
+      if (request.operation === 'getRun' && request.id === globalThis.conversationFixture.id)
+        return globalThis.conversationFixture
+      return original(event, request)
+    })
     ipcMain.on('openharness:watch:start', (event, request) => {
       if (request.id !== globalThis.conversationFixture.id) return
-      globalThis.conversationSubscription = { sender: event.sender, token: request.token }
+      globalThis.conversationSubscription = {
+        id: request.id,
+        sender: event.sender,
+        token: request.token,
+      }
       event.sender.send('openharness:watch:event', {
         token: request.token,
         snapshot: globalThis.conversationFixture,
@@ -176,12 +188,36 @@ try {
     application.evaluate((_electron, next) => {
       globalThis.conversationFixture = next
       const subscription = globalThis.conversationSubscription
-      if (!subscription) throw new Error('No fixture run subscription')
+      if (subscription?.id !== next.id) throw new Error('No matching fixture run subscription')
       subscription.sender.send('openharness:watch:event', {
         token: subscription.token,
         snapshot: next,
       })
     }, next)
+  // Unrelated recorded scenarios have independent canonical histories. Give
+  // each one a real run ID instead of replacing settled rows in the same run.
+  const startScenario = async (fixture) => {
+    const id = await page.evaluate(
+      async (prompt) => {
+        const run = await window.harness.createRun({ prompt, model_id: 'local-demo' })
+        await window.harness.cancelRun(run.id)
+        return run.id
+      },
+      fixture.messages.find((message) => message.role === 'user').text,
+    )
+    const next = { ...fixture, id }
+    await application.evaluate((_electron, fixture) => {
+      globalThis.conversationFixture = fixture
+      globalThis.conversationSubscription = undefined
+    }, next)
+    await page.evaluate((id) => {
+      window.location.hash = `/runs/${id}`
+    }, id)
+    await expect
+      .poll(() => application.evaluate(() => globalThis.conversationSubscription?.id))
+      .toBe(id)
+    return next
+  }
   await page.evaluate((id) => {
     window.location.hash = `/runs/${id}`
   }, base.id)
@@ -359,7 +395,7 @@ try {
   // A pending invocation from an interrupted older turn cannot keep spinning.
   // Async command launches also settle once their later polling result arrives,
   // while the original recorded response remains inspectable without rewriting it.
-  await emit({
+  await startScenario({
     ...snapshot,
     revision: running.revision + 3,
     status: 'completed',
@@ -472,7 +508,7 @@ try {
     682,
     { status: 'streaming', completed_at: undefined },
   )
-  const commandCallsRunning = {
+  const commandCallsRunning = await startScenario({
     ...snapshot,
     revision: running.revision + 4,
     status: 'running',
@@ -491,8 +527,7 @@ try {
         timestamp: timestamp(680),
       },
     ],
-  }
-  await emit(commandCallsRunning)
+  })
   await expect(turns).toHaveCount(1)
   const commandTurn = turns.first()
   const commandCalls = commandTurn.locator('.tool-activity')

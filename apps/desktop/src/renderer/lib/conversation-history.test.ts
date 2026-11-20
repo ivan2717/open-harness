@@ -45,6 +45,115 @@ const events = (start: number, end: number): TimelineEvent[] =>
     timestamp: '2026-11-02T00:00:00Z',
   }))
 
+describe('observed live conversation history', () => {
+  it('keeps the initial bounded page, then retains visible context as the live window advances', () => {
+    const user = { ...message('0'), role: 'user' as const, text: '原始问题' }
+    const commentary = { ...message('1'), role: 'assistant' as const, text: '先检查消息列表。' }
+    const initial = page([user, commentary, message('2', 'pending'), ...messages(3, 99)])
+    let loaded = reconcileConversationHistory(undefined, initial)
+    expect(loaded.messages).toHaveLength(100)
+    expect(loaded.messages).toEqual(initial.messages)
+
+    const live = page(messages(4, 103), '4')
+    live.history!.leading_turn = { id: user.id, user, preview: commentary }
+    loaded = reconcileConversationHistory(loaded, live)
+    expect(loaded.messages).toHaveLength(104)
+    expect(loaded.messages.slice(0, 2)).toEqual([user, commentary])
+    expect(loaded.before).toBeNull()
+    expect(loaded.leadingTurn).toBeUndefined()
+    expect(hiddenPendingMessages(loaded.messages, live.messages)).toEqual([
+      { id: '2', before: '3' },
+    ])
+
+    loaded = refreshConversationHistory(loaded, [message('2')], live)
+    expect(hiddenPendingMessages(loaded.messages, live.messages)).toEqual([])
+    expect(loaded.messages.map((item) => item.id)).toEqual(range(0, 103).map(String))
+    expect(loaded.messages.slice(0, 2)).toEqual([user, commentary])
+  })
+
+  it('retains no messages from another session even when message IDs overlap', () => {
+    const previous = reconcileConversationHistory(undefined, page(messages(0, 99)))
+    const next = {
+      ...page(messages(50, 149), '50'),
+      id: 'another-run',
+    }
+    next.history!.leading_turn = { id: 'another-user', started_at: next.created_at }
+    const loaded = reconcileConversationHistory(previous, next)
+    expect(loaded.id).toBe('another-run')
+    expect(loaded.messages).toEqual(next.messages)
+    expect(loaded.before).toBe('50')
+    expect(loaded.leadingTurn).toEqual(next.history!.leading_turn)
+  })
+
+  it('replaces a provisional response while retaining the previously observed window', () => {
+    const initial = page([...messages(0, 98), message('stream', 'streaming')])
+    const loaded = reconcileConversationHistory(
+      reconcileConversationHistory(undefined, initial),
+      page(messages(2, 101), '2'),
+    )
+    expect(loaded.messages.map((item) => item.id)).toEqual(range(0, 101).map(String))
+    expect(loaded.before).toBeNull()
+  })
+})
+
+describe('leading turn history metadata', () => {
+  it('keeps context tied to the earliest retained boundary while refreshing turn timing', () => {
+    const user = { ...message('user'), role: 'user' as const }
+    const preview = { ...message('preview'), role: 'assistant' as const }
+    const initial = page(messages(100, 199), '100')
+    initial.history!.leading_turn = { id: user.id, user, preview, started_at: initial.created_at }
+    const loaded = reconcileConversationHistory(undefined, initial)
+    const live = page(messages(150, 249), '150')
+    live.history!.leading_turn = {
+      ...initial.history!.leading_turn,
+      preview: { ...preview, id: 'newer-preview' },
+      completed_at: live.updated_at,
+    }
+    const updated = reconcileConversationHistory(loaded, live)
+    expect(updated.leadingTurn).toEqual({
+      ...initial.history!.leading_turn,
+      completed_at: live.updated_at,
+    })
+    expect(updated.before).toBe('100')
+
+    live.history!.leading_turn = { id: 'later-turn' }
+    expect(reconcileConversationHistory(updated, live).leadingTurn).toEqual(updated.leadingTurn)
+  })
+
+  it('takes the earlier page context on prepend and clears it when the beginning is reached', () => {
+    const live = page(messages(200, 299), '200')
+    live.history!.leading_turn = { id: 'later-turn' }
+    const earlier = page(messages(100, 199), '100')
+    earlier.history!.leading_turn = { id: 'earlier-turn' }
+    const loaded = prependConversationPage(
+      reconcileConversationHistory(undefined, live),
+      earlier,
+      live,
+      '200',
+    )
+    expect(loaded.leadingTurn).toEqual(earlier.history!.leading_turn)
+    expect(loaded.before).toBe('100')
+    expect(reconcileConversationHistory(loaded, live).leadingTurn).toEqual(loaded.leadingTurn)
+    const complete = prependConversationPage(loaded, page(messages(0, 99)), live, '100')
+    expect(complete.leadingTurn).toBeUndefined()
+    expect(complete.before).toBeNull()
+  })
+
+  it('replaces context on a disconnected live window and rejects stale page context', () => {
+    const initial = page(messages(100, 199), '100')
+    initial.history!.leading_turn = { id: 'old-turn' }
+    const live = page(messages(401, 500), '401')
+    live.history!.leading_turn = { id: 'new-turn' }
+    const loaded = reconcileConversationHistory(undefined, initial)
+    const reset = reconcileConversationHistory(loaded, live)
+    expect(reset.leadingTurn).toEqual(live.history!.leading_turn)
+    const stale = page(messages(0, 99))
+    expect(prependConversationPage(loaded, stale, live, '100').leadingTurn).toEqual(
+      live.history!.leading_turn,
+    )
+  })
+})
+
 describe('disconnected live history windows', () => {
   it('restores a conversation paging cursor after reconnect and can read every skipped message', () => {
     const previous = { id: 'run', before: null, messages: messages(0, 199), events: [] }

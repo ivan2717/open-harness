@@ -23,6 +23,7 @@ export function hasHistoryGap<T>(
 type LoadedHistory = {
   id: string
   before: string | null
+  leadingTurn?: NonNullable<RunDetail['history']>['leading_turn']
   messages: ChatMessage[]
   events: TimelineEvent[]
 }
@@ -109,10 +110,12 @@ export async function refreshPendingMessages(
 }
 
 export function reconcileConversationHistory(
-  history: LoadedHistory,
+  history: LoadedHistory | undefined,
   run: RunDetail,
 ): LoadedHistory {
   if (
+    !history ||
+    history.id !== run.id ||
     hasHistoryGap(
       history.messages.filter((message) => message.status !== 'streaming'),
       run.messages.filter((message) => message.status !== 'streaming'),
@@ -125,12 +128,26 @@ export function reconcileConversationHistory(
     return {
       id: run.id,
       before: run.history?.before ?? null,
+      leadingTurn: run.history?.leading_turn,
       messages: run.messages,
       events: run.events,
     }
   }
+  const leadingTurn = history.leadingTurn
+  const liveTurn = run.history?.leading_turn
   return {
     ...history,
+    // The user and preview describe the retained page's boundary. A moving
+    // live preview may already be among retained messages, so refresh only
+    // timing metadata for the same turn.
+    leadingTurn:
+      leadingTurn && liveTurn?.id === leadingTurn.id
+        ? {
+            ...leadingTurn,
+            started_at: liveTurn.started_at ?? leadingTurn.started_at,
+            completed_at: liveTurn.completed_at ?? leadingTurn.completed_at,
+          }
+        : leadingTurn,
     messages: mergeMessageHistory(history.messages, run.messages),
     events: mergeHistory(history.events, run.events, eventKey),
   }
@@ -149,6 +166,7 @@ export function prependConversationPage(
   return {
     ...latest,
     before: page.history?.before ?? null,
+    leadingTurn: page.history?.leading_turn,
     messages: mergeMessageHistory(page.messages, latest.messages),
     events: mergeHistory(page.events, latest.events, eventKey),
   }
@@ -167,7 +185,7 @@ export function refreshConversationHistory(
 }
 
 export function useConversationHistory(run: RunDetail) {
-  const [loaded, setLoaded] = useState<LoadedHistory>()
+  const [loaded, setLoaded] = useState(() => reconcileConversationHistory(undefined, run))
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string>()
   const [refreshError, setRefreshError] = useState<string>()
@@ -176,23 +194,18 @@ export function useConversationHistory(run: RunDetail) {
   const generation = useRef(0)
   useEffect(() => {
     generation.current++
-    setLoaded(undefined)
     setLoading(false)
     setError(undefined)
     setRefreshError(undefined)
   }, [run.id])
   useEffect(() => {
-    // Only retain extra pages after the user asks for history. Ordinary live
-    // viewing keeps the bounded tail supplied by the backend.
-    setLoaded((old) => (old?.id === run.id ? reconcileConversationHistory(old, run) : old))
+    // Keep messages already shown while the bounded live window moves forward.
+    // Opening a conversation still starts with just the supplied page; earlier
+    // history is fetched only when requested, never to rebuild the whole log.
+    setLoaded((old) => reconcileConversationHistory(old, current.current))
   }, [run.id, run.revision])
-  const history = useMemo(
-    () => (loaded?.id === run.id ? reconcileConversationHistory(loaded, run) : undefined),
-    [loaded, run],
-  )
-  const pendingKey = JSON.stringify(
-    history ? hiddenPendingMessages(history.messages, run.messages) : [],
-  )
+  const history = useMemo(() => reconcileConversationHistory(loaded, run), [loaded, run])
+  const pendingKey = JSON.stringify(hiddenPendingMessages(history.messages, run.messages))
   useEffect(() => {
     const pending = JSON.parse(pendingKey) as PendingRefresh[]
     if (!pending.length) {
@@ -209,7 +222,7 @@ export function useConversationHistory(run: RunDetail) {
           (id, before) => window.harness.getRunPage(id, before),
           (messages) => {
             setLoaded((old) => {
-              if (cancelled || old?.id !== run.id || current.current.id !== run.id) return old
+              if (cancelled || old.id !== run.id || current.current.id !== run.id) return old
               return refreshConversationHistory(old, messages, current.current)
             })
           },
@@ -229,9 +242,16 @@ export function useConversationHistory(run: RunDetail) {
       clearTimeout(timer)
     }
   }, [run.id, run.status, pendingKey])
-  const before = history ? history.before : run.history?.before
+  const before = history.before
   return {
-    run: history ? { ...run, messages: history.messages, events: history.events } : run,
+    run: {
+      ...run,
+      messages: history.messages,
+      events: history.events,
+      history: run.history
+        ? { ...run.history, before, leading_turn: history.leadingTurn }
+        : undefined,
+    },
     before,
     loading,
     error: error ?? refreshError,
@@ -246,14 +266,7 @@ export function useConversationHistory(run: RunDetail) {
         if (epoch !== generation.current || current.current.id !== captured.id) return
         setLoaded((old) => {
           const previous =
-            old?.id === captured.id
-              ? old
-              : {
-                  id: captured.id,
-                  before: captured.history?.before ?? null,
-                  messages: captured.messages,
-                  events: captured.events,
-                }
+            old.id === captured.id ? old : reconcileConversationHistory(undefined, captured)
           return prependConversationPage(previous, page, current.current, before)
         })
       } catch (error) {

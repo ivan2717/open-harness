@@ -66,6 +66,12 @@ describe('conversation activity projection', () => {
       ),
     ).toEqual([['a', 'b'], 'c', ['d'], ['e'], ['f']])
   })
+  it('keeps turn timing correct when an earlier message page carries overlapping newer events', () => {
+    const source = run()
+    const events = [...source.events.slice(2), ...source.events.slice(0, 2)]
+    expect(conversationTurns({ ...source, events })).toEqual(conversationTurns(source))
+    expect(events[0]).toBe(source.events[2])
+  })
   it('supports old records without dates and never invents a duration', () => {
     const turns = conversationTurns({
       ...run(),
@@ -76,5 +82,54 @@ describe('conversation activity projection', () => {
     expect(elapsedLabel(turns[0].startedAt, turns[0].completedAt)).toBeUndefined()
     expect(elapsedLabel('invalid', 'invalid')).toBeUndefined()
     expect(elapsedLabel('2026-11-02', '2026-11-01')).toBeUndefined()
+  })
+  it('keeps a partial turn identity, context and duration across a moving window', () => {
+    const source = run()
+    const user = { ...source.messages[0], started_at: '2026-11-01T10:00:00Z' }
+    const preview = message('event-1', 'assistant')
+    const history = {
+      before: 'tool-100',
+      total_messages: 302,
+      total_events: 1000,
+      events_before: 700,
+      leading_turn: {
+        id: user.id,
+        user,
+        preview,
+        started_at: user.started_at,
+        completed_at: '2026-11-01T10:02:17Z',
+      },
+    }
+    const partial = { ...source, messages: [message('tool-100', 'tool')], events: [], history }
+    const before = conversationTurns(partial)[0]
+    const after = conversationTurns({ ...partial, messages: [message('tool-101', 'tool')] })[0]
+    expect(before.id).toBe(user.id)
+    expect(after.id).toBe(before.id)
+    expect(before.user).toEqual(user)
+    expect(before.messages.map((message) => message.id)).toEqual(['event-1', 'tool-100'])
+    expect(elapsedLabel(after.startedAt, after.completedAt)).toBe('2 分 17 秒')
+    expect(conversationTurns({ ...partial, status: 'running' })[0].completedAt).toBeUndefined()
+  })
+  it('does not duplicate page context or attach it to a later user turn', () => {
+    const source = run()
+    const preview = source.messages[2]
+    const partial = {
+      ...source,
+      history: {
+        before: 'tool-a',
+        total_messages: 1000,
+        total_events: 1000,
+        events_before: null,
+        leading_turn: { id: source.messages[0].id, user: source.messages[0], preview },
+      },
+      messages: source.messages.slice(1),
+    }
+    const turns = conversationTurns(partial)
+    expect(turns).toHaveLength(2)
+    expect(turns[0].messages.map((message) => message.id)).toEqual(['tool-a', 'event-3'])
+    expect(turns[1].id).toBe('event-5')
+    expect(turns[1].messages.map((message) => message.id)).toEqual(['event-7'])
+    const complete = conversationTurns({ ...partial, messages: source.messages })
+    expect(complete).toEqual(conversationTurns(source))
   })
 })

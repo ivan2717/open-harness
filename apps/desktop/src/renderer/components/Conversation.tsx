@@ -25,6 +25,8 @@ function Message({ message, runId }: { message: ChatMessage; runId: string }) {
   return (
     <article
       className={`message message-${message.role}`}
+      data-message-id={message.id}
+      data-scroll-anchor={`message:${message.id}`}
       aria-label={message.role === 'user' ? '你的消息' : undefined}
     >
       <div className="message-body">
@@ -118,13 +120,18 @@ function AssistantTurn({
   ).length
   const duration = elapsedLabel(turn.startedAt, turn.completedAt ?? (turn.active ? now : undefined))
   const open = choice ?? turn.active
-  const content = activityBlocks(work).map((block) =>
-    Array.isArray(block) ? (
-      <ToolActivityGroup key={block[0].id} messages={block} runId={runId} resolved={outcomes} />
-    ) : (
-      <Message key={block.id} message={block} runId={runId} />
-    ),
-  )
+  // A group's first tool changes when an earlier page joins it. Its preceding
+  // prose (or turn boundary) remains stable, preserving expanded tool details.
+  let boundary = turn.id
+  const content = activityBlocks(work).map((block) => {
+    if (!Array.isArray(block)) {
+      boundary = block.id
+      return <Message key={`message:${block.id}`} message={block} runId={runId} />
+    }
+    const id = `tools:${boundary}`
+    boundary = block.at(-1)!.id
+    return <ToolActivityGroup key={id} id={id} messages={block} runId={runId} resolved={outcomes} />
+  })
   return (
     <section className="assistant-turn" aria-label="助手回复">
       {hasOperations ? (
@@ -168,14 +175,21 @@ export function Conversation({ run: liveRun }: { run: RunDetail }) {
   const keepAtBottom = useRef(true)
   const [showScroll, setShowScroll] = useState(false)
   const previousRun = useRef(run.id)
-  const historyAnchor = useRef<{ element: Element; top: number } | null>(null)
+  const historyAnchor = useRef<{ runId: string; key: string; top: number } | null>(null)
   useLayoutEffect(() => {
     const anchor = historyAnchor.current
-    if (!history.loading && anchor && scroll.current && anchor.element.isConnected) {
-      scroll.current.scrollTop += anchor.element.getBoundingClientRect().top - anchor.top
+    if (!anchor) return
+    if (anchor.runId !== run.id) {
       historyAnchor.current = null
+      return
     }
-  }, [history.loading, run.messages.length])
+    if (history.loading || !scroll.current) return
+    const element = [...scroll.current.querySelectorAll<HTMLElement>('[data-scroll-anchor]')].find(
+      (element) => element.dataset.scrollAnchor === anchor.key,
+    )
+    if (element) scroll.current.scrollTop += element.getBoundingClientRect().top - anchor.top
+    historyAnchor.current = null
+  }, [history.loading, run.id, run.messages.length])
   useEffect(() => {
     if (previousRun.current !== run.id) {
       keepAtBottom.current = true
@@ -222,9 +236,32 @@ export function Conversation({ run: liveRun }: { run: RunDetail }) {
               className="history-load-button"
               disabled={history.loading}
               onClick={() => {
-                const element = scroll.current?.querySelector('.conversation-turn')
-                if (element)
-                  historyAnchor.current = { element, top: element.getBoundingClientRect().top }
+                const container = scroll.current
+                if (container) {
+                  const bounds = container.getBoundingClientRect()
+                  const messages = new Set(run.messages.map((message) => message.id))
+                  // Anchor real loaded content, not the contextual prompt/preview
+                  // repeated above a partial turn. Store identity rather than a
+                  // DOM node so prepending remains safe if React replaces it.
+                  const anchors = [
+                    ...container.querySelectorAll<HTMLElement>('[data-scroll-anchor]'),
+                  ].filter(
+                    (element) =>
+                      messages.has(element.dataset.messageId ?? '') &&
+                      element.getBoundingClientRect().height > 0,
+                  )
+                  const element =
+                    anchors.find((element) => {
+                      const rect = element.getBoundingClientRect()
+                      return rect.bottom > bounds.top && rect.top < bounds.bottom
+                    }) ?? anchors[0]
+                  if (element)
+                    historyAnchor.current = {
+                      runId: run.id,
+                      key: element.dataset.scrollAnchor!,
+                      top: element.getBoundingClientRect().top,
+                    }
+                }
                 keepAtBottom.current = false
                 void history.load()
               }}

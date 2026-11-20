@@ -1,4 +1,5 @@
 import type { RunDetail, RunSummary } from '../../shared/contracts'
+import { conversationTurns } from './conversation-turns'
 
 export function latestSnapshot(current: RunDetail | undefined, incoming: RunDetail): RunDetail {
   if (!current || current.id !== incoming.id) return recentSnapshot(incoming)
@@ -10,6 +11,25 @@ export function recentSnapshot(run: RunDetail): RunDetail {
   if (run.history || (run.messages.length <= 100 && run.events.length <= 300)) return run
   const messages = run.messages.slice(-100)
   const events = run.events.slice(-300)
+  const first = messages[0]
+  const turn =
+    first && first.role !== 'user'
+      ? conversationTurns(run).find((turn) =>
+          turn.messages.some((message) => message.id === first.id),
+        )
+      : undefined
+  const earlier = turn?.messages.slice(
+    0,
+    turn.messages.findIndex((message) => message.id === first.id),
+  )
+  const preview = earlier
+    ?.reverse()
+    .find(
+      (message) =>
+        message.role === 'assistant' &&
+        message.status !== 'streaming' &&
+        (message.text || message.reasoning),
+    )
   return {
     ...run,
     messages,
@@ -19,6 +39,15 @@ export function recentSnapshot(run: RunDetail): RunDetail {
       events_before: run.events.length > events.length ? events[0].sequence : null,
       total_messages: run.messages.length,
       total_events: run.events.length,
+      leading_turn: turn
+        ? {
+            id: turn.id,
+            user: turn.user,
+            preview,
+            started_at: turn.startedAt,
+            completed_at: turn.completedAt,
+          }
+        : undefined,
     },
   }
 }
